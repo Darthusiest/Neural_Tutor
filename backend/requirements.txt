@@ -1,0 +1,7 @@
+flask>=3.0,<4
+flask-sqlalchemy>=3.1,<4
+flask-cors>=4.0,<6
+flask-login>=0.6,<1
+python-dotenv>=1.0,<2
+resend>=2.0,<3
+werkzeug>=3.0,<4
