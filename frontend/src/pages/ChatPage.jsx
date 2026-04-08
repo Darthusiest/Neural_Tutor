@@ -1,0 +1,141 @@
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { apiFetch } from '../api/client'
+import { Sidebar } from '../components/Sidebar'
+import { ChatPanel } from '../components/ChatPanel'
+
+export function ChatPage({ user }) {
+  const { sessionId } = useParams()
+  const nav = useNavigate()
+  const [sessions, setSessions] = useState([])
+  const [messages, setMessages] = useState([])
+  const [boostEnabled, setBoostEnabled] = useState(false)
+  const [mode, setMode] = useState('chat')
+  const [sending, setSending] = useState(false)
+
+  const activeId = sessionId ? parseInt(sessionId, 10) : null
+
+  async function refreshSessions() {
+    const data = await apiFetch('/api/sessions')
+    setSessions(data.sessions || [])
+  }
+
+  async function refreshMessages(sid) {
+    if (!sid) {
+      setMessages([])
+      return
+    }
+    const data = await apiFetch(`/api/sessions/${sid}/messages`)
+    const msgs = (data.messages || []).map((m) => {
+      if (m.role === 'user') {
+        return { id: m.id, role: 'user', content: m.content || '' }
+      }
+      return {
+        id: m.id,
+        role: 'assistant',
+        course_answer: stripPrefix(m.course_answer, 'Course Answer:'),
+        boosted_explanation: m.boosted_explanation
+          ? stripPrefix(m.boosted_explanation, 'Boosted Explanation:')
+          : null,
+      }
+    })
+    setMessages(msgs)
+  }
+
+  useEffect(() => {
+    if (!user) return
+    refreshSessions().catch(() => {})
+  }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      nav('/login', { replace: true })
+    }
+  }, [user, nav])
+
+  useEffect(() => {
+    if (!user || !activeId) return
+    refreshMessages(activeId).catch(() => {})
+  }, [user, activeId])
+
+  async function handleNewChat() {
+    const data = await apiFetch('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'New chat', mode: 'chat' }),
+    })
+    await refreshSessions()
+    nav(`/chat/${data.session.id}`)
+  }
+
+  async function handleSend(text) {
+    let sid = activeId
+    if (!sid) {
+      const created = await apiFetch('/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: (text.slice(0, 48) || 'New chat').trim(),
+          mode,
+        }),
+      })
+      sid = created.session.id
+      nav(`/chat/${sid}`)
+      await refreshSessions()
+    }
+    setSending(true)
+    const optimistic = [
+      ...messages,
+      { id: `tmp-${Date.now()}`, role: 'user', content: text },
+    ]
+    setMessages(optimistic)
+    try {
+      await apiFetch('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          session_id: sid,
+          message: text,
+          boost_toggle: boostEnabled,
+          mode,
+        }),
+      })
+      await refreshMessages(sid)
+      await refreshSessions()
+    } catch (e) {
+      await refreshMessages(sid)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  if (!user) {
+    return null
+  }
+
+  return (
+    <div className="chat-layout">
+      <Sidebar
+        sessions={sessions}
+        activeId={activeId}
+        onNewChat={handleNewChat}
+        disabled={sending}
+      />
+      <ChatPanel
+        messages={messages}
+        boostEnabled={boostEnabled}
+        onBoostChange={setBoostEnabled}
+        onSend={handleSend}
+        sending={sending}
+        mode={mode}
+        onModeChange={setMode}
+      />
+    </div>
+  )
+}
+
+function stripPrefix(text, prefix) {
+  if (!text) return ''
+  const t = text.trimStart()
+  if (t.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return t.slice(prefix.length).trimStart()
+  }
+  return text
+}

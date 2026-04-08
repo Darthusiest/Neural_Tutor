@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required, login_user, logout_user
 
 from app.extensions import db
@@ -24,7 +24,7 @@ def register():
     db.session.add(user)
     db.session.commit()
     login_user(user)
-    return jsonify({"user": {"id": user.id, "email": user.email}}), 201
+    return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}}), 201
 
 
 @bp.route("/login", methods=["POST"])
@@ -36,7 +36,7 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({"error": "invalid credentials"}), 401
     login_user(user)
-    return jsonify({"user": {"id": user.id, "email": user.email}})
+    return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}})
 
 
 @bp.route("/logout", methods=["POST"])
@@ -70,7 +70,8 @@ def forgot_password():
         return jsonify({"error": "email required"}), 400
     user = User.query.filter_by(email=email).first()
     if not user:
-        return jsonify({"message": "if that account exists, email was sent"}), 200
+        body = {"message": "If an account exists for this email, a reset link has been sent."}
+        return jsonify(body), 200
     raw = secrets.token_urlsafe(32)
     pr = PasswordResetToken(
         user_id=user.id,
@@ -79,7 +80,6 @@ def forgot_password():
     )
     db.session.add(pr)
     db.session.commit()
-    from flask import current_app
 
     body = {
         "message": "If an account exists for this email, a reset link has been sent.",
