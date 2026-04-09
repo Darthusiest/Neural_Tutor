@@ -1,13 +1,15 @@
 import json
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import ChatSession, Feedback, Message, ResponseVariant, RetrievalLog
 from app.services.llm import generate_boosted_explanation
-from app.services.retrieval import retrieve
+from app.services.retrieval import format_course_answer, retrieve
+from app.utils.security import parse_request_json
 
 bp = Blueprint("chat", __name__)
 
@@ -41,13 +43,22 @@ def list_sessions():
 
 @bp.route("/sessions", methods=["POST"])
 @login_required
+@limiter.limit("45 per minute")
 def create_session():
-    data = request.get_json(silent=True) or {}
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
     title = (data.get("title") or "New chat").strip() or "New chat"
     mode = (data.get("mode") or "chat").strip()
     s = ChatSession(user_id=current_user.id, title=title, mode=mode)
     db.session.add(s)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("create_session failed")
+        return jsonify({"error": "could not create session"}), 500
     return jsonify({"session": {"id": s.id, "title": s.title, "mode": s.mode}}), 201
 
 
@@ -98,12 +109,16 @@ def list_messages(sid: int):
 
 @bp.route("/chat", methods=["POST"])
 @login_required
+@limiter.limit("90 per minute")
 def chat():
     """
-    Scaffold: runs retrieval placeholder, builds a stub Course Answer,
-    optionally calls LLM placeholder for Boosted Explanation.
+    Retrieve lecture chunks, assemble a grounded Course Answer, optionally
+    request a Boosted Explanation from the LLM layer.
     """
-    data = request.get_json(silent=True) or {}
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
     session_id = data.get("session_id")
     text = (data.get("message") or "").strip()
     boost_toggle = bool(data.get("boost_toggle"))
@@ -126,17 +141,14 @@ def chat():
     r = retrieve(text)
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
-    if r.confidence < 0.05 and not r.chunks:
+    if not r.chunks:
         course_answer = (
             "Course Answer:\nThis question appears outside the LING 487 materials "
             "I can access, or retrieval found no relevant lecture chunk. "
             "Try rephrasing using terms from the course, or ask about a specific lecture topic."
         )
     else:
-        course_answer = (
-            "Course Answer:\n[Scaffold] Retrieval ran but keyword matching is not wired to "
-            "real chunks yet. When implemented, this block will quote only lecture data."
-        )
+        course_answer = format_course_answer(r.chunks)
 
     low_confidence = r.confidence < CONFIDENCE_THRESHOLD
     need_boost = boost_toggle or low_confidence or mode in ("compare", "summary")
@@ -187,7 +199,12 @@ def chat():
         token_usage_json=None,
     )
     db.session.add(log)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("chat commit failed")
+        return jsonify({"error": "failed to save chat turn"}), 500
 
     return jsonify(
         {
@@ -202,8 +219,12 @@ def chat():
 
 @bp.route("/feedback", methods=["POST"])
 @login_required
+@limiter.limit("90 per minute")
 def feedback():
-    data = request.get_json(silent=True) or {}
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
     message_id = data.get("message_id")
     if not message_id:
         return jsonify({"error": "message_id required"}), 400
@@ -217,5 +238,10 @@ def feedback():
     fb.course_thumb = data.get("course_thumb")
     fb.boost_thumb = data.get("boost_thumb")
     fb.preferred = data.get("preferred")
-    db.session.commit()
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("feedback commit failed")
+        return jsonify({"error": "could not save feedback"}), 500
     return jsonify({"ok": True})

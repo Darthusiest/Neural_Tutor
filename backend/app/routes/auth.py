@@ -1,46 +1,104 @@
+import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required, login_user, logout_user
+from flask_wtf.csrf import generate_csrf
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import PasswordResetToken, User
+from app.utils.security import (
+    burn_auth_timing_budget,
+    parse_request_json,
+    reject_login_password_check,
+    security_log,
+    timing_pad,
+    validate_email_format,
+    validate_password_strength,
+    validate_reset_token_format,
+)
 
 bp = Blueprint("auth", __name__)
 
+DUMMY_TOKEN_HASH = "0" * 64
+_FORGET_MIN_SECONDS = 0.085
+_RESET_MIN_SECONDS = 0.085
+
+
+@bp.route("/csrf", methods=["GET"])
+@limiter.limit("60 per minute")
+def get_csrf_token():
+    return jsonify({"csrf_token": generate_csrf()})
+
 
 @bp.route("/register", methods=["POST"])
+@limiter.limit("5 per minute")
 def register():
-    data = request.get_json(silent=True) or {}
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-    if not email or not password:
-        return jsonify({"error": "email and password required"}), 400
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "email already registered"}), 409
+
+    if msg := validate_email_format(email):
+        return jsonify({"error": msg}), 400
+    if msg := validate_password_strength(password):
+        return jsonify({"error": msg}), 400
+
     user = User(email=email)
     user.set_password(password)
     db.session.add(user)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        security_log("register_conflict", email=email)
+        return jsonify({"error": "email already registered"}), 409
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("register failed")
+        security_log("register_db_error", email=email)
+        return jsonify({"error": "registration failed"}), 500
+
     login_user(user)
     return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}}), 201
 
 
 @bp.route("/login", methods=["POST"])
+@limiter.limit("10 per minute")
 def login():
-    data = request.get_json(silent=True) or {}
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
-    user = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
+
+    if validate_email_format(email):
+        security_log("login_invalid_email_shape")
         return jsonify({"error": "invalid credentials"}), 401
+
+    user = User.query.filter_by(email=email).first()
+    if user:
+        ok = user.check_password(password)
+    else:
+        reject_login_password_check()
+        ok = False
+    if not ok:
+        security_log("login_failed", email=email)
+        return jsonify({"error": "invalid credentials"}), 401
+
     login_user(user)
     return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}})
 
 
 @bp.route("/logout", methods=["POST"])
 @login_required
+@limiter.limit("30 per minute")
 def logout():
     logout_user()
     return jsonify({"ok": True})
@@ -62,54 +120,113 @@ def me():
 
 
 @bp.route("/forgot-password", methods=["POST"])
+@limiter.limit("5 per minute")
 def forgot_password():
-    """Request reset email via Resend (wire up in a later step)."""
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"error": "email required"}), 400
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        body = {"message": "If an account exists for this email, a reset link has been sent."}
-        return jsonify(body), 200
-    raw = secrets.token_urlsafe(32)
-    pr = PasswordResetToken(
-        user_id=user.id,
-        token_hash=_hash_token(raw),
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-    )
-    db.session.add(pr)
-    db.session.commit()
+    """Request password reset. Uniform response; timing-padded; Resend integration later."""
+    import time as _time
 
-    body = {
-        "message": "If an account exists for this email, a reset link has been sent.",
-    }
-    if current_app.debug:
-        body["dev_reset_token"] = raw
-    return jsonify(body), 200
+    t0 = _time.monotonic()
+    burn_auth_timing_budget()
+    try:
+        data, err = parse_request_json(request)
+        if err:
+            return err
+        assert data is not None
+        email = (data.get("email") or "").strip().lower()
+
+        if msg := validate_email_format(email):
+            security_log("forgot_invalid_email")
+            body = {
+                "message": "If an account exists for this email, a reset link has been sent."
+            }
+            return jsonify(body), 200
+
+        user = User.query.filter_by(email=email).first()
+        body = {
+            "message": "If an account exists for this email, a reset link has been sent.",
+        }
+        if user:
+            raw = secrets.token_urlsafe(32)
+            pr = PasswordResetToken(
+                user_id=user.id,
+                token_hash=_hash_token(raw),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            db.session.add(pr)
+            try:
+                db.session.commit()
+            except SQLAlchemyError:
+                db.session.rollback()
+                current_app.logger.exception("forgot_password_commit_failed")
+                security_log("forgot_db_error", email=email)
+            else:
+                if current_app.debug:
+                    body = dict(body)
+                    body["dev_reset_token"] = raw
+        return jsonify(body), 200
+    finally:
+        timing_pad(t0, _FORGET_MIN_SECONDS)
 
 
 @bp.route("/reset-password", methods=["POST"])
+@limiter.limit("10 per minute")
 def reset_password():
-    data = request.get_json(silent=True) or {}
-    token = data.get("token") or ""
-    new_password = data.get("password") or ""
-    if not token or not new_password:
-        return jsonify({"error": "token and password required"}), 400
-    th = _hash_token(token)
-    pr = PasswordResetToken.query.filter_by(token_hash=th).first()
-    if not pr or pr.used_at is not None or pr.expires_at < datetime.now(timezone.utc):
-        return jsonify({"error": "invalid or expired token"}), 400
-    user = db.session.get(User, pr.user_id)
-    if not user:
-        return jsonify({"error": "user not found"}), 400
-    user.set_password(new_password)
-    pr.used_at = datetime.now(timezone.utc)
-    db.session.commit()
-    return jsonify({"ok": True})
+    import time as _time
+
+    t0 = _time.monotonic()
+    burn_auth_timing_budget()
+    try:
+        data, err = parse_request_json(request)
+        if err:
+            return err
+        assert data is not None
+        token = (data.get("token") or "").strip()
+        new_password = data.get("password") or ""
+
+        if msg := validate_reset_token_format(token):
+            security_log("reset_invalid_token_shape")
+            return jsonify({"error": "invalid or expired token"}), 400
+
+        if msg := validate_password_strength(new_password):
+            return jsonify({"error": msg}), 400
+
+        th = _hash_token(token)
+        stored_hex = DUMMY_TOKEN_HASH
+        pr = PasswordResetToken.query.filter_by(token_hash=th).first()
+        if pr is not None:
+            stored_hex = pr.token_hash
+
+        if not hmac.compare_digest(stored_hex.encode("utf-8"), th.encode("utf-8")):
+            security_log("reset_token_mismatch")
+            return jsonify({"error": "invalid or expired token"}), 400
+
+        assert pr is not None
+
+        now = datetime.now(timezone.utc)
+        if pr.used_at is not None or pr.expires_at < now:
+            security_log("reset_token_stale", token_id=pr.id)
+            return jsonify({"error": "invalid or expired token"}), 400
+
+        user = db.session.get(User, pr.user_id)
+        if not user:
+            db.session.rollback()
+            security_log("reset_user_missing", token_id=pr.id)
+            return jsonify({"error": "invalid or expired token"}), 400
+
+        user.set_password(new_password)
+        pr.used_at = now
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            current_app.logger.exception("reset_password_commit_failed")
+            security_log("reset_db_error")
+            return jsonify({"error": "password reset failed"}), 500
+
+        return jsonify({"ok": True}), 200
+    finally:
+        timing_pad(t0, _RESET_MIN_SECONDS)
 
 
 def _hash_token(raw: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

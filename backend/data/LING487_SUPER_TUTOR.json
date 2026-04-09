@@ -1,0 +1,452 @@
+{
+  "title": "LING487 Final Super Tutor",
+  "source_file": "LING487_FINAL_SUPER_TUTOR.docx",
+  "lectures": [
+    {
+      "lecture_number": 4,
+      "title": "Foundations of Neural Networks",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Neural networks are systems of weights that learn patterns from data.",
+            "Each weight controls how important an input is and how strongly it influences the output.",
+            "Instead of storing rules explicitly, neural networks store knowledge implicitly in these weights."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Like adjusting ingredients in cooking until the taste is right.",
+            "Another way to think of it: a neural network is like a volume mixer where each input has a volume knob."
+          ]
+        },
+        {
+          "heading": "Key Concepts",
+          "content": [
+            "Forward pass: compute output by combining inputs with weights.",
+            "Backward pass: compute error and determine how each weight contributed to that error.",
+            "Update weights with SGD: slightly adjust weights to reduce error.",
+            "Important clarification: learning is gradual—small updates over many examples lead to strong performance."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 5,
+      "title": "Speech as Vector Prediction",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Speech is represented as vectors and predicted via transformations.",
+            "Each vector represents a snapshot of sound (pressure values over time)."
+          ]
+        },
+        {
+          "heading": "Example",
+          "content": [
+            "[1,2] → [-1,3] requires a matrix (multiple weights).",
+            "This shows that simple scaling is not enough—we need transformations that mix inputs together."
+          ]
+        },
+        {
+          "heading": "Insight",
+          "content": [
+            "Learning = learning transformations.",
+            "A neural network is essentially learning how to rotate, stretch, and reshape data in high-dimensional space."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 6,
+      "title": "Inner Product",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Inner product measures similarity between vectors.",
+            "It determines how aligned two patterns are."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Like comparing patterns in music—if two songs rise and fall similarly, they are similar.",
+            "Another analogy: cosine similarity is like checking if two arrows point in the same direction."
+          ]
+        },
+        {
+          "heading": "Clarification",
+          "content": [
+            "A large positive value means strong similarity.",
+            "A value near zero means the patterns are unrelated.",
+            "A negative value means they are opposites."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 7,
+      "title": "Dynamic Programming",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Dynamic Programming (DP) considers future outcomes when making decisions.",
+            "It solves problems by breaking them into smaller subproblems."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Choosing a route based on future traffic, not just the shortest current road.",
+            "Like playing chess—good players think several moves ahead."
+          ]
+        },
+        {
+          "heading": "Clarification",
+          "content": [
+            "DP stores intermediate results (values) to avoid recomputing.",
+            "This makes it efficient compared to brute-force search."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 8,
+      "title": "Backpropagation",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Backpropagation computes gradients efficiently to update weights.",
+            "It allows deep networks to learn by propagating error backward."
+          ]
+        },
+        {
+          "heading": "Steps",
+          "content": [
+            "Forward → compute predictions",
+            "Loss → measure error",
+            "Backward → compute gradients using chain rule",
+            "Update → adjust weights"
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Like tracing a mistake in a math solution back to the step where it occurred."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 9,
+      "title": "NN Applications",
+      "sections": [
+        {
+          "heading": "Softmax Classifier",
+          "content": [
+            "Outputs probabilities across categories.",
+            "Ensures outputs sum to 1, making them interpretable as probabilities."
+          ]
+        },
+        {
+          "heading": "Autoencoder",
+          "content": [
+            "Compresses and reconstructs input.",
+            "Example: compressing an image into a small code, then reconstructing it."
+          ]
+        },
+        {
+          "heading": "Clarification",
+          "content": [
+            "Autoencoders learn important features by forcing compression."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 10,
+      "title": "Spectra and MFCCs",
+      "sections": [
+        {
+          "heading": "Spectra",
+          "content": [
+            "Captures sound shape through averaging patterns across segments of a waveform.",
+            "It extracts the 'essence' of sound."
+          ]
+        },
+        {
+          "heading": "Formants",
+          "content": [
+            "Key vowel-defining frequencies.",
+            "Different vowels have distinct formant patterns."
+          ]
+        },
+        {
+          "heading": "MFCCs",
+          "content": [
+            "Compact representation used in speech recognition.",
+            "They summarize spectral information into a small number of features."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "MFCCs are like a fingerprint of sound."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 11,
+      "title": "Bias vs Variance",
+      "sections": [
+        {
+          "heading": "Bias",
+          "content": [
+            "Too simple → underfitting.",
+            "Fails to capture patterns in data."
+          ]
+        },
+        {
+          "heading": "Variance",
+          "content": [
+            "Too complex → overfitting.",
+            "Memorizes noise instead of learning general patterns."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Bias = studying only definitions.",
+            "Variance = memorizing answers without understanding."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 12,
+      "title": "Softmax",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Softmax converts outputs into probabilities.",
+            "It transforms arbitrary scores into a distribution."
+          ]
+        },
+        {
+          "heading": "Insight",
+          "content": [
+            "Represents uncertainty instead of hard decisions."
+          ]
+        },
+        {
+          "heading": "Example",
+          "content": [
+            "[2,5] → softmax → [0.12, 0.88] (approx).",
+            "This shows confidence rather than a binary choice."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 13,
+      "title": "LLM Tasks and Training",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "LLMs learn by predicting the next token in a sequence.",
+            "This is called autoregressive learning."
+          ]
+        },
+        {
+          "heading": "Applications",
+          "content": [
+            "ASR, TTS, summarization, dialogue"
+          ]
+        },
+        {
+          "heading": "Clarification",
+          "content": [
+            "Even complex tasks reduce to prediction at their core."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 14,
+      "title": "Attention Mechanism",
+      "sections": [
+        {
+          "heading": "QKV",
+          "content": [
+            "Query = what I need",
+            "Key = what I have",
+            "Value = what I give"
+          ]
+        },
+        {
+          "heading": "Mechanism",
+          "content": [
+            "Compare Q and K to compute importance weights.",
+            "Use weights to combine V vectors."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Like highlighting important words when reading."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 15,
+      "title": "Transformer Architecture",
+      "sections": [
+        {
+          "heading": "Multi-head Attention",
+          "content": [
+            "Different heads capture different relationships (syntax, semantics, etc.)."
+          ]
+        },
+        {
+          "heading": "Feedforward",
+          "content": [
+            "Expands → processes → compresses representations."
+          ]
+        },
+        {
+          "heading": "Clarification",
+          "content": [
+            "Transformers stack many layers to refine representations."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 16,
+      "title": "CNNs and Residuals",
+      "sections": [
+        {
+          "heading": "CNN",
+          "content": [
+            "Processes speech at multiple time scales.",
+            "Extracts local patterns first, then global patterns."
+          ]
+        },
+        {
+          "heading": "Residuals",
+          "content": [
+            "Preserve information across layers.",
+            "Help prevent vanishing gradients."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 17,
+      "title": "Normalization and Regularization",
+      "sections": [
+        {
+          "heading": "Layer Norm",
+          "content": [
+            "Stabilizes training by normalizing inputs."
+          ]
+        },
+        {
+          "heading": "Dropout",
+          "content": [
+            "Prevents overfitting by randomly removing neurons."
+          ]
+        },
+        {
+          "heading": "Positional Encoding",
+          "content": [
+            "Adds order information to sequences."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 18,
+      "title": "LLM Continuation",
+      "sections": [
+        {
+          "heading": "Focus",
+          "content": [
+            "Continuation of LLM architecture and modeling concepts.",
+            "Focuses on refining representations and scaling models."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 19,
+      "title": "Vector Quantization, Distillation, Diffusion",
+      "sections": [
+        {
+          "heading": "Vector Quantization",
+          "content": [
+            "Maps continuous vectors to discrete categories.",
+            "Example: reducing millions of colors to a small set."
+          ]
+        },
+        {
+          "heading": "Residual VQ",
+          "content": [
+            "Encodes leftover error step-by-step."
+          ]
+        },
+        {
+          "heading": "Distillation",
+          "content": [
+            "Teacher model trains smaller student model."
+          ]
+        },
+        {
+          "heading": "Diffusion",
+          "content": [
+            "Learn to reverse noise into structure."
+          ]
+        }
+      ]
+    },
+    {
+      "lecture_number": 20,
+      "title": "Generative AI and Structure",
+      "sections": [
+        {
+          "heading": "Core Idea",
+          "content": [
+            "Generative models learn probability distributions."
+          ]
+        },
+        {
+          "heading": "Analogy",
+          "content": [
+            "Learning what makes a face, then generating a new one."
+          ]
+        },
+        {
+          "heading": "Correlation",
+          "content": [
+            "Real data has structure (not random)."
+          ]
+        },
+        {
+          "heading": "Insight",
+          "content": [
+            "Models succeed by learning structure, not memorizing."
+          ]
+        }
+      ]
+    }
+  ]
+}

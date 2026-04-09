@@ -1,5 +1,7 @@
 # Project progress track
 
+For the **current product/API overview** and setup steps, see the root [`README.md`](../README.md).
+
 Use this folder as a **running record** of how the LING 487 tutor evolves: code changes, design decisions, retrieval/LLM behavior notes, bugs fixed, and ideas to revisit.
 
 ## How to add an entry

@@ -3,11 +3,12 @@ from pathlib import Path
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_SQLITE = f"sqlite:///{_BACKEND_ROOT / 'ling487.db'}"
+_DEFAULT_LECTURE_JSON = _BACKEND_ROOT / "data" / "LING487_SUPER_TUTOR.json"
 
 
 class Config:
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", _DEFAULT_SQLITE)
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _DEFAULT_SQLITE
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     SESSION_COOKIE_HTTPONLY = True
@@ -19,3 +20,13 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
     RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "")
+
+    LECTURE_JSON_PATH = Path(
+        os.getenv("LECTURE_JSON_PATH", str(_DEFAULT_LECTURE_JSON))
+    )
+
+    WTF_CSRF_ENABLED = True
+    WTF_CSRF_TIME_LIMIT = None
+    WTF_CSRF_SSL_STRICT = False
+
+    RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
