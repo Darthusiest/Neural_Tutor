@@ -94,8 +94,10 @@ This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite
 | Column | Type | Notes |
 |--------|------|--------|
 | id | Integer PK | |
-| topic | String(512), indexed | |
 | lecture_number | Integer, indexed | |
-| keywords | Text | JSON list string |
-| explanation | Text | |
-| example_qa | Text nullable | |
+| topic | String(512), indexed | e.g. `{lecture title} — {section heading}` |
+| keywords | Text | JSON array of strings |
+| source_excerpt | Text | Raw course material (joined bullets / slides text) |
+| clean_explanation | Text | Pedagogical text (may match source until seed adds a separate field) |
+| sample_questions | Text nullable | JSON array of strings |
+| sample_answer | Text nullable | Single exemplar answer |

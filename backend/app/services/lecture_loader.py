@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from app.extensions import db
 from app.models import LectureChunk
@@ -36,6 +37,33 @@ def keyword_list(lecture_title: str, heading: str, lines: list[str]) -> list[str
     return out
 
 
+def _normalize_sample_questions(sec: dict[str, Any]) -> str:
+    if "sample_questions" in sec and sec["sample_questions"] is not None:
+        raw = sec["sample_questions"]
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, list):
+            return json.dumps([str(x).strip() for x in raw if str(x).strip()])
+    if sec.get("sample_question"):
+        return json.dumps([str(sec["sample_question"]).strip()])
+    return "[]"
+
+
+def _sample_answer(sec: dict[str, Any]) -> str | None:
+    v = sec.get("sample_answer")
+    if v is None or v == "":
+        return None
+    return str(v).strip() or None
+
+
+def _clean_explanation(sec: dict[str, Any], source_excerpt: str) -> str:
+    for key in ("clean_explanation", "clean"):
+        v = sec.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return source_excerpt
+
+
 def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
     """
     Load sections from the JSON file into `lecture_chunks`.
@@ -59,12 +87,15 @@ def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
         for sec in lec.get("sections", []):
             heading = str(sec.get("heading", "")).strip()
             lines = [str(s).strip() for s in sec.get("content", []) if str(s).strip()]
-            explanation = "\n".join(lines)
+            source_excerpt = "\n".join(lines)
             topic = f"{title} — {heading}"
             if len(topic) > 512:
                 topic = topic[:509] + "..."
             kw = keyword_list(title, heading, lines)
             kw_json = json.dumps(kw)
+            clean = _clean_explanation(sec, source_excerpt)
+            sample_q_json = _normalize_sample_questions(sec)
+            sample_ans = _sample_answer(sec)
 
             if upsert:
                 existing = LectureChunk.query.filter_by(
@@ -73,16 +104,20 @@ def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
                 ).first()
                 if existing:
                     existing.keywords = kw_json
-                    existing.explanation = explanation
-                    existing.example_qa = None
+                    existing.source_excerpt = source_excerpt
+                    existing.clean_explanation = clean
+                    existing.sample_questions = sample_q_json
+                    existing.sample_answer = sample_ans
                 else:
                     db.session.add(
                         LectureChunk(
                             topic=topic,
                             lecture_number=lecture_number,
                             keywords=kw_json,
-                            explanation=explanation,
-                            example_qa=None,
+                            source_excerpt=source_excerpt,
+                            clean_explanation=clean,
+                            sample_questions=sample_q_json,
+                            sample_answer=sample_ans,
                         )
                     )
             else:
@@ -91,8 +126,10 @@ def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
                         topic=topic,
                         lecture_number=lecture_number,
                         keywords=kw_json,
-                        explanation=explanation,
-                        example_qa=None,
+                        source_excerpt=source_excerpt,
+                        clean_explanation=clean,
+                        sample_questions=sample_q_json,
+                        sample_answer=sample_ans,
                     )
                 )
             count += 1

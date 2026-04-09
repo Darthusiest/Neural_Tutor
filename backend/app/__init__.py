@@ -43,11 +43,12 @@ def create_app(config_object: type | None = None) -> Flask:
         supports_credentials=True,
     )
 
-    from app.routes import admin_bp, auth_bp, chat_bp, health_bp
+    from app.routes import admin_bp, auth_bp, chat_bp, health_bp, lectures_bp
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(chat_bp, url_prefix="/api")
+    app.register_blueprint(lectures_bp, url_prefix="/api/lectures")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
     @app.cli.command("init-db")
@@ -83,10 +84,17 @@ def create_app(config_object: type | None = None) -> Flask:
 
     with app.app_context():
         from sqlalchemy import inspect
+        from sqlalchemy.exc import OperationalError
 
         from app.services.retrieval import load_lecture_cache
 
         if inspect(db.engine).has_table("lecture_chunks"):
-            load_lecture_cache()
+            try:
+                load_lecture_cache()
+            except OperationalError:
+                app.logger.warning(
+                    "lecture_chunks schema mismatch (remove ling487.db, run init-db + import-lectures). "
+                    "Retrieval cache not loaded."
+                )
 
     return app
