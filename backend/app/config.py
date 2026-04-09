@@ -94,6 +94,9 @@ class Config:
     RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "0") == "1"
     EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "")
 
+    # v2 summary mode: max chunks returned for a single-lecture summary (ranked lexically).
+    SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "48"))
+
 
 class TestConfig(Config):
     """In-memory SQLite + no CSRF for pytest."""

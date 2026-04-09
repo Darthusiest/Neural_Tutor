@@ -14,10 +14,12 @@ All callers that previously used ``retrieve_chunks`` can switch to
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from app.config import Config
 from app.services.domain_knowledge import (
+    CONCEPT_FAMILIES,
     get_concept_family_for_lecture,
     get_lectures_in_family,
     get_related_lectures,
@@ -25,6 +27,7 @@ from app.services.domain_knowledge import (
 )
 from app.services.query_understanding import QueryIntent, QueryType, analyze_query
 from app.services.retrieval import (
+    ChunkHitDiag,
     RetrievalDiagnostics,
     RetrievalResult,
     _row_cache,
@@ -46,6 +49,7 @@ class EnhancedRetrievalResult(RetrievalResult):
     supporting_chunks: list[dict[str, Any]] = field(default_factory=list)
     query_intent: QueryIntent | None = None
     related_topics: list[str] = field(default_factory=list)
+    compare_side_diagnostics: tuple[RetrievalDiagnostics | None, RetrievalDiagnostics | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -61,18 +65,25 @@ def _handle_definition(expanded_q: str, intent: QueryIntent, top_k: int) -> Enha
 
 def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
     """Retrieve chunks for *both* sides of a compare query."""
+    side_diag: tuple[RetrievalDiagnostics | None, RetrievalDiagnostics | None] | None = None
     if intent.compare_concepts:
-        a_q = expanded_q + " " + intent.compare_concepts[0]
-        b_q = expanded_q + " " + intent.compare_concepts[1]
+        ca, cb = intent.compare_concepts
+        lec_hint = ""
+        if intent.lecture_numbers:
+            lec_hint = f"lecture {intent.lecture_numbers[0]} "
+        # Side-specific subqueries avoid sharing the full expanded query on both sides (cross-talk).
+        a_q = f"{lec_hint}{ca}".strip()
+        b_q = f"{lec_hint}{cb}".strip()
         ra = retrieve_chunks(a_q, top_k=max(top_k, 3))
         rb = retrieve_chunks(b_q, top_k=max(top_k, 3))
         merged = _merge_two_sides(ra.chunks, rb.chunks, top_k)
-        conf = max(ra.confidence, rb.confidence)
+        conf = min(ra.confidence, rb.confidence)
         detected = ra.detected_topic or rb.detected_topic
-        diag = ra.diagnostics
+        diag = _merge_compare_diagnostics(ra, rb, merged)
+        side_diag = (ra.diagnostics, rb.diagnostics)
     else:
         base = retrieve_chunks(expanded_q, top_k=top_k + 2)
-        merged = _diversify_by_lecture(base.chunks, top_k)
+        merged = _diversify_by_lecture(base.chunks, top_k, query_type=QueryType.COMPARE)
         conf = base.confidence
         detected = base.detected_topic
         diag = base.diagnostics
@@ -82,24 +93,30 @@ def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
         detected_topic=detected,
         diagnostics=diag,
         query_intent=intent,
+        compare_side_diagnostics=side_diag,
     )
 
 
 def _handle_summary(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
-    """Return all chunks from the target lecture (when explicit), else broad retrieval."""
+    """Single-lecture summary: lexical rank within that lecture (capped); else broad retrieval."""
     if intent.lecture_numbers and len(intent.lecture_numbers) == 1:
         lec = intent.lecture_numbers[0]
-        lec_chunks = [r for r in _row_cache if r["lecture_number"] == lec]
-        if lec_chunks:
-            from app.services.retrieval import _row_to_public_dict
-
-            chunks = [_row_to_public_dict(r) for r in lec_chunks]
-            detected = (chunks[0].get("topic") or "").split("—")[0].strip()
+        lec_rows = [r for r in _row_cache if r["lecture_number"] == lec]
+        if lec_rows:
+            cap = min(Config.SUMMARY_MAX_CHUNKS, max(top_k, 20))
+            # Narrow query keeps the student's topic terms; explicit "lecture N" drives lecture bonus.
+            narrow_q = f"lecture {lec} {intent.original_query.strip()}"
+            base = retrieve_chunks(
+                narrow_q,
+                top_k=min(cap, len(lec_rows)),
+                lecture_filter=lec,
+                summary_rank=True,
+            )
             return EnhancedRetrievalResult(
-                chunks=chunks,
-                confidence=0.85,
-                detected_topic=detected,
-                diagnostics=None,
+                chunks=base.chunks,
+                confidence=base.confidence,
+                detected_topic=base.detected_topic,
+                diagnostics=base.diagnostics,
                 query_intent=intent,
             )
     base = retrieve_chunks(expanded_q, top_k=top_k + 3)
@@ -107,28 +124,39 @@ def _handle_summary(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
 
 
 def _handle_synthesis(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
-    """Cross-lecture retrieval: expand related lectures, diversify results."""
+    """Cross-lecture retrieval: primary query first, light augmentation merged second."""
     related_lecs: set[int] = set()
     for ln in intent.lecture_numbers:
         related_lecs.update(get_related_lectures(ln))
         related_lecs.add(ln)
     extra_terms: list[str] = []
-    for ln in related_lecs:
+    for ln in sorted(related_lecs):
         fam = get_concept_family_for_lecture(ln)
         if fam:
-            from app.services.domain_knowledge import CONCEPT_FAMILIES
-            extra_terms.extend(CONCEPT_FAMILIES[fam].get("concepts", [])[:3])
-    aug_q = expanded_q
-    if extra_terms:
-        aug_q += " " + " ".join(dict.fromkeys(extra_terms))
-    base = retrieve_chunks(aug_q, top_k=top_k + 4)
-    diversified = _diversify_by_lecture(base.chunks, top_k)
+            concepts = CONCEPT_FAMILIES[fam].get("concepts", [])
+            if concepts:
+                extra_terms.append(concepts[0])
+    unique_extras: list[str] = []
+    for t in extra_terms:
+        if t not in unique_extras:
+            unique_extras.append(t)
+        if len(unique_extras) >= 4:
+            break
+
+    pool_k = top_k + 4
+    primary = retrieve_chunks(expanded_q, top_k=pool_k)
+    merged_chunks = list(primary.chunks)
+    if unique_extras:
+        aug_q = expanded_q + " " + " ".join(unique_extras)
+        secondary = retrieve_chunks(aug_q, top_k=pool_k)
+        merged_chunks = _merge_dedupe_chunks(primary.chunks, secondary.chunks, pool_k * 2)
+    diversified = _diversify_by_lecture(merged_chunks, top_k, query_type=QueryType.SYNTHESIS)
     supporting = _gather_supporting(diversified, intent)
     return EnhancedRetrievalResult(
         chunks=diversified,
-        confidence=base.confidence,
-        detected_topic=base.detected_topic,
-        diagnostics=base.diagnostics,
+        confidence=primary.confidence,
+        detected_topic=primary.detected_topic,
+        diagnostics=primary.diagnostics,
         supporting_chunks=supporting,
         query_intent=intent,
         related_topics=sorted({c.get("topic", "").split("—")[0].strip() for c in supporting} - {""}),
@@ -241,6 +269,69 @@ def _boost_chunk_type(
     return sorted(chunks, key=_sort_key)
 
 
+def _merge_dedupe_chunks(
+    primary: list[dict[str, Any]],
+    secondary: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Concatenate retrieval lists with stable dedupe by chunk id (primary order first)."""
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for c in primary + secondary:
+        cid = c.get("id")
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _merge_compare_diagnostics(
+    ra: RetrievalResult,
+    rb: RetrievalResult,
+    merged_chunks: list[dict[str, Any]],
+) -> RetrievalDiagnostics | None:
+    """Chunk hits aligned with merged compare output; aggregate scores use the weaker side."""
+    sources = [d for d in (ra.diagnostics, rb.diagnostics) if d is not None]
+    if not sources:
+        return None
+    da = sources[0]
+    db = sources[1] if len(sources) > 1 else None
+    by_id: dict[int, ChunkHitDiag] = {}
+    for src in sources:
+        for h in src.chunk_hits:
+            prev = by_id.get(h.chunk_id)
+            if prev is None or h.score > prev.score:
+                by_id[h.chunk_id] = h
+    hits_out: list[ChunkHitDiag] = []
+    for rank, c in enumerate(merged_chunks, start=1):
+        cid = c.get("id")
+        if cid is None or cid not in by_id:
+            continue
+        hits_out.append(replace(by_id[cid], rank=rank))
+    eps = 1e-6
+    top_s = min(da.top_score, db.top_score) if db else da.top_score
+    sec_s = min(da.second_score, db.second_score) if db else da.second_score
+    lec_union = sorted(set(da.lecture_numbers_detected) | (set(db.lecture_numbers_detected) if db else set()))
+    cov = (da.query_coverage + db.query_coverage) / 2.0 if db else da.query_coverage
+    n_scored = da.num_chunks_scored + (db.num_chunks_scored if db else 0)
+    return RetrievalDiagnostics(
+        query_tokens=da.query_tokens,
+        lecture_numbers_detected=lec_union,
+        retrieval_backend=da.retrieval_backend,
+        top_k_requested=da.top_k_requested,
+        num_chunks_scored=n_scored,
+        num_chunks_hit=len(by_id),
+        top_score=top_s,
+        second_score=sec_s,
+        score_margin=(top_s - sec_s) / (top_s + eps),
+        query_coverage=cov,
+        chunk_hits=hits_out,
+    )
+
+
 def _merge_two_sides(
     a_chunks: list[dict[str, Any]],
     b_chunks: list[dict[str, Any]],
@@ -267,8 +358,17 @@ def _merge_two_sides(
     return merged[:n]
 
 
-def _diversify_by_lecture(chunks: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+def _diversify_by_lecture(
+    chunks: list[dict[str, Any]],
+    n: int,
+    *,
+    query_type: QueryType | None = None,
+) -> list[dict[str, Any]]:
     """Pick up to *n* chunks, preferring unique lectures before repeats."""
+    if query_type == QueryType.SYNTHESIS:
+        unique_lecs = len({c.get("lecture_number") for c in chunks})
+        if unique_lecs >= min(n, len(chunks)):
+            return chunks[:n]
     if len(chunks) <= n:
         return chunks
     lec_seen: set[int] = set()

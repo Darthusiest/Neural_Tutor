@@ -21,9 +21,9 @@ from app.models import (
 from app.services.llm import generate_boosted_explanation
 from app.services.retrieval import (
     format_course_answer,
-    retrieve,
     tokenize_query_terms,
 )
+from app.services.retrieval_v2 import retrieve_enhanced
 
 # Keywords that suggest the user wants a simpler/different explanation
 _CLARIFY_KEYWORDS = frozenset(
@@ -126,8 +126,10 @@ def handle_chat_turn(
     db.session.flush()
 
     t0 = time.perf_counter()
-    r = retrieve(text)
+    r = retrieve_enhanced(text, top_k=5)
     latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    diag = r.diagnostics
 
     if not r.chunks:
         course_answer = (
@@ -162,6 +164,9 @@ def handle_chat_turn(
                 "course_answer": course_answer,
                 "boosted_explanation": boosted,
                 "confidence": r.confidence,
+                "query_type": (
+                    r.query_intent.query_type.value if getattr(r, "query_intent", None) else None
+                ),
             }
         ),
     )
@@ -169,7 +174,6 @@ def handle_chat_turn(
     db.session.flush()
 
     # --- RetrievalLog (enriched) ---
-    diag = r.diagnostics
     log = RetrievalLog(
         session_id=session.id,
         message_id=assistant.id,

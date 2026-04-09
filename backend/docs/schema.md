@@ -49,12 +49,12 @@ This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite
 | session_id | FK → chat_sessions.id, indexed | |
 | role | String(32) | user / assistant / system |
 | content_text | Text nullable | user plain text |
-| payload_json | Text nullable | assistant metadata JSON |
+| payload_json | Text nullable | Assistant metadata JSON (typical keys: `course_answer`, `confidence`, optional `query_type` from retrieval v2, optional `boosted_explanation`) |
 | created_at | DateTime | |
 
 ## retrieval_logs
 
-One row per assistant turn that runs retrieval. Stores query features, aggregate scores, and flags for analytics (tuning `CONFIDENCE_THRESHOLD`, comparing backends). Chunk IDs live in **`retrieval_chunk_hits`**; `retrieved_chunk_ids` is legacy JSON, nullable, not written by new code.
+One row per assistant turn that runs retrieval. Stores query features, aggregate scores, and flags for analytics (tuning `CONFIDENCE_THRESHOLD`, comparing backends). Chunk IDs live in **`retrieval_chunk_hits`**; `retrieved_chunk_ids` is legacy JSON, nullable, not written by new code. When chat uses **retrieval v2** compare mode, aggregate scores in this row reflect the **merged** compare diagnostics (e.g. conservative confidence); per-chunk rows in **`retrieval_chunk_hits`** still describe the chunks shown in the Course Answer.
 
 | Column | Type | Notes |
 |--------|------|--------|

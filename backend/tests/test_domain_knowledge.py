@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import app.services.domain_knowledge as domain_knowledge
+
 from app.services.domain_knowledge import (
     correct_typos,
     expand_term,
@@ -102,6 +104,16 @@ class TestFuzzyMatching:
         assert "backpropagtion" in corrections
         assert corrections["backpropagtion"] == "backpropagation"
         assert "softmax" not in corrections
+
+    def test_fuzzy_match_reproducible_many_runs(self):
+        for _ in range(100):
+            assert fuzzy_match_domain_term("backpropagtion") == "backpropagation"
+
+    def test_fuzzy_tie_break_lexicographic(self, monkeypatch):
+        """Equal edit distance → lexicographically smallest domain term wins."""
+        monkeypatch.setattr(domain_knowledge, "_DOMAIN_TERMS", frozenset({"aaaaa", "aaaab"}))
+        monkeypatch.setattr(domain_knowledge, "_DOMAIN_TERMS_SORTED", ("aaaaa", "aaaab"))
+        assert fuzzy_match_domain_term("aaaac") == "aaaaa"
 
 
 class TestLectureRange:

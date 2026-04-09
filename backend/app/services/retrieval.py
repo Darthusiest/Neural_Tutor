@@ -605,10 +605,22 @@ def _confidence_from_parts(
     return float(min(1.0, max(0.0, conf)))
 
 
-def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> RetrievalResult:
+def score_chunks_keyword(
+    query: str,
+    rows: list[dict[str, Any]],
+    top_k: int,
+    *,
+    lecture_filter: int | None = None,
+    summary_rank: bool = False,
+) -> RetrievalResult:
     """
     Rank chunks using the lexical index. ``rows`` is ignored in favor of the global
     cache indices (callers still pass ``_row_cache`` for API stability).
+
+    ``lecture_filter``: only score chunks from this lecture (used for single-lecture summary).
+
+    ``summary_rank``: when combined with ``lecture_filter``, return up to ``top_k`` chunks
+    ranked by score, **including** zero-score tail chunks (stable tie-break on chunk id).
     """
     del rows  # single source of truth: _chunk_indices aligned with _row_cache
 
@@ -638,6 +650,8 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
 
     scored: list[tuple[float, ChunkLexicalIndex, _ScoreParts]] = []
     for cid, idx in _chunk_indices.items():
+        if lecture_filter is not None and idx.lecture_number != lecture_filter:
+            continue
         lec_hit = idx.lecture_number in lec_nums
         if not q_tokens and not lec_hit:
             scored.append((0.0, idx, _ScoreParts()))
@@ -647,29 +661,44 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
         )
         scored.append((raw, idx, parts))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best, second = scored[0][0], scored[1][0] if len(scored) > 1 else 0.0
-    num_hit = sum(1 for s, _, _ in scored if s > 0)
-
-    if best <= 0:
+    if not scored:
         return RetrievalResult(
             chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
         )
 
-    top_entries = [(s, idx, p) for s, idx, p in scored if s > 0][:top_k]
+    # Sort by score (desc), then chunk id for deterministic ordering when scores tie.
+    scored.sort(key=lambda x: (-x[0], x[1].chunk_id))
+    best, second = scored[0][0], scored[1][0] if len(scored) > 1 else 0.0
+    num_hit = sum(1 for s, _, _ in scored if s > 0)
+    num_scored_scope = len(scored)
+
+    if summary_rank and lecture_filter is not None:
+        top_entries = scored[:top_k]
+    elif best <= 0:
+        return RetrievalResult(
+            chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
+        )
+    else:
+        top_entries = [(s, idx, p) for s, idx, p in scored if s > 0][:top_k]
+
     if not top_entries:
         return RetrievalResult(
             chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
         )
 
     _, best_idx, best_parts = top_entries[0]
-    conf = _confidence_from_parts(
-        best,
-        second,
-        best_parts,
-        q_tokens,
-        best_idx.lecture_number in lec_nums,
-    )
+    if summary_rank and lecture_filter is not None and best <= 0:
+        # Lexical overlap absent; lecture reference still grounds the summary request.
+        lec_ref = lecture_filter in lec_nums
+        conf = 0.42 if lec_ref else 0.28
+    else:
+        conf = _confidence_from_parts(
+            best,
+            second,
+            best_parts,
+            q_tokens,
+            best_idx.lecture_number in lec_nums,
+        )
 
     if not q_tokens and lec_nums:
         conf = max(conf, 0.42)
@@ -702,7 +731,7 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
         lecture_numbers_detected=sorted(lec_nums),
         retrieval_backend="keyword",
         top_k_requested=top_k,
-        num_chunks_scored=len(_chunk_indices),
+        num_chunks_scored=num_scored_scope,
         num_chunks_hit=num_hit,
         top_score=best,
         second_score=second,
@@ -724,6 +753,8 @@ def retrieve_chunks(
     *,
     top_k: int = 5,
     backend: Literal["keyword", "embedding", "hybrid"] = "keyword",
+    lecture_filter: int | None = None,
+    summary_rank: bool = False,
 ) -> RetrievalResult:
     """
     Retrieve top matching chunks.
@@ -742,7 +773,13 @@ def retrieve_chunks(
         )
     if backend != "keyword":
         raise ValueError(f"unknown retrieval backend: {backend!r}")
-    result = score_chunks_keyword(query, _row_cache, top_k)
+    result = score_chunks_keyword(
+        query,
+        _row_cache,
+        top_k,
+        lecture_filter=lecture_filter,
+        summary_rank=summary_rank,
+    )
     if result.diagnostics is not None:
         _log_keyword_diagnostics(query, result.diagnostics)
     return result

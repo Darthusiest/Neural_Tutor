@@ -163,7 +163,7 @@ class TestCompare:
 
 
 # ---------------------------------------------------------------------------
-# E. Summary queries — should return all chunks from a lecture
+# E. Summary queries — single-lecture recap (ranked, capped) from that lecture
 # ---------------------------------------------------------------------------
 
 class TestSummary:
@@ -285,3 +285,28 @@ class TestLectureSpecific:
         with app.app_context():
             r = retrieve_enhanced("week 7 DP subproblems")
             assert r.chunks[0]["lecture_number"] == 7
+
+
+# ---------------------------------------------------------------------------
+# J. Retrieval v2 hardening (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryHardening:
+    def test_single_lecture_summary_has_diagnostics(self, corpus, app):
+        with app.app_context():
+            r = retrieve_enhanced("summary of lecture 10", top_k=10)
+            assert r.diagnostics is not None
+            assert r.diagnostics.chunk_hits
+            assert all(c["lecture_number"] == 10 for c in r.chunks)
+
+
+class TestCompareHardening:
+    def test_compare_has_merged_diagnostics_and_side_tuple(self, corpus, app):
+        with app.app_context():
+            r = retrieve_enhanced("difference between bias and variance", top_k=4)
+            assert r.query_intent is not None
+            assert r.query_intent.compare_concepts is not None
+            assert r.compare_side_diagnostics is not None
+            assert r.diagnostics is not None
+            assert len(r.diagnostics.chunk_hits) <= len(r.chunks)

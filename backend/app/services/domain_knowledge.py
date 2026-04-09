@@ -293,10 +293,12 @@ def _edit_distance(a: str, b: str) -> int:
 
 
 _DOMAIN_TERMS: frozenset[str] | None = None
+# Sorted once with `_DOMAIN_TERMS` for deterministic fuzzy matching (tie-break, iteration).
+_DOMAIN_TERMS_SORTED: tuple[str, ...] | None = None
 
 
 def _get_domain_terms() -> frozenset[str]:
-    global _DOMAIN_TERMS
+    global _DOMAIN_TERMS, _DOMAIN_TERMS_SORTED
     if _DOMAIN_TERMS is None:
         terms: set[str] = set()
         for group in _ALIAS_GROUPS:
@@ -306,26 +308,42 @@ def _get_domain_terms() -> frozenset[str]:
                     if len(word) >= 4:
                         terms.add(word)
         _DOMAIN_TERMS = frozenset(terms)
+        _DOMAIN_TERMS_SORTED = tuple(sorted(_DOMAIN_TERMS))
     return _DOMAIN_TERMS
 
 
+def _get_domain_terms_sorted() -> tuple[str, ...]:
+    """All domain terms in stable lexicographic order (for reproducible fuzzy matching)."""
+    _get_domain_terms()
+    assert _DOMAIN_TERMS_SORTED is not None
+    return _DOMAIN_TERMS_SORTED
+
+
 def fuzzy_match_domain_term(token: str, *, max_dist: int | None = None) -> str | None:
-    """Best edit-distance match to a known domain term, or None if too distant."""
+    """
+    Best edit-distance match to a known domain term, or None if too distant.
+
+    Determinism:
+    - Candidates are considered in lexicographic term order (not hash order).
+    - Among ties on edit distance ``d``, the lexicographically smallest domain term wins.
+    - Final selection is ``min`` over ``(d, dt)`` so distance always beats string, then string tie-break.
+    """
     t = token.lower().strip()
     if len(t) < 5:
         return None
     if max_dist is None:
         max_dist = 1 if len(t) < 8 else 2
-    best: str | None = None
-    best_d = max_dist + 1
-    for dt in _get_domain_terms():
+    best: tuple[int, str] | None = None
+    for dt in _get_domain_terms_sorted():
         if abs(len(dt) - len(t)) > max_dist:
             continue
         d = _edit_distance(t, dt)
-        if d < best_d:
-            best_d = d
-            best = dt
-    return best if best_d <= max_dist else None
+        if d > max_dist:
+            continue
+        cand = (d, dt)
+        if best is None or cand < best:
+            best = cand
+    return best[1] if best else None
 
 
 def correct_typos(tokens: list[str]) -> dict[str, str]:
