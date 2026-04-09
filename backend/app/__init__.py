@@ -7,7 +7,7 @@ from flask_cors import CORS
 from flask_wtf.csrf import CSRFError
 
 from app.config import Config
-from app.extensions import csrf, db, limiter, login_manager
+from app.extensions import csrf, db, limiter, login_manager, migrate
 
 load_dotenv()
 
@@ -17,6 +17,7 @@ def create_app(config_object: type | None = None) -> Flask:
     app.config.from_object(config_object or Config)
 
     db.init_app(app)
+    migrate.init_app(app, db)
     login_manager.init_app(app)
     login_manager.login_view = None
 

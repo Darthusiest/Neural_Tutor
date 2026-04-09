@@ -110,6 +110,8 @@ def test_retrieve_keyword(client, app):
     assert data["confidence"] > 0
     assert data["chunks"]
     assert any("uniquekwxyz" in json.dumps(c).lower() for c in data["chunks"])
+    chunk0 = data["chunks"][0]
+    assert chunk0.get("source_excerpt") == chunk0.get("source_text")
 
 
 def test_retrieve_embedding_501(client):

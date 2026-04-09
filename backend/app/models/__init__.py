@@ -1,4 +1,10 @@
-from app.models.analytics import Feedback, ResponseVariant, RetrievalLog
+from app.models.analytics import (
+    Feedback,
+    MessageOutcome,
+    ResponseVariant,
+    RetrievalChunkHit,
+    RetrievalLog,
+)
 from app.models.chat import ChatSession, Message
 from app.models.content import LectureChunk
 from app.models.password_reset import PasswordResetToken
@@ -10,7 +16,9 @@ __all__ = [
     "Message",
     "LectureChunk",
     "RetrievalLog",
+    "RetrievalChunkHit",
     "ResponseVariant",
     "Feedback",
+    "MessageOutcome",
     "PasswordResetToken",
 ]

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from flask import Blueprint, jsonify, request
 from flask_login import login_required
 
 from app.extensions import limiter
-from app.models import LectureChunk
-from app.services.retrieval import retrieve_chunks
+from app.services.lecture_data import (
+    get_lecture_summary,
+    list_topics_catalog,
+    search_lecture_chunks,
+)
 from app.utils.security import parse_request_json
 
 bp = Blueprint("lectures", __name__)
@@ -17,55 +18,21 @@ bp = Blueprint("lectures", __name__)
 _MAX_TOP_K = 20
 
 
-def _lecture_title_from_chunk(chunk: LectureChunk) -> str:
-    return chunk.topic.split("—", 1)[0].strip() if chunk.topic else ""
-
-
 @bp.route("/topics", methods=["GET"])
 @login_required
 @limiter.limit("120 per minute")
 def list_topics():
-    chunks = LectureChunk.query.order_by(
-        LectureChunk.lecture_number, LectureChunk.id
-    ).all()
-    by_num: dict[int, list[LectureChunk]] = defaultdict(list)
-    for c in chunks:
-        by_num[c.lecture_number].append(c)
-
-    lectures = []
-    for lec_num in sorted(by_num.keys()):
-        rows = by_num[lec_num]
-        lectures.append(
-            {
-                "lecture_number": lec_num,
-                "title": _lecture_title_from_chunk(rows[0]) if rows else "",
-                "chunk_count": len(rows),
-                "section_topics": [r.topic for r in rows],
-            }
-        )
-    return jsonify({"lectures": lectures})
+    return jsonify(list_topics_catalog())
 
 
 @bp.route("/<int:lecture_number>/summary", methods=["GET"])
 @login_required
 @limiter.limit("120 per minute")
 def lecture_summary(lecture_number: int):
-    chunks = (
-        LectureChunk.query.filter_by(lecture_number=lecture_number)
-        .order_by(LectureChunk.id)
-        .all()
-    )
-    if not chunks:
+    data = get_lecture_summary(lecture_number)
+    if data is None:
         return jsonify({"error": "lecture not found"}), 404
-
-    return jsonify(
-        {
-            "lecture_number": lecture_number,
-            "title": _lecture_title_from_chunk(chunks[0]),
-            "chunk_count": len(chunks),
-            "sections": [{"id": c.id, "topic": c.topic} for c in chunks],
-        }
-    )
+    return jsonify(data)
 
 
 @bp.route("/retrieve", methods=["POST"])
@@ -93,9 +60,9 @@ def lecture_retrieve():
 
     try:
         if backend == "keyword":
-            r = retrieve_chunks(q, top_k=top_k, backend="keyword")
+            r = search_lecture_chunks(q, top_k=top_k, backend="keyword")
         else:
-            r = retrieve_chunks(q, top_k=top_k, backend="embedding")
+            r = search_lecture_chunks(q, top_k=top_k, backend="embedding")
     except NotImplementedError:
         return jsonify({"error": "embedding retrieval is not implemented yet"}), 501
     except ValueError as e:

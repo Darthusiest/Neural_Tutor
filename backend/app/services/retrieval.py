@@ -30,10 +30,44 @@ from app.models import LectureChunk
 
 
 @dataclass
+class ChunkHitDiag:
+    """Per-chunk scoring diagnostics for analytics persistence."""
+
+    chunk_id: int
+    rank: int
+    score: float
+    token_score: float
+    phrase_score: float
+    lecture_bonus: float
+    strong_field_token_score: float
+    matched_query_terms: int
+    phrase_events: int
+    field_scores: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class RetrievalDiagnostics:
+    """Aggregate retrieval-event diagnostics attached to RetrievalResult."""
+
+    query_tokens: list[str]
+    lecture_numbers_detected: list[int]
+    retrieval_backend: str
+    top_k_requested: int
+    num_chunks_scored: int
+    num_chunks_hit: int
+    top_score: float
+    second_score: float
+    score_margin: float
+    query_coverage: float
+    chunk_hits: list[ChunkHitDiag] = field(default_factory=list)
+
+
+@dataclass
 class RetrievalResult:
     chunks: list[dict[str, Any]]
     confidence: float
     detected_topic: str | None
+    diagnostics: RetrievalDiagnostics | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +399,7 @@ class _ScoreParts:
     strong_field_token_score: float = 0.0  # topic + keywords token contributions only
     matched_query_terms: int = 0
     phrase_events: int = 0
+    field_scores: dict[str, float] = field(default_factory=dict)
 
 
 def _score_chunk_lexical(
@@ -382,6 +417,7 @@ def _score_chunk_lexical(
     # --- token overlap + frequency (per field, additive across fields) ---
     for fname, w in FIELD_WEIGHTS.items():
         ctr = idx.field_counts.get(fname, Counter())
+        field_contrib = 0.0
         for i, fam in enumerate(families):
             raw_c = max(ctr.get(v, 0) for v in fam)
             if raw_c <= 0:
@@ -390,8 +426,11 @@ def _score_chunk_lexical(
             extra = min(raw_c - 1, _FREQ_EXTRA_CAP)
             contrib = w * (1.0 + _FREQ_GAMMA * extra)
             parts.token_score += contrib
+            field_contrib += contrib
             if fname in ("topic", "keywords"):
                 parts.strong_field_token_score += contrib
+        if field_contrib > 0:
+            parts.field_scores[fname] = field_contrib
 
     # --- phrase bonuses (consecutive tokens in field token stream) ---
     bigs, tris = _query_bigrams_trigrams(query_tokens)
@@ -484,11 +523,28 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
     cache indices (callers still pass ``_row_cache`` for API stability).
     """
     del rows  # single source of truth: _chunk_indices aligned with _row_cache
-    if not _chunk_indices:
-        return RetrievalResult(chunks=[], confidence=0.0, detected_topic=None)
 
     q_tokens = tokenize_query_terms(query)
     lec_nums = lecture_numbers_mentioned(query)
+
+    def _empty_diag() -> RetrievalDiagnostics:
+        return RetrievalDiagnostics(
+            query_tokens=q_tokens,
+            lecture_numbers_detected=sorted(lec_nums),
+            retrieval_backend="keyword",
+            top_k_requested=top_k,
+            num_chunks_scored=len(_chunk_indices),
+            num_chunks_hit=0,
+            top_score=0.0,
+            second_score=0.0,
+            score_margin=0.0,
+            query_coverage=0.0,
+        )
+
+    if not _chunk_indices:
+        return RetrievalResult(
+            chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
+        )
 
     scored: list[tuple[float, ChunkLexicalIndex, _ScoreParts]] = []
     for cid, idx in _chunk_indices.items():
@@ -501,13 +557,18 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
 
     scored.sort(key=lambda x: x[0], reverse=True)
     best, second = scored[0][0], scored[1][0] if len(scored) > 1 else 0.0
+    num_hit = sum(1 for s, _, _ in scored if s > 0)
 
     if best <= 0:
-        return RetrievalResult(chunks=[], confidence=0.0, detected_topic=None)
+        return RetrievalResult(
+            chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
+        )
 
     top_entries = [(s, idx, p) for s, idx, p in scored if s > 0][:top_k]
     if not top_entries:
-        return RetrievalResult(chunks=[], confidence=0.0, detected_topic=None)
+        return RetrievalResult(
+            chunks=[], confidence=0.0, detected_topic=None, diagnostics=_empty_diag()
+        )
 
     _, best_idx, best_parts = top_entries[0]
     conf = _confidence_from_parts(
@@ -518,17 +579,51 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
         best_idx.lecture_number in lec_nums,
     )
 
-    # Lecture-only query: boost floor slightly
     if not q_tokens and lec_nums:
         conf = max(conf, 0.42)
 
     top_rows = [idx.row for _, idx, _ in top_entries]
     detected = (top_rows[0].get("topic") or "").split("—")[0].strip() if top_rows else None
 
+    # Build per-chunk diagnostics for the selected entries
+    eps = 1e-6
+    n_q = max(len(q_tokens), 1)
+    chunk_diags: list[ChunkHitDiag] = []
+    for rank_0, (score, cidx, parts) in enumerate(top_entries):
+        chunk_diags.append(
+            ChunkHitDiag(
+                chunk_id=cidx.chunk_id,
+                rank=rank_0 + 1,
+                score=score,
+                token_score=parts.token_score,
+                phrase_score=parts.phrase_score,
+                lecture_bonus=parts.lecture_bonus,
+                strong_field_token_score=parts.strong_field_token_score,
+                matched_query_terms=parts.matched_query_terms,
+                phrase_events=parts.phrase_events,
+                field_scores=dict(parts.field_scores),
+            )
+        )
+
+    diag = RetrievalDiagnostics(
+        query_tokens=q_tokens,
+        lecture_numbers_detected=sorted(lec_nums),
+        retrieval_backend="keyword",
+        top_k_requested=top_k,
+        num_chunks_scored=len(_chunk_indices),
+        num_chunks_hit=num_hit,
+        top_score=best,
+        second_score=second,
+        score_margin=(best - second) / (best + eps),
+        query_coverage=best_parts.matched_query_terms / n_q,
+        chunk_hits=chunk_diags,
+    )
+
     return RetrievalResult(
         chunks=[_row_to_public_dict(r) for r in top_rows],
         confidence=conf,
         detected_topic=detected or None,
+        diagnostics=diag,
     )
 
 
@@ -559,12 +654,14 @@ def retrieve(query: str, top_k: int = 5) -> RetrievalResult:
 
 
 def _row_to_public_dict(row: dict[str, Any]) -> dict[str, Any]:
+    src = row["source_excerpt"]
     return {
         "id": row["id"],
         "lecture_number": row["lecture_number"],
         "topic": row["topic"],
         "keywords": row["keywords"],
-        "source_excerpt": row["source_excerpt"],
+        "source_excerpt": src,
+        "source_text": src,
         "clean_explanation": row["clean_explanation"],
         "sample_questions": row["sample_questions"],
         "sample_answer": row["sample_answer"],

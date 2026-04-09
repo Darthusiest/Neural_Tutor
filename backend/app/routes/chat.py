@@ -162,6 +162,24 @@ def feedback():
     fb.course_thumb = data.get("course_thumb")
     fb.boost_thumb = data.get("boost_thumb")
     fb.preferred = data.get("preferred")
+
+    if "helpfulness_rating" in data:
+        val = data["helpfulness_rating"]
+        if isinstance(val, int) and 1 <= val <= 5:
+            fb.helpfulness_rating = val
+    if "resolved" in data:
+        fb.resolved = bool(data["resolved"])
+    if "follow_up_required" in data:
+        fb.follow_up_required = bool(data["follow_up_required"])
+    if "follow_up_type" in data:
+        fb.follow_up_type = data["follow_up_type"]
+    if "explicit_confusion_flag" in data:
+        fb.explicit_confusion_flag = bool(data["explicit_confusion_flag"])
+    if "feedback_note" in data:
+        note = (data["feedback_note"] or "").strip()
+        fb.feedback_note = note[:2000] if note else None
+    if "preference_strength" in data:
+        fb.preference_strength = data["preference_strength"]
     try:
         db.session.commit()
     except SQLAlchemyError:

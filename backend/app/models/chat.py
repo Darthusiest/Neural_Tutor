@@ -37,5 +37,10 @@ class Message(db.Model):
     response_variant = db.relationship(
         "ResponseVariant", back_populates="message", uselist=False
     )
-    retrieval_logs = db.relationship("RetrievalLog", back_populates="message")
+    retrieval_log = db.relationship(
+        "RetrievalLog", back_populates="message", uselist=False
+    )
     feedback = db.relationship("Feedback", back_populates="message", uselist=False)
+    message_outcome = db.relationship(
+        "MessageOutcome", back_populates="message", uselist=False
+    )

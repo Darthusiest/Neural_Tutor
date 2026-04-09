@@ -64,6 +64,18 @@ def _clean_explanation(sec: dict[str, Any], source_excerpt: str) -> str:
     return source_excerpt
 
 
+def _source_excerpt_from_section(sec: dict[str, Any]) -> str:
+    """
+    Prefer explicit ``source_excerpt`` or ``source_text``, else join ``content`` lines.
+    """
+    for key in ("source_excerpt", "source_text"):
+        v = sec.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    lines = [str(s).strip() for s in sec.get("content", []) if str(s).strip()]
+    return "\n".join(lines)
+
+
 def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
     """
     Load sections from the JSON file into `lecture_chunks`.
@@ -86,8 +98,10 @@ def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
         title = str(lec.get("title", "")).strip()
         for sec in lec.get("sections", []):
             heading = str(sec.get("heading", "")).strip()
+            source_excerpt = _source_excerpt_from_section(sec)
             lines = [str(s).strip() for s in sec.get("content", []) if str(s).strip()]
-            source_excerpt = "\n".join(lines)
+            if not lines and source_excerpt:
+                lines = [ln for ln in source_excerpt.split("\n") if ln.strip()]
             topic = f"{title} — {heading}"
             if len(topic) > 512:
                 topic = topic[:509] + "..."
