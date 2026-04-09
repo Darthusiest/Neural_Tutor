@@ -10,6 +10,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db, limiter
 from app.models import PasswordResetToken, User
+from app.services.reset_email import (
+    ResetEmailResult,
+    resend_reset_is_configured,
+    send_password_reset_email,
+)
 from app.utils.security import (
     burn_auth_timing_budget,
     parse_request_json,
@@ -122,7 +127,7 @@ def me():
 @bp.route("/forgot-password", methods=["POST"])
 @limiter.limit("5 per minute")
 def forgot_password():
-    """Request password reset. Uniform response; timing-padded; Resend integration later."""
+    """Request password reset. Sends email via Resend when configured; uniform JSON body."""
     import time as _time
 
     t0 = _time.monotonic()
@@ -147,6 +152,10 @@ def forgot_password():
         }
         if user:
             raw = secrets.token_urlsafe(32)
+            PasswordResetToken.query.filter(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+            ).delete(synchronize_session=False)
             pr = PasswordResetToken(
                 user_id=user.id,
                 token_hash=_hash_token(raw),
@@ -160,7 +169,12 @@ def forgot_password():
                 current_app.logger.exception("forgot_password_commit_failed")
                 security_log("forgot_db_error", email=email)
             else:
-                if current_app.debug:
+                email_result = send_password_reset_email(user.email, raw)
+                if email_result == ResetEmailResult.FAILED:
+                    security_log("forgot_email_failed", email=email)
+                resend_ok = resend_reset_is_configured()
+                force_dev = current_app.config.get("DEV_RETURN_RESET_TOKEN", False)
+                if current_app.debug and (not resend_ok or force_dev):
                     body = dict(body)
                     body["dev_reset_token"] = raw
         return jsonify(body), 200

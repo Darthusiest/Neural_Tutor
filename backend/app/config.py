@@ -21,6 +21,15 @@ class Config:
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
     RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "")
 
+    # Frontend URL for reset links in emails (no trailing ?; token appended as ?token=...)
+    PASSWORD_RESET_BASE_URL = os.getenv(
+        "PASSWORD_RESET_BASE_URL",
+        "http://127.0.0.1:5173/reset-password",
+    ).rstrip("/")
+
+    # Debug-only: include dev_reset_token in JSON when Resend is configured (see AUTH_LOCAL.md).
+    DEV_RETURN_RESET_TOKEN = os.getenv("DEV_RETURN_RESET_TOKEN", "0") == "1"
+
     LECTURE_JSON_PATH = Path(
         os.getenv("LECTURE_JSON_PATH", str(_DEFAULT_LECTURE_JSON))
     )
