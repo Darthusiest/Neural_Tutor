@@ -10,7 +10,7 @@ bp = Blueprint("admin", __name__)
 @login_required
 @limiter.limit("120 per minute")
 def insights():
-    if not current_user.is_authenticated or not getattr(current_user, "is_admin", False):
+    if not current_user.is_admin:
         return jsonify({"error": "forbidden"}), 403
     return jsonify(
         {

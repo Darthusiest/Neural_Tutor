@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -92,10 +93,13 @@ def security_log(event: str, **fields: Any) -> None:
 
 
 def burn_auth_timing_budget() -> None:
-    """Fixed-cost work to narrow timing differences between auth code paths."""
+    """
+    Fixed-cost password hash check to equalize timing across auth code paths.
+    Call when a real password check is skipped (e.g. user not found, password reset).
+    """
     check_password_hash(_TIMING_HASH, "invalid")
 
 
-def reject_login_password_check() -> None:
-    """Approximate cost of a failed password check when the user does not exist."""
-    check_password_hash(_TIMING_HASH, "invalid")
+def hash_token(raw: str) -> str:
+    """SHA-256 hex digest for opaque tokens (reset, verification, etc.)."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

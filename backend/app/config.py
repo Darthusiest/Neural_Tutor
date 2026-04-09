@@ -39,3 +39,14 @@ class Config:
     WTF_CSRF_SSL_STRICT = False
 
     RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
+
+    CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
+
+
+class TestConfig(Config):
+    """In-memory SQLite + no CSRF for pytest."""
+
+    TESTING = True
+    SECRET_KEY = "test-secret-key"
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    WTF_CSRF_ENABLED = False

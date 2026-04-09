@@ -7,11 +7,15 @@ API keys as function arguments from callers.
 
 from __future__ import annotations
 
+import threading
 from enum import Enum
 from urllib.parse import urlencode
 
 import resend
 from flask import current_app
+
+# resend-python uses a module-level api_key; serialize access under threaded workers.
+_resend_send_lock = threading.Lock()
 
 
 class ResetEmailResult(Enum):
@@ -61,17 +65,17 @@ def send_password_reset_email(to_email: str, plaintext_token: str) -> ResetEmail
         "If you did not request this, ignore this email.\n"
     )
 
-    resend.api_key = api_key
+    params = {
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+        "text": text,
+    }
     try:
-        resend.Emails.send(
-            {
-                "from": from_email,
-                "to": [to_email],
-                "subject": subject,
-                "html": html,
-                "text": text,
-            }
-        )
+        with _resend_send_lock:
+            resend.api_key = api_key
+            resend.Emails.send(params)
         return ResetEmailResult.SENT
     except Exception:
         current_app.logger.exception(

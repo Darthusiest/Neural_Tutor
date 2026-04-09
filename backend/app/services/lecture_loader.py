@@ -36,14 +36,21 @@ def keyword_list(lecture_title: str, heading: str, lines: list[str]) -> list[str
     return out
 
 
-def import_lecture_json(path: Path | str) -> int:
-    """Replace all rows in `lecture_chunks` with sections from the JSON file. Returns count inserted."""
+def import_lecture_json(path: Path | str, *, upsert: bool = False) -> int:
+    """
+    Load sections from the JSON file into `lecture_chunks`.
+
+    When upsert is False (default), replace all rows. When True, merge: update rows
+    matching (lecture_number, topic), insert new sections otherwise.
+    Returns the number of rows written (inserts + updates).
+    """
     path = Path(path)
     with path.open(encoding="utf-8") as f:
         data = json.load(f)
 
-    LectureChunk.query.delete()
-    db.session.commit()
+    if not upsert:
+        LectureChunk.query.delete()
+        db.session.commit()
 
     count = 0
     for lec in data.get("lectures", []):
@@ -57,14 +64,37 @@ def import_lecture_json(path: Path | str) -> int:
             if len(topic) > 512:
                 topic = topic[:509] + "..."
             kw = keyword_list(title, heading, lines)
-            row = LectureChunk(
-                topic=topic,
-                lecture_number=lecture_number,
-                keywords=json.dumps(kw),
-                explanation=explanation,
-                example_qa=None,
-            )
-            db.session.add(row)
+            kw_json = json.dumps(kw)
+
+            if upsert:
+                existing = LectureChunk.query.filter_by(
+                    lecture_number=lecture_number,
+                    topic=topic,
+                ).first()
+                if existing:
+                    existing.keywords = kw_json
+                    existing.explanation = explanation
+                    existing.example_qa = None
+                else:
+                    db.session.add(
+                        LectureChunk(
+                            topic=topic,
+                            lecture_number=lecture_number,
+                            keywords=kw_json,
+                            explanation=explanation,
+                            example_qa=None,
+                        )
+                    )
+            else:
+                db.session.add(
+                    LectureChunk(
+                        topic=topic,
+                        lecture_number=lecture_number,
+                        keywords=kw_json,
+                        explanation=explanation,
+                        example_qa=None,
+                    )
+                )
             count += 1
 
     db.session.commit()

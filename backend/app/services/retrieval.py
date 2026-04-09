@@ -9,12 +9,41 @@ from typing import Any
 
 from app.models import LectureChunk
 
+# In-memory snapshot (plain dicts + precomputed blobs). Refreshed on startup and after import.
+_row_cache: list[dict[str, Any]] = []
+_blob_cache: dict[int, str] = {}
+
 
 @dataclass
 class RetrievalResult:
     chunks: list[dict[str, Any]]
     confidence: float
     detected_topic: str | None
+
+
+def invalidate_lecture_cache() -> None:
+    """Clear cached chunks (call after mutating `lecture_chunks`)."""
+    global _row_cache, _blob_cache
+    _row_cache = []
+    _blob_cache = {}
+
+
+def load_lecture_cache() -> None:
+    """Load all lecture rows from the DB into memory. Requires Flask app context."""
+    global _row_cache, _blob_cache
+    rows = LectureChunk.query.order_by(LectureChunk.id).all()
+    _row_cache = []
+    _blob_cache = {}
+    for r in rows:
+        d = {
+            "id": r.id,
+            "lecture_number": r.lecture_number,
+            "topic": r.topic,
+            "explanation": r.explanation,
+            "keywords": r.keywords,
+        }
+        _row_cache.append(d)
+        _blob_cache[r.id] = _chunk_blob_from_row_dict(d)
 
 
 def _tokenize_query(q: str) -> list[str]:
@@ -30,42 +59,43 @@ def _lecture_numbers_mentioned(q: str) -> set[int]:
     return nums
 
 
-def _chunk_blob(row: LectureChunk) -> str:
+def _chunk_blob_from_row_dict(row: dict[str, Any]) -> str:
     kws: list[str] = []
     try:
-        kws = json.loads(row.keywords or "[]")
+        kws = json.loads(row.get("keywords") or "[]")
     except json.JSONDecodeError:
         kws = []
-    parts = [row.topic, row.explanation, " ".join(kws)]
+    parts = [row.get("topic") or "", row.get("explanation") or "", " ".join(kws)]
     return " ".join(parts).lower()
 
 
-def _row_to_dict(row: LectureChunk) -> dict[str, Any]:
+def _row_to_public_dict(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": row.id,
-        "lecture_number": row.lecture_number,
-        "topic": row.topic,
-        "explanation": row.explanation,
-        "keywords": row.keywords,
+        "id": row["id"],
+        "lecture_number": row["lecture_number"],
+        "topic": row["topic"],
+        "explanation": row["explanation"],
+        "keywords": row["keywords"],
     }
 
 
 def retrieve(query: str, top_k: int = 5) -> RetrievalResult:
-    rows = LectureChunk.query.order_by(LectureChunk.id).all()
+    rows = _row_cache
     if not rows:
         return RetrievalResult(chunks=[], confidence=0.0, detected_topic=None)
 
     q_tokens = _tokenize_query(query)
     lec_boost = _lecture_numbers_mentioned(query)
 
-    scores: list[tuple[float, LectureChunk]] = []
+    scores: list[tuple[float, dict[str, Any]]] = []
     for row in rows:
-        blob = _chunk_blob(row)
+        rid = row["id"]
+        blob = _blob_cache.get(rid) or _chunk_blob_from_row_dict(row)
         hits = 0.0
         for t in q_tokens:
             if t in blob:
                 hits += 1.0
-        if row.lecture_number in lec_boost:
+        if row["lecture_number"] in lec_boost:
             hits += 3.0
         scores.append((hits, row))
 
@@ -86,11 +116,11 @@ def retrieve(query: str, top_k: int = 5) -> RetrievalResult:
     if not q_tokens and lec_boost:
         confidence = max(confidence, 0.45)
 
-    detected = top[0].topic.split("—")[0].strip() if top else None
+    detected = (top[0].get("topic") or "").split("—")[0].strip() if top else None
     return RetrievalResult(
-        chunks=[_row_to_dict(r) for r in top],
+        chunks=[_row_to_public_dict(r) for r in top],
         confidence=float(confidence),
-        detected_topic=detected,
+        detected_topic=detected or None,
     )
 
 

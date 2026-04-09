@@ -12,9 +12,9 @@ from app.extensions import csrf, db, limiter, login_manager
 load_dotenv()
 
 
-def create_app() -> Flask:
+def create_app(config_object: type | None = None) -> Flask:
     app = Flask(__name__)
-    app.config.from_object(Config)
+    app.config.from_object(config_object or Config)
 
     db.init_app(app)
     login_manager.init_app(app)
@@ -62,15 +62,31 @@ def create_app() -> Flask:
         type=click.Path(path_type=Path, exists=True),
         required=False,
     )
-    def import_lectures(json_path):
+    @click.option(
+        "--upsert",
+        is_flag=True,
+        help="Merge into existing lecture_chunks instead of replacing all rows.",
+    )
+    def import_lectures(json_path, upsert):
         """Load lecture JSON into `lecture_chunks` (default: LECTURE_JSON_PATH / data file)."""
         from app.services.lecture_loader import import_lecture_json
+        from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 
         path = json_path or app.config["LECTURE_JSON_PATH"]
         if not path.exists():
             raise click.ClickException(f"Lecture file not found: {path}")
         with app.app_context():
-            n = import_lecture_json(path)
+            n = import_lecture_json(path, upsert=upsert)
+            invalidate_lecture_cache()
+            load_lecture_cache()
         print(f"Imported {n} lecture sections into lecture_chunks.")
+
+    with app.app_context():
+        from sqlalchemy import inspect
+
+        from app.services.retrieval import load_lecture_cache
+
+        if inspect(db.engine).has_table("lecture_chunks"):
+            load_lecture_cache()
 
     return app

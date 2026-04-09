@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -17,8 +16,8 @@ from app.services.reset_email import (
 )
 from app.utils.security import (
     burn_auth_timing_budget,
+    hash_token,
     parse_request_json,
-    reject_login_password_check,
     security_log,
     timing_pad,
     validate_email_format,
@@ -91,7 +90,7 @@ def login():
     if user:
         ok = user.check_password(password)
     else:
-        reject_login_password_check()
+        burn_auth_timing_budget()
         ok = False
     if not ok:
         security_log("login_failed", email=email)
@@ -158,7 +157,7 @@ def forgot_password():
             ).delete(synchronize_session=False)
             pr = PasswordResetToken(
                 user_id=user.id,
-                token_hash=_hash_token(raw),
+                token_hash=hash_token(raw),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
             db.session.add(pr)
@@ -204,7 +203,7 @@ def reset_password():
         if msg := validate_password_strength(new_password):
             return jsonify({"error": msg}), 400
 
-        th = _hash_token(token)
+        th = hash_token(token)
         stored_hex = DUMMY_TOKEN_HASH
         pr = PasswordResetToken.query.filter_by(token_hash=th).first()
         if pr is not None:
@@ -242,5 +241,3 @@ def reset_password():
         timing_pad(t0, _RESET_MIN_SECONDS)
 
 
-def _hash_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

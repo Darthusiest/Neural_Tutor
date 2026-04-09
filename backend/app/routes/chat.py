@@ -1,19 +1,15 @@
 import json
-import time
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db, limiter
-from app.models import ChatSession, Feedback, Message, ResponseVariant, RetrievalLog
-from app.services.llm import generate_boosted_explanation
-from app.services.retrieval import format_course_answer, retrieve
+from app.models import ChatSession, Feedback, Message
+from app.services.chat_orchestrator import handle_chat_turn
 from app.utils.security import parse_request_json
 
 bp = Blueprint("chat", __name__)
-
-CONFIDENCE_THRESHOLD = 0.35
 
 
 def _require_user_session(sid: int) -> ChatSession | None:
@@ -23,11 +19,13 @@ def _require_user_session(sid: int) -> ChatSession | None:
 @bp.route("/sessions", methods=["GET"])
 @login_required
 def list_sessions():
-    rows = (
-        ChatSession.query.filter_by(user_id=current_user.id)
-        .order_by(ChatSession.updated_at.desc())
-        .all()
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    q = ChatSession.query.filter_by(user_id=current_user.id).order_by(
+        ChatSession.updated_at.desc()
     )
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
     out = []
     for s in rows:
         out.append(
@@ -38,7 +36,7 @@ def list_sessions():
                 "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
         )
-    return jsonify({"sessions": out})
+    return jsonify({"sessions": out, "total": total, "limit": limit, "offset": offset})
 
 
 @bp.route("/sessions", methods=["POST"])
@@ -86,9 +84,11 @@ def list_messages(sid: int):
     s = _require_user_session(sid)
     if not s:
         return jsonify({"error": "not found"}), 404
-    msgs = (
-        Message.query.filter_by(session_id=s.id).order_by(Message.created_at.asc()).all()
-    )
+    limit = min(int(request.args.get("limit", 100)), 500)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    q = Message.query.filter_by(session_id=s.id).order_by(Message.created_at.asc())
+    total = q.count()
+    msgs = q.offset(offset).limit(limit).all()
     out = []
     for m in msgs:
         item = {
@@ -104,7 +104,7 @@ def list_messages(sid: int):
             item["boosted_explanation"] = rv.boosted_explanation if rv else None
             item["payload_json"] = m.payload_json
         out.append(item)
-    return jsonify({"messages": out})
+    return jsonify({"messages": out, "total": total, "limit": limit, "offset": offset})
 
 
 @bp.route("/chat", methods=["POST"])
@@ -131,90 +131,14 @@ def chat():
     if not s:
         return jsonify({"error": "session not found"}), 404
 
-    s.mode = mode
-    db.session.add(
-        Message(session_id=s.id, role="user", content_text=text, payload_json=None)
-    )
-    db.session.flush()
-
-    t0 = time.perf_counter()
-    r = retrieve(text)
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-
-    if not r.chunks:
-        course_answer = (
-            "Course Answer:\nThis question appears outside the LING 487 materials "
-            "I can access, or retrieval found no relevant lecture chunk. "
-            "Try rephrasing using terms from the course, or ask about a specific lecture topic."
-        )
-    else:
-        course_answer = format_course_answer(r.chunks)
-
-    low_confidence = r.confidence < CONFIDENCE_THRESHOLD
-    need_boost = boost_toggle or low_confidence or mode in ("compare", "summary")
-
-    boosted = None
-    boost_reason = None
-    if need_boost:
-        ctx = json.dumps(r.chunks) if r.chunks else "[]"
-        boosted, _usage = generate_boosted_explanation(text, ctx)
-        boost_reason = "toggle" if boost_toggle else ("low_confidence" if low_confidence else "mode")
-        if not boosted:
-            boosted = None
-            boost_reason = None
-
-    assistant = Message(
-        session_id=s.id,
-        role="assistant",
-        content_text=None,
-        payload_json=json.dumps(
-            {
-                "course_answer": course_answer,
-                "boosted_explanation": boosted,
-                "confidence": r.confidence,
-            }
-        ),
-    )
-    db.session.add(assistant)
-    db.session.flush()
-
-    rv = ResponseVariant(
-        message_id=assistant.id,
-        course_answer=course_answer,
-        boosted_explanation=boosted,
-        boost_reason=boost_reason,
-        model_name=None,
-        token_usage_json=None,
-    )
-    db.session.add(rv)
-
-    log = RetrievalLog(
-        session_id=s.id,
-        message_id=assistant.id,
-        user_question=text,
-        detected_topic=r.detected_topic,
-        retrieved_chunk_ids=json.dumps([c.get("id") for c in r.chunks]),
-        confidence=r.confidence,
-        latency_ms=latency_ms,
-        token_usage_json=None,
-    )
-    db.session.add(log)
     try:
-        db.session.commit()
+        out = handle_chat_turn(s, text, boost_toggle, mode)
     except SQLAlchemyError:
         db.session.rollback()
         current_app.logger.exception("chat commit failed")
         return jsonify({"error": "failed to save chat turn"}), 500
 
-    return jsonify(
-        {
-            "assistant_message_id": assistant.id,
-            "course_answer": course_answer,
-            "boosted_explanation": boosted,
-            "retrieval_confidence": r.confidence,
-            "boost_applied": boosted is not None,
-        }
-    )
+    return jsonify(out)
 
 
 @bp.route("/feedback", methods=["POST"])
