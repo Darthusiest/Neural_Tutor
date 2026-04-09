@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from flask import Blueprint, jsonify, request
 from flask_login import login_required
 
@@ -55,23 +57,32 @@ def lecture_retrieve():
     top_k = max(1, min(top_k, _MAX_TOP_K))
 
     backend = (data.get("backend") or "keyword").strip().lower()
-    if backend not in ("keyword", "embedding"):
-        return jsonify({"error": "backend must be 'keyword' or 'embedding'"}), 400
+    if backend not in ("keyword", "embedding", "hybrid"):
+        return jsonify({"error": "backend must be 'keyword', 'embedding', or 'hybrid'"}), 400
 
     try:
         if backend == "keyword":
             r = search_lecture_chunks(q, top_k=top_k, backend="keyword")
-        else:
+        elif backend == "embedding":
             r = search_lecture_chunks(q, top_k=top_k, backend="embedding")
+        else:
+            r = search_lecture_chunks(q, top_k=top_k, backend="hybrid")
     except NotImplementedError:
-        return jsonify({"error": "embedding retrieval is not implemented yet"}), 501
+        return jsonify({"error": "embedding/hybrid retrieval is not implemented yet"}), 501
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    return jsonify(
-        {
-            "chunks": r.chunks,
-            "confidence": r.confidence,
-            "detected_topic": r.detected_topic,
-        }
-    )
+    payload: dict[str, Any] = {
+        "chunks": r.chunks,
+        "confidence": r.confidence,
+        "detected_topic": r.detected_topic,
+    }
+    if hasattr(r, "supporting_chunks") and r.supporting_chunks:
+        payload["supporting_chunks"] = r.supporting_chunks
+    if hasattr(r, "query_intent") and r.query_intent is not None:
+        payload["query_type"] = r.query_intent.query_type.value
+        if r.query_intent.typo_corrections:
+            payload["typo_corrections"] = r.query_intent.typo_corrections
+    if hasattr(r, "related_topics") and r.related_topics:
+        payload["related_topics"] = r.related_topics
+    return jsonify(payload)

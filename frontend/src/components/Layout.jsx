@@ -1,4 +1,5 @@
 import { Outlet } from 'react-router-dom'
+import { ErrorBoundary } from './ErrorBoundary'
 import { Header } from './Header'
 
 export function Layout({ user, onLogout }) {
@@ -6,7 +7,9 @@ export function Layout({ user, onLogout }) {
     <div className="app-shell">
       <Header user={user} onLogout={onLogout} />
       <div className="app-body">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </div>
     </div>
   )

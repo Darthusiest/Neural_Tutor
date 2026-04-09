@@ -24,11 +24,15 @@ class LectureChunk(db.Model):
 
     Seed JSON may use ``source_text`` or ``content``; both map to ``source_excerpt``.
     ``keywords`` is stored as JSON array text (e.g. ``["neural", "weights"]``).
+
+    ``chunk_key`` is a stable import identity (explicit in JSON or derived); used for upserts
+    and API references, independent of lecture title/heading wording.
     """
 
     __tablename__ = "lecture_chunks"
 
     id = db.Column(db.Integer, primary_key=True)
+    chunk_key = db.Column(db.String(128), unique=True, nullable=False, index=True)
     lecture_number = db.Column(db.Integer, nullable=False, index=True)
     topic = db.Column(db.String(512), nullable=False, index=True)
     keywords = db.Column(db.Text, nullable=False)
@@ -36,3 +40,5 @@ class LectureChunk(db.Model):
     clean_explanation = db.Column(db.Text, nullable=False)
     sample_questions = db.Column(db.Text, nullable=True)
     sample_answer = db.Column(db.Text, nullable=True)
+    chunk_type = db.Column(db.String(32), nullable=True)
+    concept_family = db.Column(db.String(64), nullable=True)

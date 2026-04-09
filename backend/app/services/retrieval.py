@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Lexical (keyword) retrieval over ``lecture_chunks`` with field-weighted scoring.
 
@@ -10,11 +12,17 @@ can implement the same outward behavior (``retrieve_chunks``, ``RetrievalResult`
 Design: **token-aligned** matching (whole tokens only) eliminates substring false positives
 like ``cat`` → ``category``. Per-chunk caches hold **ordered token sequences** and
 **per-field Counters** built at load time.
+
+**Queries** use :data:`_QUERY_STOPWORDS` (plus short-token filtering); **chunk fields are not
+stopword-stripped**, so lecture text stays intact for matching.
+
+**Phrases:** after stopword removal, consecutive **bigrams** and **trigrams** over query
+tokens get bonuses when the same token pairs/triples appear consecutively in a field
+(weighted by :data:`PHRASE_FIELD_WEIGHT`); see :func:`_score_chunk_lexical`.
 """
 
-from __future__ import annotations
-
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -23,6 +31,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from app.models import LectureChunk
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public API types (stable for callers + future hybrid retrieval)
@@ -70,13 +80,28 @@ class RetrievalResult:
     diagnostics: RetrievalDiagnostics | None = None
 
 
+def _log_keyword_diagnostics(query: str, diag: RetrievalDiagnostics) -> None:
+    """Debug-level line for tuning; enable via ``logging.getLogger('app.services.retrieval').setLevel('DEBUG')``."""
+    logger.debug(
+        "retrieval keyword: top_score=%.4f second_score=%.4f score_margin=%.4f query_coverage=%.4f "
+        "hits=%d/%d top_k=%d q=%r",
+        diag.top_score,
+        diag.second_score,
+        diag.score_margin,
+        diag.query_coverage,
+        diag.num_chunks_hit,
+        diag.num_chunks_scored,
+        diag.top_k_requested,
+        query[:500],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tunable lexical scoring config (single place to adjust behavior)
 # ---------------------------------------------------------------------------
 
-# Relative importance per field — only used for *token* hits and phrase bonuses.
-# Tune here without touching scoring math.
-FIELD_WEIGHTS: dict[str, float] = {
+# Defaults; overridden at runtime by ``Config.RETRIEVAL_FIELD_WEIGHTS`` / env JSON when in app context.
+DEFAULT_FIELD_WEIGHTS: dict[str, float] = {
     "topic": 3.0,
     "keywords": 2.5,
     "sample_questions": 2.0,
@@ -85,8 +110,7 @@ FIELD_WEIGHTS: dict[str, float] = {
     "sample_answer": 0.7,
 }
 
-# Extra weight for phrase matches in “strong” fields (topic / keywords / sample_questions).
-PHRASE_FIELD_WEIGHT: dict[str, float] = {
+DEFAULT_PHRASE_FIELD_WEIGHT: dict[str, float] = {
     "topic": 1.0,
     "keywords": 0.95,
     "sample_questions": 0.85,
@@ -94,6 +118,38 @@ PHRASE_FIELD_WEIGHT: dict[str, float] = {
     "source_excerpt": 0.5,
     "sample_answer": 0.35,
 }
+
+# Backward-compatible names (prefer :func:`get_field_weights`).
+FIELD_WEIGHTS = DEFAULT_FIELD_WEIGHTS
+PHRASE_FIELD_WEIGHT = DEFAULT_PHRASE_FIELD_WEIGHT
+
+
+def get_field_weights() -> dict[str, float]:
+    """Active lexical field weights (Flask ``RETRIEVAL_FIELD_WEIGHTS`` or defaults)."""
+    try:
+        from flask import has_app_context, current_app
+
+        if has_app_context():
+            w = current_app.config.get("RETRIEVAL_FIELD_WEIGHTS")
+            if isinstance(w, dict) and w:
+                return {str(k): float(v) for k, v in w.items()}
+    except Exception:
+        pass
+    return dict(DEFAULT_FIELD_WEIGHTS)
+
+
+def get_phrase_field_weights() -> dict[str, float]:
+    """Phrase bonus scale per field (``RETRIEVAL_PHRASE_FIELD_WEIGHT`` or defaults)."""
+    try:
+        from flask import has_app_context, current_app
+
+        if has_app_context():
+            w = current_app.config.get("RETRIEVAL_PHRASE_FIELD_WEIGHT")
+            if isinstance(w, dict) and w:
+                return {str(k): float(v) for k, v in w.items()}
+    except Exception:
+        pass
+    return dict(DEFAULT_PHRASE_FIELD_WEIGHT)
 
 # Each repeated token hit beyond the first adds ``FREQ_GAMMA`` up to ``FREQ_EXTRA_CAP`` extras.
 _FREQ_GAMMA = 0.32
@@ -140,6 +196,8 @@ _QUERY_STOPWORDS: frozenset[str] = frozenset(
     need just like lot really very much some any all each every
     into out up down over
     quiz give show teach help learn
+    please thanks thank hey hi hello okay ok
+    briefly quickly
     """.split()
 )
 
@@ -186,6 +244,7 @@ def load_lecture_cache() -> None:
     for r in rows:
         d = {
             "id": r.id,
+            "chunk_key": r.chunk_key,
             "lecture_number": r.lecture_number,
             "topic": r.topic,
             "keywords": r.keywords,
@@ -193,6 +252,8 @@ def load_lecture_cache() -> None:
             "clean_explanation": r.clean_explanation,
             "sample_questions": r.sample_questions,
             "sample_answer": r.sample_answer,
+            "chunk_type": getattr(r, "chunk_type", None),
+            "concept_family": getattr(r, "concept_family", None),
         }
         _row_cache.append(d)
         idx = _build_chunk_lexical_index(d)
@@ -228,17 +289,37 @@ def _default_light_stem(tok: str) -> str:
 # Optional: set to ``your_stemmer.stem`` from NLTK/snowball; kept None for stdlib-only installs.
 EXTERNAL_STEMMER: Callable[[str], str] | None = None
 
+# Query tokens → extra surface forms seen in lecture text (kept small; avoids doubling query length).
+_QUERY_LEXICAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "backprop": ("backpropagation",),
+    "mfcc": ("mfccs",),
+}
+
 
 def _term_families(token: str) -> frozenset[str]:
     """Query/chunk token equivalence set (original + stem + light variants)."""
     base = {token}
     stem = _default_light_stem(token)
     base.add(stem)
+    for alias in _QUERY_LEXICAL_ALIASES.get(token, ()):
+        base.add(alias)
+        base.add(_default_light_stem(alias))
     if EXTERNAL_STEMMER is not None:
         try:
             base.add(EXTERNAL_STEMMER(token))
         except Exception:
             pass
+    # Singular/plural and y→ies so e.g. query "gradient" matches chunk token "gradients".
+    if len(token) >= 4:
+        if token.endswith("s") and not token.endswith("ss") and len(token) >= 5:
+            base.add(token[:-1])
+            if token.endswith("ies") and len(token) > 4:
+                base.add(token[:-3] + "y")
+        else:
+            if len(token) >= 6 and not token.endswith("s"):
+                base.add(token + "s")
+            if token.endswith("y") and len(token) > 4 and token[-2] not in "aeiou":
+                base.add(token[:-1] + "ies")
     return frozenset(t for t in base if t and len(t) >= 1)
 
 
@@ -333,7 +414,7 @@ def _build_chunk_lexical_index(row: dict[str, Any]) -> ChunkLexicalIndex:
     field_tokens: dict[str, list[str]] = {}
     field_counts: dict[str, Counter[str]] = {}
     total = 0
-    for fname in FIELD_WEIGHTS:
+    for fname in get_field_weights():
         toks = tokenize_text_to_list(texts.get(fname, ""))
         field_tokens[fname] = toks
         field_counts[fname] = Counter(toks)
@@ -406,6 +487,9 @@ def _score_chunk_lexical(
     idx: ChunkLexicalIndex,
     query_tokens: list[str],
     lecture_hit: bool,
+    *,
+    field_weights: dict[str, float],
+    phrase_weights: dict[str, float],
 ) -> tuple[float, _ScoreParts]:
     parts = _ScoreParts()
     if not query_tokens and not lecture_hit:
@@ -415,7 +499,7 @@ def _score_chunk_lexical(
     matched_mask = [False] * len(query_tokens)
 
     # --- token overlap + frequency (per field, additive across fields) ---
-    for fname, w in FIELD_WEIGHTS.items():
+    for fname, w in field_weights.items():
         ctr = idx.field_counts.get(fname, Counter())
         field_contrib = 0.0
         for i, fam in enumerate(families):
@@ -438,13 +522,13 @@ def _score_chunk_lexical(
 
     def _phrase_loop() -> None:
         nonlocal phrase_events
-        for fname in FIELD_WEIGHTS:
+        for fname in field_weights:
             if phrase_events >= _MAX_PHRASE_EVENTS:
                 return
             seq = idx.field_tokens.get(fname, [])
             if len(seq) < 2:
                 continue
-            scale = PHRASE_FIELD_WEIGHT.get(fname, 0.4)
+            scale = phrase_weights.get(fname, 0.4)
 
             for (ta, tb) in bigs:
                 if phrase_events >= _MAX_PHRASE_EVENTS:
@@ -514,6 +598,10 @@ def _confidence_from_parts(
     )
     if lecture_hit and parts.lecture_bonus > 0:
         conf += _CONF_W_LEC
+    # ``lecture_hit`` means the *top* chunk's lecture matched an explicit "lecture N" in
+    # the query — keep confidence from looking broken when lexical overlap is thin.
+    if lecture_hit and best_score > 0:
+        conf = max(conf, 0.44)
     return float(min(1.0, max(0.0, conf)))
 
 
@@ -526,6 +614,8 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
 
     q_tokens = tokenize_query_terms(query)
     lec_nums = lecture_numbers_mentioned(query)
+    fw = get_field_weights()
+    pw = get_phrase_field_weights()
 
     def _empty_diag() -> RetrievalDiagnostics:
         return RetrievalDiagnostics(
@@ -552,7 +642,9 @@ def score_chunks_keyword(query: str, rows: list[dict[str, Any]], top_k: int) -> 
         if not q_tokens and not lec_hit:
             scored.append((0.0, idx, _ScoreParts()))
             continue
-        raw, parts = _score_chunk_lexical(idx, q_tokens, lec_hit)
+        raw, parts = _score_chunk_lexical(
+            idx, q_tokens, lec_hit, field_weights=fw, phrase_weights=pw
+        )
         scored.append((raw, idx, parts))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -631,21 +723,29 @@ def retrieve_chunks(
     query: str,
     *,
     top_k: int = 5,
-    backend: Literal["keyword", "embedding"] = "keyword",
+    backend: Literal["keyword", "embedding", "hybrid"] = "keyword",
 ) -> RetrievalResult:
     """
     Retrieve top matching chunks.
 
     ``backend="keyword"`` — lexical engine (this module).
 
-    ``backend="embedding"`` — reserved: should eventually call a dense retriever and
-    return the same ``RetrievalResult`` shape (optionally merging with lexical scores).
+    ``backend="embedding"`` — reserved: dense retriever returning the same ``RetrievalResult`` shape.
+
+    ``backend="hybrid"`` — reserved: fuse lexical + dense scores (see ``RETRIEVAL_HYBRID_ENABLED`` / future work).
     """
     if backend == "embedding":
         raise NotImplementedError("embedding retrieval is not implemented yet")
+    if backend == "hybrid":
+        raise NotImplementedError(
+            "hybrid retrieval is not implemented yet (lexical + dense fusion)"
+        )
     if backend != "keyword":
         raise ValueError(f"unknown retrieval backend: {backend!r}")
-    return score_chunks_keyword(query, _row_cache, top_k)
+    result = score_chunks_keyword(query, _row_cache, top_k)
+    if result.diagnostics is not None:
+        _log_keyword_diagnostics(query, result.diagnostics)
+    return result
 
 
 def retrieve(query: str, top_k: int = 5) -> RetrievalResult:
@@ -657,6 +757,7 @@ def _row_to_public_dict(row: dict[str, Any]) -> dict[str, Any]:
     src = row["source_excerpt"]
     return {
         "id": row["id"],
+        "chunk_key": row.get("chunk_key"),
         "lecture_number": row["lecture_number"],
         "topic": row["topic"],
         "keywords": row["keywords"],
@@ -665,6 +766,8 @@ def _row_to_public_dict(row: dict[str, Any]) -> dict[str, Any]:
         "clean_explanation": row["clean_explanation"],
         "sample_questions": row["sample_questions"],
         "sample_answer": row["sample_answer"],
+        "chunk_type": row.get("chunk_type"),
+        "concept_family": row.get("concept_family"),
     }
 
 
@@ -693,7 +796,7 @@ def format_course_answer(chunks: list[dict[str, Any]]) -> str:
 def build_retrieval_blob(chunk: Mapping[str, Any]) -> str:
     """Single lowercased string of all fields — useful for grep/debug only."""
     texts = _field_text_map(dict(chunk))
-    return " ".join(texts[k] for k in FIELD_WEIGHTS if k in texts).lower()
+    return " ".join(texts[k] for k in get_field_weights() if k in texts).lower()
 
 
 def build_topic_blob(chunk: Mapping[str, Any]) -> str:

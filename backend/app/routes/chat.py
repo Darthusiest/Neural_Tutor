@@ -100,9 +100,21 @@ def list_messages(sid: int):
             item["content"] = m.content_text or ""
         else:
             rv = m.response_variant
-            item["course_answer"] = rv.course_answer if rv else ""
-            item["boosted_explanation"] = rv.boosted_explanation if rv else None
+            payload = {}
+            if m.payload_json:
+                try:
+                    payload = json.loads(m.payload_json)
+                except json.JSONDecodeError:
+                    payload = {}
+            item["course_answer"] = (rv.course_answer if rv else None) or payload.get(
+                "course_answer", ""
+            )
+            item["boosted_explanation"] = (rv.boosted_explanation if rv else None) or payload.get(
+                "boosted_explanation"
+            )
             item["payload_json"] = m.payload_json
+            if payload.get("study"):
+                item["study"] = payload["study"]
         out.append(item)
     return jsonify({"messages": out, "total": total, "limit": limit, "offset": offset})
 

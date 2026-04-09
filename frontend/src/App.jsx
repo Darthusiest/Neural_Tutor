@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { apiFetch } from './api/client'
 import { Layout } from './components/Layout'
+import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminPage } from './pages/AdminPage'
 import { ChatPage } from './pages/ChatPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
@@ -46,9 +47,30 @@ export default function App() {
         element={<Layout user={user} onLogout={handleLogout} />}
       >
         <Route path="/" element={<Navigate to="/chat" replace />} />
-        <Route path="/chat" element={<ChatPage user={user} />} />
-        <Route path="/chat/:sessionId" element={<ChatPage user={user} />} />
-        <Route path="/admin" element={<AdminPage />} />
+        <Route
+          path="/chat"
+          element={
+            <ProtectedRoute user={user}>
+              <ChatPage user={user} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/chat/:sessionId"
+          element={
+            <ProtectedRoute user={user}>
+              <ChatPage user={user} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute user={user}>
+              <AdminPage />
+            </ProtectedRoute>
+          }
+        />
       </Route>
 
       <Route path="/login" element={<LoginPage onAuth={setUser} />} />

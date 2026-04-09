@@ -1,12 +1,9 @@
 """
-Lecture corpus access for the LING 487 tutor (v1: SQLite + keyword retrieval).
-
-**Embedding / hybrid search later:** call sites should use this module (or
-``app.services.retrieval.retrieve_chunks``) so a future dense retriever can
-swap under ``backend="embedding"`` without touching Flask routes.
+Lecture corpus access for the LING 487 tutor (v2: multi-strategy retrieval).
 
 - **Catalog:** ``list_topics_catalog``, ``get_lecture_summary``
-- **Search:** ``search_lecture_chunks`` → :class:`app.services.retrieval.RetrievalResult`
+- **Search:** ``search_lecture_chunks`` → :class:`EnhancedRetrievalResult`
+  (backward-compatible superset of ``RetrievalResult``).
 """
 
 from __future__ import annotations
@@ -15,7 +12,7 @@ from collections import defaultdict
 from typing import Any, Literal
 
 from app.models import LectureChunk
-from app.services.retrieval import RetrievalResult, retrieve_chunks
+from app.services.retrieval_v2 import EnhancedRetrievalResult, retrieve_enhanced
 
 
 def _lecture_title_from_topic(topic: str) -> str:
@@ -64,7 +61,9 @@ def get_lecture_summary(lecture_number: int) -> dict[str, Any] | None:
         "lecture_number": lecture_number,
         "title": _lecture_title_from_topic(chunks[0].topic),
         "chunk_count": len(chunks),
-        "sections": [{"id": c.id, "topic": c.topic} for c in chunks],
+        "sections": [
+            {"id": c.id, "chunk_key": c.chunk_key, "topic": c.topic} for c in chunks
+        ],
     }
 
 
@@ -72,11 +71,13 @@ def search_lecture_chunks(
     query: str,
     *,
     top_k: int = 5,
-    backend: Literal["keyword", "embedding"] = "keyword",
-) -> RetrievalResult:
+    backend: Literal["keyword", "embedding", "hybrid"] = "keyword",
+) -> EnhancedRetrievalResult:
     """
-    Top matching chunks with confidence (keyword v1; embedding reserved).
+    Multi-strategy retrieval (v2).
 
-    Delegates to :func:`app.services.retrieval.retrieve_chunks`.
+    Returns :class:`EnhancedRetrievalResult`, a backward-compatible superset of
+    ``RetrievalResult`` with additional fields: ``supporting_chunks``,
+    ``query_intent``, ``related_topics``.
     """
-    return retrieve_chunks(query, top_k=top_k, backend=backend)
+    return retrieve_enhanced(query, top_k=top_k, backend=backend)

@@ -44,12 +44,13 @@ def create_app(config_object: type | None = None) -> Flask:
         supports_credentials=True,
     )
 
-    from app.routes import admin_bp, auth_bp, chat_bp, health_bp, lectures_bp
+    from app.routes import admin_bp, auth_bp, chat_bp, health_bp, lectures_bp, study_bp
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(chat_bp, url_prefix="/api")
     app.register_blueprint(lectures_bp, url_prefix="/api/lectures")
+    app.register_blueprint(study_bp, url_prefix="/api/study")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
     @app.cli.command("init-db")

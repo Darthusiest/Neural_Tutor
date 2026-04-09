@@ -16,6 +16,7 @@ from app.services.retrieval import (
 
 def _sample_chunk_kwargs(topic="Syntax — Trees", **overrides):
     base = {
+        "chunk_key": "test-chunk-syntax-trees",
         "topic": topic,
         "lecture_number": 3,
         "keywords": json.dumps(["syntax", "trees", "xbar"]),
@@ -54,6 +55,7 @@ def test_confidence_scoring_ranks_hits(app):
         db.session.add(
             LectureChunk(
                 **_sample_chunk_kwargs(
+                    chunk_key="test-l1-noise",
                     topic="L1 — Noise",
                     lecture_number=1,
                     keywords=json.dumps(["noise"]),
@@ -65,6 +67,7 @@ def test_confidence_scoring_ranks_hits(app):
         db.session.add(
             LectureChunk(
                 **_sample_chunk_kwargs(
+                    chunk_key="test-l2-target",
                     topic="L2 — Target",
                     lecture_number=2,
                     keywords=json.dumps(["optimality", "constraints"]),
@@ -85,6 +88,7 @@ def test_format_course_answer():
     chunks = [
         {
             "id": 1,
+            "chunk_key": "intro-sounds",
             "lecture_number": 1,
             "topic": "Intro — Sounds",
             "keywords": "[]",
@@ -103,3 +107,8 @@ def test_format_course_answer():
 def test_retrieve_chunks_embedding_not_implemented():
     with pytest.raises(NotImplementedError):
         retrieve_chunks("test", backend="embedding")
+
+
+def test_retrieve_chunks_hybrid_not_implemented():
+    with pytest.raises(NotImplementedError):
+        retrieve_chunks("test", backend="hybrid")

@@ -37,6 +37,7 @@ export function ChatPage({ user }) {
         boosted_explanation: m.boosted_explanation
           ? stripPrefix(m.boosted_explanation, 'Boosted Explanation:')
           : null,
+        study: m.study,
       }
     })
     setMessages(msgs)
@@ -46,12 +47,6 @@ export function ChatPage({ user }) {
     if (!user) return
     refreshSessions().catch(() => {})
   }, [user])
-
-  useEffect(() => {
-    if (!user) {
-      nav('/login', { replace: true })
-    }
-  }, [user, nav])
 
   useEffect(() => {
     if (!user || !activeId) return
@@ -65,6 +60,26 @@ export function ChatPage({ user }) {
     })
     await refreshSessions()
     nav(`/chat/${data.session.id}`)
+  }
+
+  async function ensureSession() {
+    if (activeId) return activeId
+    const created = await apiFetch('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Study session',
+        mode,
+      }),
+    })
+    const sid = created.session.id
+    nav(`/chat/${sid}`)
+    await refreshSessions()
+    return sid
+  }
+
+  async function refreshAfterStudy(sid) {
+    await refreshMessages(sid)
+    await refreshSessions()
   }
 
   async function handleSend(text) {
@@ -106,10 +121,6 @@ export function ChatPage({ user }) {
     }
   }
 
-  if (!user) {
-    return null
-  }
-
   return (
     <div className="chat-layout">
       <Sidebar
@@ -126,6 +137,8 @@ export function ChatPage({ user }) {
         sending={sending}
         mode={mode}
         onModeChange={setMode}
+        ensureSession={ensureSession}
+        onRefreshAfterStudy={refreshAfterStudy}
       />
     </div>
   )

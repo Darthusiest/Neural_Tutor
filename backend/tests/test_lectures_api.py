@@ -31,6 +31,7 @@ def test_topics_with_data(client, app):
     with app.app_context():
         db.session.add(
             LectureChunk(
+                chunk_key="test-foundations-core",
                 lecture_number=4,
                 topic="Foundations — Core Idea",
                 keywords=json.dumps(["net"]),
@@ -62,6 +63,7 @@ def test_summary_ok(client, app):
     with app.app_context():
         db.session.add(
             LectureChunk(
+                chunk_key="test-inner-core",
                 lecture_number=6,
                 topic="Inner Product — Core Idea",
                 keywords=json.dumps(["dot"]),
@@ -80,6 +82,7 @@ def test_summary_ok(client, app):
     assert data["chunk_count"] == 1
     assert len(data["sections"]) == 1
     assert data["sections"][0]["topic"] == "Inner Product — Core Idea"
+    assert data["sections"][0]["chunk_key"] == "test-inner-core"
 
 
 def test_retrieve_keyword(client, app):
@@ -87,6 +90,7 @@ def test_retrieve_keyword(client, app):
     with app.app_context():
         db.session.add(
             LectureChunk(
+                chunk_key="test-unique-section",
                 lecture_number=10,
                 topic="Test — Section",
                 keywords=json.dumps(["uniquekwxyz"]),
