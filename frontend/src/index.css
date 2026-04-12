@@ -253,6 +253,13 @@ code {
   max-width: 720px;
 }
 
+/* Preserve newlines in chat bubbles (Course Answer sections, lists) */
+.msg .msg-body {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+
 .msg.user .msg-body {
   background: var(--color-user-msg);
   padding: 0.6rem 0.75rem;

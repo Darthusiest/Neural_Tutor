@@ -14,7 +14,44 @@ if TYPE_CHECKING:
 
 from flask import current_app
 
+from app.services.generation.generation_input import (
+    build_generation_input,
+    format_generation_prompt_user_message,
+)
+from app.services.generation.output_cleanup import clean_output, enforce_structure
+
 logger = logging.getLogger(__name__)
+
+# Primary Course Answer when PRIMARY_COURSE_ANSWER_OPENAI is on: final student-facing tutor text only.
+_COURSE_ANSWER_SYSTEM_PROMPT = """You are a LING 487 tutor. You produce the FINAL answer shown to a student.
+
+The user message has: the question, concept names, a teaching-style hint, and course text under Primary Content and Supporting Content (prose only—no metadata).
+
+Grounding: Use only ideas supported by that Primary and Supporting text. Do not invent course facts. At most a tiny clarification for readability.
+
+Voice: Human tutor, not a retrieval system or database.
+
+Paraphrase the course text in your own words—do not copy its wording.
+
+Sections: Each ### block must add new information. Do not repeat the same idea or phrasing across blocks. Example / Intuition must be a fresh numeric example or analogy (not a restatement of Direct Answer or Explanation).
+
+FORBIDDEN in your output: keyword lists, chunk or lecture IDs, lecture scope, "concept graph", debug strings, "retrieved", "indexed", "chunk", "materials show", or other internal phrasing.
+
+OUTPUT FORMAT (STRICT). Start with the exact line "Course Answer:" then a blank line, then:
+
+### Direct Answer
+1–2 sentences in plain English.
+
+### Explanation
+How it works; details not already stated in Direct Answer. Short bullets only when helpful.
+
+### Example / Intuition
+One concrete numeric example or analogy.
+
+### Why it matters
+Why this matters in LING 487 / NLP—natural prose only, no lecture lists or IDs.
+
+Compare questions: Direct Answer states the main distinction; Explanation covers both sides; Example shows the contrast; Why it matters ties to course goals—all without system jargon."""
 
 
 def _openai_chat(
@@ -142,32 +179,25 @@ def generate_plan_constrained_answer(
     sq: "StructuredQuery",
 ) -> tuple[str | None, dict[str, Any]]:
     """
-    Optional LLM path: generate **Course Answer:** text following ``plan``, grounded only in ``chunks``.
-    Falls back to caller rule-based generation when API is unavailable.
+    Optional LLM path: clean generation input → tutor prompt → ``clean_output`` → ``enforce_structure``.
+
+    Raw chunks are never sent as JSON with metadata; only teaching text from
+    :func:`build_generation_input`.
     """
     if not current_app.config.get("OPENAI_API_KEY"):
         return None, {}
 
-    system = (
-        "You write the **Course Answer** section for LING 487. "
-        "Follow ANSWER_PLAN sections in order. Use ONLY RETRIEVED_CHUNKS for facts; "
-        "do not invent citations or topics. Start with the exact line:\n\nCourse Answer:\n\n"
-        "then use ### headings matching the plan when multiple sections exist. "
-        "Do not repeat the same lecture excerpt or bullet block under multiple headings; "
-        "each section should add new material from the chunks."
+    clean_input = build_generation_input(sq, plan, chunks)
+    user = format_generation_prompt_user_message(clean_input)
+    raw, usage = _openai_chat(
+        [{"role": "system", "content": _COURSE_ANSWER_SYSTEM_PROMPT}, {"role": "user", "content": user}],
+        temperature=0.4,
     )
-    payload = {
-        "student_question": sq.intent.original_query,
-        "answer_plan": plan.to_dict(),
-        "retrieved_chunks": chunks[:20],
-    }
-    user = "STRUCTURED_INPUT_JSON:\n" + json.dumps(payload, ensure_ascii=False)[:120_000]
-    text, usage = _openai_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.35,
-    )
-    if not text:
+    if not raw:
         return None, usage
-    if not text.strip().lower().startswith("course answer"):
-        text = "Course Answer:\n\n" + text
-    return text, usage
+
+    filtered = clean_output(raw)
+    final = enforce_structure(filtered)
+    if not final.strip().lower().startswith("course answer"):
+        final = "Course Answer:\n\n" + final
+    return final.strip(), usage

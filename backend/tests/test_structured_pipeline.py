@@ -13,6 +13,7 @@ from app.services.query_understanding import analyze_query
 from app.services.reasoning_pipeline import run_reasoning_pipeline
 from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 from app.services.knowledge.structured_query import build_structured_query, decompose_query
+from app.services.answers.answer_generation import generate_structured_answer
 from app.services.answers.answer_planning import build_answer_plan
 from app.services.answers.answer_validation import validate_answer
 
@@ -109,6 +110,23 @@ class TestValidation:
             vr = validate_answer(bad, sq, plan, primary_chunk_lecture_numbers=[10], kb=kb)
             assert "must_cover_both_sides" in vr.checks_failed
             assert vr.severity == "fail"
+
+
+class TestRuleBasedTutorFormat:
+    def test_generate_structured_answer_four_sections(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
+            assert "### Direct Answer" in text
+            assert "### Explanation" in text
+            assert "### Example / Intuition" in text
+            assert "### Why it matters" in text
 
 
 class TestEndToEndPipeline:
