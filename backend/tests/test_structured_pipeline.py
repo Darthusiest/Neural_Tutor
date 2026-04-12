@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 
 from app.extensions import db
-from app.services.concept_kb import get_kb, load_concept_kb, reset_kb_for_tests
-from app.services.lecture_loader import import_lecture_json
+from app.services.knowledge.concept_kb import get_kb, load_concept_kb, reset_kb_for_tests
+from app.services.lectures.lecture_loader import import_lecture_json
 from app.services.query_understanding import analyze_query
 from app.services.reasoning_pipeline import run_reasoning_pipeline
 from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
-from app.services.structured_query import build_structured_query, decompose_query
-from app.services.answer_planning import build_answer_plan
-from app.services.answer_validation import validate_answer
+from app.services.knowledge.structured_query import build_structured_query, decompose_query
+from app.services.answers.answer_planning import build_answer_plan
+from app.services.answers.answer_validation import validate_answer
 
 _DATA = Path(__file__).resolve().parent.parent / "data" / "LING487_SUPER_TUTOR.json"
 _KB = Path(__file__).resolve().parent.parent / "data" / "LING487_STRUCTURED_PIPELINE_KB.json"

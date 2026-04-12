@@ -6,10 +6,10 @@ from typing import Any
 
 from flask import current_app
 
-from app.services.answer_generation import generate_structured_answer
-from app.services.answer_planning import AnswerPlan
-from app.services.llm import generate_plan_constrained_answer
-from app.services.structured_query import StructuredQuery
+from app.services.answers.answer_generation import generate_structured_answer
+from app.services.answers.answer_planning import AnswerPlan
+from app.services.generation.llm import generate_plan_constrained_answer
+from app.services.knowledge.structured_query import StructuredQuery
 
 
 def generate_course_answer(

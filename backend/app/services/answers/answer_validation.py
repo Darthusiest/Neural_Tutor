@@ -6,9 +6,9 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from app.services.answer_planning import AnswerPlan
-from app.services.concept_kb import ConceptKB, get_kb
-from app.services.structured_query import StructuredQuery
+from app.services.answers.answer_planning import AnswerPlan
+from app.services.knowledge.concept_kb import ConceptKB, get_kb
+from app.services.knowledge.structured_query import StructuredQuery
 
 
 CRITICAL_CHECK_NAMES = frozenset({"must_be_course_grounded", "must_cover_both_sides"})

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.concept_kb import ConceptKB, get_kb
-from app.services.structured_query import StructuredQuery
+from app.services.knowledge.concept_kb import ConceptKB, get_kb
+from app.services.knowledge.structured_query import StructuredQuery
 
 
 @dataclass

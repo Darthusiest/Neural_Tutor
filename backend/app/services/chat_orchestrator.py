@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from typing import Any
 
@@ -18,15 +19,22 @@ from app.models import (
     RetrievalChunkHit,
     RetrievalLog,
 )
-from app.services.boost_triggers import should_use_gemini_boost
-from app.services.gemini_boost import generate_gemini_boosted_explanation
-from app.services.llm import generate_boosted_explanation
+from app.services.answers.answer_planning import build_answer_plan
+from app.services.generation.boost_triggers import should_use_gemini_boost
+from app.services.generation.gemini_boost import generate_gemini_boosted_explanation
+from app.services.generation.llm import generate_boosted_explanation as generate_openai_boost_fallback
+from app.services.knowledge.concept_kb import get_kb
+from app.services.knowledge.structured_query import build_structured_query
+from app.services.query_understanding import analyze_query
 from app.services.reasoning_pipeline import PipelineResult, pipeline_diagnostics_dict, run_reasoning_pipeline
+from app.services.retrieval_v2 import EnhancedRetrievalResult
 from app.services.retrieval import (
     format_course_answer,
     tokenize_query_terms,
 )
 from app.services.retrieval_v2 import retrieve_enhanced
+
+logger = logging.getLogger(__name__)
 
 # Keywords that suggest the user wants a simpler/different explanation
 _CLARIFY_KEYWORDS = frozenset(
@@ -106,6 +114,17 @@ def _response_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
+def _plan_and_sq_for_gemini_boost(text: str, r: EnhancedRetrievalResult):
+    """Build :class:`AnswerPlan` + :class:`StructuredQuery` for legacy (non-structured) chat path."""
+    kb = get_kb()
+    intent = r.query_intent
+    if intent is None:
+        intent = analyze_query(text)
+    sq = build_structured_query(intent, kb=kb)
+    plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+    return plan, sq
+
+
 def handle_chat_turn(
     session: ChatSession,
     text: str,
@@ -178,23 +197,56 @@ def handle_chat_turn(
 
     boosted = None
     boost_provider: str | None = None
+    primary_for_log = pipeline_extra.get("primary_model") if pipeline_extra else None
+    val_sev = (
+        pipeline_extra.get("validation", {}).get("severity") if pipeline_extra else None
+    )
+
     if need_boost:
-        gemini_key = current_app.config.get("GEMINI_API_KEY") or current_app.config.get("GOOGLE_API_KEY")
-        if gemini_key and pr is not None:
-            boosted, gmeta = generate_gemini_boosted_explanation(
-                text,
-                course_answer,
-                pr.answer_plan,
-                r.chunks or [],
-                pr.structured_query,
-            )
+        gemini_key = current_app.config.get("GEMINI_API_KEY") or current_app.config.get(
+            "GOOGLE_API_KEY"
+        )
+        if gemini_key and r.chunks:
+            if pr is not None:
+                boosted, gmeta = generate_gemini_boosted_explanation(
+                    text,
+                    course_answer,
+                    pr.answer_plan,
+                    r.chunks or [],
+                    pr.structured_query,
+                )
+            else:
+                plan_l, sq_l = _plan_and_sq_for_gemini_boost(text, r)
+                boosted, gmeta = generate_gemini_boosted_explanation(
+                    text,
+                    course_answer,
+                    plan_l,
+                    r.chunks or [],
+                    sq_l,
+                )
             if boosted:
                 boost_provider = gmeta.get("provider", "gemini")
-        if not boosted:
+
+        use_openai_fallback = bool(current_app.config.get("OPENAI_BOOST_FALLBACK")) and bool(
+            current_app.config.get("OPENAI_API_KEY")
+        )
+        if not boosted and use_openai_fallback:
             ctx = json.dumps(r.chunks) if r.chunks else "[]"
-            boosted, _usage = generate_boosted_explanation(text, ctx)
+            boosted, _usage = generate_openai_boost_fallback(text, ctx)
             if boosted:
-                boost_provider = boost_provider or "openai"
+                boost_provider = "openai"
+
+    logger.info(
+        "chat_turn structured=%s confidence=%.3f primary_model=%s validation_severity=%s "
+        "need_boost=%s boost_reason=%s boost_provider=%s",
+        structured_on,
+        r.confidence,
+        primary_for_log,
+        val_sev,
+        need_boost,
+        boost_reason,
+        boost_provider,
+    )
 
     assistant = Message(
         session_id=session.id,

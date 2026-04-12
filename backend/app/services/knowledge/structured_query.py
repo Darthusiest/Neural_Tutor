@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from app.services.concept_kb import ConceptKB, ConceptMeta, get_kb
+from app.services.knowledge.concept_kb import ConceptKB, ConceptMeta, get_kb
 from app.services.query_understanding import QueryIntent, QueryType
 
 

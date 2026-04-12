@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.answer_planning import AnswerPlan, chunks_by_ids
-from app.services.structured_query import StructuredQuery
+from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.knowledge.structured_query import StructuredQuery
 
 
 def _bullet_lines_from_chunk(c: dict[str, Any]) -> list[str]:

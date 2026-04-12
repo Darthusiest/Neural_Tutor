@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.answer_generation import generate_structured_answer
-from app.services.answer_planning import AnswerPlan, build_answer_plan
-from app.services.answer_validation import ValidationResult, validate_answer
-from app.services.concept_kb import get_kb
-from app.services.course_generation import generate_course_answer
+from app.services.answers.answer_generation import generate_structured_answer
+from app.services.answers.answer_planning import AnswerPlan, build_answer_plan
+from app.services.answers.answer_validation import ValidationResult, validate_answer
+from app.services.generation.course_generation import generate_course_answer
+from app.services.knowledge.concept_kb import get_kb
+from app.services.knowledge.structured_query import StructuredQuery, build_structured_query
 from app.services.query_understanding import QueryIntent, QueryType
 from app.services.retrieval_v2 import EnhancedRetrievalResult, retrieve_enhanced
-from app.services.structured_query import StructuredQuery, build_structured_query
 
 
 def _estimate_query_complexity(sq: StructuredQuery, intent: QueryIntent) -> str:

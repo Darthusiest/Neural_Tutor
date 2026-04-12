@@ -10,7 +10,7 @@ import pytest
 
 from app.extensions import db
 from app.models import LectureChunk
-from app.services.lecture_loader import import_lecture_json
+from app.services.lectures.lecture_loader import import_lecture_json
 from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache, retrieve_chunks
 
 _CORPUS = Path(__file__).resolve().parent.parent / "data" / "LING487_SUPER_TUTOR.json"

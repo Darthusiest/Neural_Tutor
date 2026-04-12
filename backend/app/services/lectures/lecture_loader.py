@@ -10,12 +10,12 @@ from typing import Any
 from app.extensions import db
 from app.models import LectureChunk
 from app.schemas.lecture_corpus import LectureCorpus, validate_chunk_keys_unique, validate_lecture_corpus_dict
-from app.services.domain_knowledge import (
+from app.services.knowledge.domain_knowledge import (
     expand_term,
     get_concept_family_for_lecture,
     infer_chunk_type,
 )
-from app.services.lecture_chunk_key import derive_chunk_key
+from app.services.lectures.lecture_chunk_key import derive_chunk_key
 
 _STOP = frozenset(
     "the a an and or but if in on at to for of as is was are were be been being "

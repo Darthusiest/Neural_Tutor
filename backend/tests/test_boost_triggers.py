@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.services.answer_validation import ValidationResult
-from app.services.boost_triggers import should_use_gemini_boost
+from app.services.answers.answer_validation import ValidationResult
+from app.services.generation.boost_triggers import should_use_gemini_boost
 from app.services.query_understanding import QueryType
 
 

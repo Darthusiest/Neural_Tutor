@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.extensions import db
-from app.services.lecture_loader import import_lecture_json
+from app.services.lectures.lecture_loader import import_lecture_json
 from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 from app.services.retrieval_v2 import EnhancedRetrievalResult, retrieve_enhanced
 

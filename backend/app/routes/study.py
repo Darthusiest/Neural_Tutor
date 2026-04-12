@@ -11,7 +11,7 @@ from flask_login import current_user, login_required
 
 from app.extensions import db, limiter
 from app.models import ChatSession, Message
-from app.services.llm import generate_comparison_boost
+from app.services.generation.llm import generate_comparison_boost
 from app.services.study import (
     build_quiz_next,
     build_quiz_reveal,

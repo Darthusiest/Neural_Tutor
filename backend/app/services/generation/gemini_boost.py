@@ -10,8 +10,8 @@ from typing import Any
 
 from flask import current_app
 
-from app.services.answer_planning import AnswerPlan
-from app.services.structured_query import StructuredQuery
+from app.services.answers.answer_planning import AnswerPlan
+from app.services.knowledge.structured_query import StructuredQuery
 
 logger = logging.getLogger(__name__)
 
@@ -104,3 +104,7 @@ def generate_gemini_boosted_explanation(
     if not out.lower().startswith("boosted explanation"):
         out = "Boosted Explanation:\n\n" + out
     return out, {"provider": "gemini", "model": model}
+
+
+# Design-doc name: secondary boost uses Gemini only (never the primary Course Answer).
+generate_boosted_explanation = generate_gemini_boosted_explanation

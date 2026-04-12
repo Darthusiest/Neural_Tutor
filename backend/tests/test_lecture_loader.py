@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.extensions import db
 from app.models import LectureChunk
-from app.services.lecture_loader import import_lecture_json
+from app.services.lectures.lecture_loader import import_lecture_json
 
 
 def test_import_uses_source_text_when_no_content(app):

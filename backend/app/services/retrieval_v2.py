@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.config import Config
-from app.services.domain_knowledge import (
+from app.services.knowledge.domain_knowledge import (
     CONCEPT_FAMILIES,
     get_concept_family_for_lecture,
     get_lectures_in_family,

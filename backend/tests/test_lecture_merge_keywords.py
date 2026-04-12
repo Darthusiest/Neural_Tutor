@@ -1,4 +1,4 @@
-from app.services.lecture_loader import merge_keywords
+from app.services.lectures.lecture_loader import merge_keywords
 
 
 def test_merge_keywords_curated_first_then_auto():

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.services.domain_knowledge import (
+from app.services.knowledge.domain_knowledge import (
     correct_typos,
     expand_terms_for_query,
     extract_lecture_range,
@@ -143,7 +143,7 @@ def _classify(query: str, tokens: list[str], lec_nums: list[int]) -> QueryType:
 
 def _detect_concepts(tokens: list[str]) -> list[str]:
     """Return canonical concept names recognized in the query tokens."""
-    from app.services.domain_knowledge import get_canonical
+    from app.services.knowledge.domain_knowledge import get_canonical
 
     seen: set[str] = set()
     out: list[str] = []
@@ -166,7 +166,7 @@ def _detect_concepts(tokens: list[str]) -> list[str]:
 
 
 def _get_all_multi_word_aliases() -> list[str]:
-    from app.services.domain_knowledge import _ALIAS_GROUPS
+    from app.services.knowledge.domain_knowledge import _ALIAS_GROUPS
 
     return [
         alias

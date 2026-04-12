@@ -72,7 +72,7 @@ def create_app(config_object: type | None = None) -> Flask:
     )
     def import_lectures(json_path, upsert):
         """Load lecture JSON into `lecture_chunks` (default: LECTURE_JSON_PATH / data file)."""
-        from app.services.lecture_loader import import_lecture_json
+        from app.services.lectures.lecture_loader import import_lecture_json
         from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 
         path = json_path or app.config["LECTURE_JSON_PATH"]

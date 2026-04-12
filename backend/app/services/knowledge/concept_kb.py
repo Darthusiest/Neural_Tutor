@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Default path next to lecture corpus
-_BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
+# Default path next to lecture corpus (…/app/services/knowledge → backend root)
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _DEFAULT_KB_PATH = _BACKEND_ROOT / "data" / "LING487_STRUCTURED_PIPELINE_KB.json"
 
 

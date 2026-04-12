@@ -9,8 +9,8 @@ import urllib.request
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.services.answer_planning import AnswerPlan
-    from app.services.structured_query import StructuredQuery
+    from app.services.answers.answer_planning import AnswerPlan
+    from app.services.knowledge.structured_query import StructuredQuery
 
 from flask import current_app
 
@@ -80,7 +80,10 @@ def generate_boosted_explanation(
     retrieved_context: str,
 ) -> tuple[str | None, dict]:
     """
-    Boosted explanation grounded in retrieved JSON context.
+    OpenAI-only **Boosted Explanation** (optional fallback).
+
+    Primary product path uses Gemini: :func:`app.services.generation.gemini_boost.generate_boosted_explanation`.
+    This function is used when ``OPENAI_BOOST_FALLBACK`` is enabled and Gemini is unavailable.
 
     Returns (text, usage_meta).
     """

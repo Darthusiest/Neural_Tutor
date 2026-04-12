@@ -2,13 +2,7 @@
 
 ## 1. Environment
 
-From `backend/`:
-
-```bash
-cp .env.example .env
-```
-
-Set at minimum:
+From `backend/`, create **`.env`** (not committed; copy from your team’s template if you use one). Set at minimum:
 
 | Variable | Purpose |
 |----------|---------|

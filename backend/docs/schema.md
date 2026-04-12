@@ -10,6 +10,8 @@ cd backend && flask --app wsgi init-db
 
 This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite may store them differently).
 
+**Structured pipeline JSON** (e.g. `validation_checks_json`) is produced by code under [`app/services/answers/`](../app/services/answers/) (see `answer_validation.ValidationResult`).
+
 ## users
 
 | Column | Type | Notes |
@@ -84,7 +86,7 @@ One row per assistant turn that runs retrieval. Stores query features, aggregate
 | sub_questions_json | Text nullable | JSON array of decomposition sub-question strings |
 | answer_mode | String(64) nullable | Mirrors answer plan mode |
 | validation_passed | Boolean nullable | Structured validation aggregate pass/fail |
-| validation_checks_json | Text nullable | JSON from :class:`~app.services.answer_validation.ValidationResult` (includes `passed`, **`severity`** `pass`\|`weak`\|`fail`, `checks_*`, `flags`) |
+| validation_checks_json | Text nullable | JSON from :class:`~app.services.answers.answer_validation.ValidationResult` (includes `passed`, **`severity`** `pass`\|`weak`\|`fail`, `checks_*`, `flags`) |
 | generic_answer_flag | Boolean nullable | Heuristic: thin / generic answer |
 | missing_comparison_side_flag | Boolean nullable | Compare validation: one side missing |
 | answer_plan_json | Text nullable | Serialized answer plan for debugging |
@@ -125,7 +127,7 @@ One row per assistant message: course answer, optional boost, and generation met
 | course_answer | Text | |
 | boosted_explanation | Text nullable | |
 | boost_used | Boolean nullable | |
-| boost_reason | String(64) nullable | Short code (e.g. `user_toggle`, `validation_fail`, `low_confidence`, `complex_query`, `mode`); aligns with chat gating in [`boost_triggers.py`](../app/services/boost_triggers.py) |
+| boost_reason | String(64) nullable | Short code (e.g. `user_toggle`, `validation_fail`, `low_confidence`, `complex_query`, `mode`); aligns with chat gating in [`boost_triggers.py`](../app/services/generation/boost_triggers.py) |
 | boost_auto_triggered | Boolean nullable | |
 | boost_toggle_user_selected | Boolean nullable | |
 | model_name | String(128) nullable | |
@@ -187,4 +189,4 @@ Heuristic outcome for the **previous** assistant message when the user sends a f
 | sample_questions | Text nullable | JSON array of strings |
 | sample_answer | Text nullable | Single exemplar answer |
 
-Seed JSON may use `source_text` or `content`; the loader maps both to `source_excerpt` (see [`lecture_loader.py`](../app/services/lecture_loader.py)).
+Seed JSON may use `source_text` or `content`; the loader maps both to `source_excerpt` (see [`lecture_loader.py`](../app/services/lectures/lecture_loader.py)).

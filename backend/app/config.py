@@ -108,7 +108,9 @@ class Config:
     PRIMARY_COURSE_ANSWER_OPENAI = _primary_llm == "1"
     LLM_ANSWER_GENERATION = PRIMARY_COURSE_ANSWER_OPENAI  # backward-compatible alias
 
-    # Secondary boost only (never primary Course Answer). Prefer Gemini when key set; else OpenAI fallback.
+    # Secondary boost: Gemini only by default (see generate_boosted_explanation in gemini_boost).
+    # Set OPENAI_BOOST_FALLBACK=1 to call OpenAI for Boosted Explanation when Gemini is missing or fails.
+    OPENAI_BOOST_FALLBACK = os.getenv("OPENAI_BOOST_FALLBACK", "0") == "1"
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
@@ -127,3 +129,4 @@ class TestConfig(Config):
     LLM_ANSWER_GENERATION = False
     GEMINI_API_KEY = ""
     GOOGLE_API_KEY = ""
+    OPENAI_BOOST_FALLBACK = False

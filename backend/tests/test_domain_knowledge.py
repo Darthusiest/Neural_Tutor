@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import app.services.domain_knowledge as domain_knowledge
+import app.services.knowledge.domain_knowledge as domain_knowledge
 
-from app.services.domain_knowledge import (
+from app.services.knowledge.domain_knowledge import (
     correct_typos,
     expand_term,
     expand_terms_for_query,

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from app.services.query_understanding import QueryType
 
 if TYPE_CHECKING:
-    from app.services.answer_validation import ValidationResult
+    from app.services.answers.answer_validation import ValidationResult
 
 
 # User phrasing that suggests wanting a clearer or richer secondary explanation

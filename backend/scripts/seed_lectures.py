@@ -46,7 +46,7 @@ def main() -> int:
     args = parser.parse_args()
 
     app = create_app()
-    from app.services.lecture_loader import import_lecture_json
+    from app.services.lectures.lecture_loader import import_lecture_json
     from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 
     path = args.json_path or app.config["LECTURE_JSON_PATH"]
