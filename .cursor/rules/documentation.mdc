@@ -1,0 +1,15 @@
+---
+description: Keep CHANGELOG, README, and progress notes in sync when behavior changes
+alwaysApply: true
+---
+
+# Documentation track record
+
+When you **add, improve, or fix** user-visible behavior, APIs, config, database schema, retrieval, auth, or deployment:
+
+1. **`CHANGELOG.md`** — Add a bullet under `[Unreleased]` (or a dated section when batching a release). Notable internal-only work can skip the changelog if recorded in `progress/entries/` instead.
+2. **Root `README.md`** — Update **Current status**, API tables, or setup if anything a new developer would need has changed.
+3. **`backend/docs/schema.md`** — Update when SQLAlchemy models / migrations change.
+4. **`progress/entries/YYYY-MM-DD-slug.md`** — Use for narrative context (decisions, tuning, follow-ups) that does not belong in a changelog line.
+
+Full policy: `progress/README.md`.
