@@ -105,10 +105,15 @@ def upgrade():
         batch_op.add_column(
             sa.Column(
                 "retrieval_log_id",
-                sa.Integer,
-                sa.ForeignKey("retrieval_logs.id"),
+                sa.Integer(),
                 nullable=True,
             )
+        )
+        batch_op.create_foreign_key(
+            "fk_response_variants_retrieval_log_id",
+            "retrieval_logs",
+            ["retrieval_log_id"],
+            ["id"],
         )
         batch_op.add_column(sa.Column("boost_used", sa.Boolean, nullable=True))
         batch_op.add_column(
@@ -177,6 +182,7 @@ def downgrade():
 
     # --- Revert response_variants ---
     with op.batch_alter_table("response_variants") as batch_op:
+        batch_op.drop_constraint("fk_response_variants_retrieval_log_id", type_="foreignkey")
         batch_op.drop_index("ix_response_variants_fingerprint")
         batch_op.drop_index("ix_response_variants_retrieval_log_id")
         batch_op.drop_column("response_fingerprint")

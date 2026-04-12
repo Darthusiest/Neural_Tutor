@@ -1,14 +1,14 @@
 """Add chunk_type and concept_family columns to lecture_chunks.
 
 Revision ID: 003
-Revises: 002
+Revises: 002_chunk_key
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "003"
-down_revision = "002"
+down_revision = "002_chunk_key"
 branch_labels = None
 depends_on = None
 
