@@ -61,6 +61,16 @@ class RetrievalLog(db.Model):
     # Kept nullable for existing rows; not written by new code.
     retrieved_chunk_ids = db.Column(db.Text, nullable=True)
 
+    # Structured reasoning pipeline (optional; chat when STRUCTURED_PIPELINE_ENABLED).
+    query_type_v2 = db.Column(db.String(64), nullable=True)
+    sub_questions_json = db.Column(db.Text, nullable=True)
+    answer_mode = db.Column(db.String(64), nullable=True)
+    validation_passed = db.Column(db.Boolean, nullable=True)
+    validation_checks_json = db.Column(db.Text, nullable=True)
+    generic_answer_flag = db.Column(db.Boolean, nullable=True)
+    missing_comparison_side_flag = db.Column(db.Boolean, nullable=True)
+    answer_plan_json = db.Column(db.Text, nullable=True)
+
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 
     session = db.relationship("ChatSession")

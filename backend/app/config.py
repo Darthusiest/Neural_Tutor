@@ -5,6 +5,7 @@ from pathlib import Path
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_SQLITE = f"sqlite:///{_BACKEND_ROOT / 'ling487.db'}"
 _DEFAULT_LECTURE_JSON = _BACKEND_ROOT / "data" / "LING487_SUPER_TUTOR.json"
+_DEFAULT_PIPELINE_KB_JSON = _BACKEND_ROOT / "data" / "LING487_STRUCTURED_PIPELINE_KB.json"
 
 _DEFAULT_RETRIEVAL_FIELD_WEIGHTS: dict[str, float] = {
     "topic": 3.0,
@@ -97,6 +98,22 @@ class Config:
     # v2 summary mode: max chunks returned for a single-lecture summary (ranked lexically).
     SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "48"))
 
+    # Structured reasoning pipeline (concept KB + answer plan + validation).
+    KB_JSON_PATH = Path(os.getenv("KB_JSON_PATH", str(_DEFAULT_PIPELINE_KB_JSON)))
+    STRUCTURED_PIPELINE_ENABLED = os.getenv("STRUCTURED_PIPELINE_ENABLED", "1") == "1"
+    # Primary Course Answer: OpenAI when key present. PRIMARY_COURSE_ANSWER_OPENAI wins; else LLM_ANSWER_GENERATION.
+    _primary_llm = os.getenv("PRIMARY_COURSE_ANSWER_OPENAI")
+    if _primary_llm is None:
+        _primary_llm = os.getenv("LLM_ANSWER_GENERATION", "1")
+    PRIMARY_COURSE_ANSWER_OPENAI = _primary_llm == "1"
+    LLM_ANSWER_GENERATION = PRIMARY_COURSE_ANSWER_OPENAI  # backward-compatible alias
+
+    # Secondary boost only (never primary Course Answer). Prefer Gemini when key set; else OpenAI fallback.
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_TIMEOUT_SEC = int(os.getenv("GEMINI_TIMEOUT_SEC", "60"))
+
 
 class TestConfig(Config):
     """In-memory SQLite + no CSRF for pytest."""
@@ -105,3 +122,8 @@ class TestConfig(Config):
     SECRET_KEY = "test-secret-key"
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    OPENAI_API_KEY = ""
+    PRIMARY_COURSE_ANSWER_OPENAI = False
+    LLM_ANSWER_GENERATION = False
+    GEMINI_API_KEY = ""
+    GOOGLE_API_KEY = ""

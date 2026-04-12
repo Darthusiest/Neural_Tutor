@@ -1,0 +1,108 @@
+"""Tests for structured reasoning pipeline (concept KB, query, plan, validation)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.extensions import db
+from app.services.concept_kb import get_kb, load_concept_kb, reset_kb_for_tests
+from app.services.lecture_loader import import_lecture_json
+from app.services.query_understanding import analyze_query
+from app.services.reasoning_pipeline import run_reasoning_pipeline
+from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
+from app.services.structured_query import build_structured_query, decompose_query
+from app.services.answer_planning import build_answer_plan
+from app.services.answer_validation import validate_answer
+
+_DATA = Path(__file__).resolve().parent.parent / "data" / "LING487_SUPER_TUTOR.json"
+_KB = Path(__file__).resolve().parent.parent / "data" / "LING487_STRUCTURED_PIPELINE_KB.json"
+
+
+@pytest.fixture
+def corpus(app):
+    with app.app_context():
+        db.drop_all()
+        db.create_all()
+        import_lecture_json(_DATA, upsert=False)
+        invalidate_lecture_cache()
+        load_lecture_cache()
+    yield
+    reset_kb_for_tests()
+
+
+class TestConceptKB:
+    def test_load_kb(self):
+        kb = load_concept_kb(_KB)
+        assert kb.get_concept_by_id("softmax") is not None
+        assert kb.get_comparison_axes("mfcc", "formants")
+
+    def test_find_concepts_in_tokens(self):
+        kb = load_concept_kb(_KB)
+        found = kb.find_concepts_in_text(["what", "is", "softmax"])
+        ids = {c.id for c in found}
+        assert "softmax" in ids
+
+
+class TestStructuredQuery:
+    def test_softmax_definition(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            assert sq.answer_intent == "direct_definition"
+            assert sq.sub_questions
+
+    def test_compare_mfcc_formants(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("difference between MFCCs and formants")
+            sq = build_structured_query(intent, kb=kb)
+            assert sq.answer_intent == "compare"
+            subs = decompose_query(intent, kb, kb.find_concepts_in_text(intent.query_tokens))
+            assert len(subs) >= 2
+
+
+class TestAnswerPlanning:
+    def test_plan_has_sections(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            assert plan.answer_mode == "direct_definition"
+            assert plan.sections
+
+
+class TestValidation:
+    def test_compare_missing_side_fails(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("difference between MFCCs and formants")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            bad = "Course Answer:\n\nMFCCs are features."
+            vr = validate_answer(bad, sq, plan, primary_chunk_lecture_numbers=[10], kb=kb)
+            assert "must_cover_both_sides" in vr.checks_failed
+            assert vr.severity == "fail"
+
+
+class TestEndToEndPipeline:
+    def test_pipeline_returns_answer(self, corpus, app):
+        with app.app_context():
+            pr = run_reasoning_pipeline("What is softmax?", top_k=5)
+            assert pr.enhanced_result.chunks
+            assert "Course Answer" in pr.course_answer
+            assert pr.validation is not None
+
+    def test_summary_query(self, corpus, app):
+        with app.app_context():
+            pr = run_reasoning_pipeline("summary of lecture 10", top_k=8)
+            assert pr.structured_query.answer_intent == "lecture_summary"

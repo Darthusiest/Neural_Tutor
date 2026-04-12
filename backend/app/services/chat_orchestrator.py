@@ -18,7 +18,10 @@ from app.models import (
     RetrievalChunkHit,
     RetrievalLog,
 )
+from app.services.boost_triggers import should_use_gemini_boost
+from app.services.gemini_boost import generate_gemini_boosted_explanation
 from app.services.llm import generate_boosted_explanation
+from app.services.reasoning_pipeline import PipelineResult, pipeline_diagnostics_dict, run_reasoning_pipeline
 from app.services.retrieval import (
     format_course_answer,
     tokenize_query_terms,
@@ -126,34 +129,72 @@ def handle_chat_turn(
     db.session.flush()
 
     t0 = time.perf_counter()
-    r = retrieve_enhanced(text, top_k=5)
+    structured_on = bool(current_app.config.get("STRUCTURED_PIPELINE_ENABLED"))
+    pipeline_extra: dict[str, Any] | None = None
+    pr: PipelineResult | None = None
+    if structured_on:
+        pr = run_reasoning_pipeline(text, top_k=5)
+        r = pr.enhanced_result
+        pipeline_extra = pipeline_diagnostics_dict(pr)
+        if not r.chunks:
+            course_answer = (
+                "Course Answer:\nThis question appears outside the LING 487 materials "
+                "I can access, or retrieval found no relevant lecture chunk. "
+                "Try rephrasing using terms from the course, or ask about a specific lecture topic."
+            )
+        else:
+            course_answer = pr.course_answer
+    else:
+        r = retrieve_enhanced(text, top_k=5)
+        if not r.chunks:
+            course_answer = (
+                "Course Answer:\nThis question appears outside the LING 487 materials "
+                "I can access, or retrieval found no relevant lecture chunk. "
+                "Try rephrasing using terms from the course, or ask about a specific lecture topic."
+            )
+        else:
+            course_answer = format_course_answer(r.chunks)
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     diag = r.diagnostics
 
-    if not r.chunks:
-        course_answer = (
-            "Course Answer:\nThis question appears outside the LING 487 materials "
-            "I can access, or retrieval found no relevant lecture chunk. "
-            "Try rephrasing using terms from the course, or ask about a specific lecture topic."
-        )
-    else:
-        course_answer = format_course_answer(r.chunks)
-
     low_confidence = r.confidence < threshold
-    need_boost = boost_toggle or low_confidence or mode in ("compare", "summary")
+    qt = r.query_intent.query_type if getattr(r, "query_intent", None) else None
+    answer_intent = pr.structured_query.answer_intent if pr else None
+    subq_n = len(pr.structured_query.sub_questions) if pr else 0
+    validation_for_boost = pr.validation if pr else None
+
+    need_boost, boost_reason = should_use_gemini_boost(
+        user_query=text,
+        confidence=r.confidence,
+        validation=validation_for_boost,
+        confidence_threshold=threshold,
+        boost_toggle=boost_toggle,
+        mode=mode,
+        query_type=qt,
+        answer_intent=answer_intent,
+        subquestion_count=subq_n,
+    )
 
     boosted = None
-    boost_reason = None
+    boost_provider: str | None = None
     if need_boost:
-        ctx = json.dumps(r.chunks) if r.chunks else "[]"
-        boosted, _usage = generate_boosted_explanation(text, ctx)
-        boost_reason = (
-            "toggle" if boost_toggle else ("low_confidence" if low_confidence else "mode")
-        )
+        gemini_key = current_app.config.get("GEMINI_API_KEY") or current_app.config.get("GOOGLE_API_KEY")
+        if gemini_key and pr is not None:
+            boosted, gmeta = generate_gemini_boosted_explanation(
+                text,
+                course_answer,
+                pr.answer_plan,
+                r.chunks or [],
+                pr.structured_query,
+            )
+            if boosted:
+                boost_provider = gmeta.get("provider", "gemini")
         if not boosted:
-            boosted = None
-            boost_reason = None
+            ctx = json.dumps(r.chunks) if r.chunks else "[]"
+            boosted, _usage = generate_boosted_explanation(text, ctx)
+            if boosted:
+                boost_provider = boost_provider or "openai"
 
     assistant = Message(
         session_id=session.id,
@@ -165,8 +206,19 @@ def handle_chat_turn(
                 "boosted_explanation": boosted,
                 "confidence": r.confidence,
                 "query_type": (
-                    r.query_intent.query_type.value if getattr(r, "query_intent", None) else None
+                    r.query_intent.query_type.value
+                    if getattr(r, "query_intent", None) and r.query_intent.query_type
+                    else None
                 ),
+                "structured_pipeline": structured_on,
+                "pipeline_diagnostics": pipeline_extra,
+                "primary_model": pipeline_extra.get("primary_model") if pipeline_extra else None,
+                "validation_severity": (
+                    pipeline_extra.get("validation", {}).get("severity") if pipeline_extra else None
+                ),
+                "boost_provider": boost_provider,
+                "boost_reason": boost_reason,
+                "query_complexity": pipeline_extra.get("query_complexity") if pipeline_extra else None,
             }
         ),
     )
@@ -197,6 +249,22 @@ def handle_chat_turn(
         is_off_topic=len(r.chunks) == 0,
         latency_ms=latency_ms,
         token_usage_json=None,
+        query_type_v2=(pipeline_extra.get("answer_intent") if pipeline_extra else None),
+        sub_questions_json=json.dumps(pipeline_extra.get("sub_questions", [])) if pipeline_extra else None,
+        answer_mode=pipeline_extra.get("answer_mode") if pipeline_extra else None,
+        validation_passed=pipeline_extra.get("validation", {}).get("passed") if pipeline_extra else None,
+        validation_checks_json=json.dumps(pipeline_extra.get("validation", {})) if pipeline_extra else None,
+        generic_answer_flag=(
+            bool(pipeline_extra.get("validation", {}).get("flags", {}).get("generic_answer"))
+            if pipeline_extra
+            else None
+        ),
+        missing_comparison_side_flag=(
+            bool(pipeline_extra.get("validation", {}).get("flags", {}).get("missing_comparison_side"))
+            if pipeline_extra
+            else None
+        ),
+        answer_plan_json=json.dumps(pipeline_extra.get("answer_plan", {})) if pipeline_extra else None,
     )
     db.session.add(log)
     db.session.flush()
@@ -230,7 +298,7 @@ def handle_chat_turn(
         boosted_explanation=boosted,
         boost_used=boost_used,
         boost_reason=boost_reason,
-        boost_auto_triggered=(low_confidence or mode in ("compare", "summary")) and not boost_toggle,
+        boost_auto_triggered=bool(need_boost and not boost_toggle and boost_reason),
         boost_toggle_user_selected=boost_toggle,
         model_name=None,
         provider_name=None,

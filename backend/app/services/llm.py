@@ -6,7 +6,11 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.answer_planning import AnswerPlan
+    from app.services.structured_query import StructuredQuery
 
 from flask import current_app
 
@@ -127,3 +131,38 @@ def generate_comparison_boost(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0.45,
     )
+
+
+def generate_plan_constrained_answer(
+    plan: "AnswerPlan",
+    chunks: list[dict[str, Any]],
+    sq: "StructuredQuery",
+) -> tuple[str | None, dict[str, Any]]:
+    """
+    Optional LLM path: generate **Course Answer:** text following ``plan``, grounded only in ``chunks``.
+    Falls back to caller rule-based generation when API is unavailable.
+    """
+    if not current_app.config.get("OPENAI_API_KEY"):
+        return None, {}
+
+    system = (
+        "You write the **Course Answer** section for LING 487. "
+        "Follow ANSWER_PLAN sections in order. Use ONLY RETRIEVED_CHUNKS for facts; "
+        "do not invent citations or topics. Start with the exact line:\n\nCourse Answer:\n\n"
+        "then use ### headings matching the plan when multiple sections exist."
+    )
+    payload = {
+        "student_question": sq.intent.original_query,
+        "answer_plan": plan.to_dict(),
+        "retrieved_chunks": chunks[:20],
+    }
+    user = "STRUCTURED_INPUT_JSON:\n" + json.dumps(payload, ensure_ascii=False)[:120_000]
+    text, usage = _openai_chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.35,
+    )
+    if not text:
+        return None, usage
+    if not text.strip().lower().startswith("course answer"):
+        text = "Course Answer:\n\n" + text
+    return text, usage

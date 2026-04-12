@@ -50,6 +50,10 @@ class EnhancedRetrievalResult(RetrievalResult):
     query_intent: QueryIntent | None = None
     related_topics: list[str] = field(default_factory=list)
     compare_side_diagnostics: tuple[RetrievalDiagnostics | None, RetrievalDiagnostics | None] | None = None
+    # Structured reasoning pipeline (optional; set by reasoning_pipeline when enabled)
+    structured_query: Any | None = None
+    answer_plan: Any | None = None
+    validation_result: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +283,10 @@ def _merge_dedupe_chunks(
     out: list[dict[str, Any]] = []
     for c in primary + secondary:
         cid = c.get("id")
-        if cid in seen:
-            continue
-        seen.add(cid)
+        if cid is not None:
+            if cid in seen:
+                continue
+            seen.add(cid)
         out.append(c)
         if len(out) >= limit:
             break
