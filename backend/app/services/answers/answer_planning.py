@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
@@ -93,6 +94,10 @@ ANSWER_PLAN_SECTION_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# One primary chunk per section (ordered by relevance) — avoids repeating the same excerpt
+# under every ### heading for definition-style plans.
+_DISTINCT_CHUNK_PER_SECTION_MODES = frozenset({"direct_definition", "multi_step_explanation"})
+
 
 def _chunk_blob(c: dict[str, Any]) -> str:
     parts = [
@@ -116,12 +121,13 @@ def _score_chunk_for_concept(chunk: dict[str, Any], concept_id: str, kb: Concept
     return score
 
 
-def _pick_chunks_for_section(
+def _ranked_chunk_ids(
     chunks: list[dict[str, Any]],
     concept_ids: list[str],
     kb: ConceptKB,
-    max_n: int = 2,
+    max_n: int = 12,
 ) -> list[int]:
+    """All chunk ids for ``chunks``, ordered by relevance to ``concept_ids`` (deduplicated)."""
     scored: list[tuple[float, int]] = []
     for c in chunks:
         cid = c.get("id")
@@ -141,6 +147,33 @@ def _pick_chunks_for_section(
         if len(out) >= max_n:
             break
     return out
+
+
+def _pick_chunks_for_section(
+    chunks: list[dict[str, Any]],
+    concept_ids: list[str],
+    kb: ConceptKB,
+    max_n: int = 2,
+) -> list[int]:
+    return _ranked_chunk_ids(chunks, concept_ids, kb, max_n=max_n)
+
+
+def _has_non_empty_sample_question(c: dict[str, Any]) -> bool:
+    if (c.get("sample_answer") or "").strip():
+        return True
+    raw = c.get("sample_questions")
+    if not raw:
+        return False
+    s = str(raw).strip()
+    if not s or s in ("[]", "null"):
+        return False
+    try:
+        arr = json.loads(s)
+        if isinstance(arr, list):
+            return any(str(x).strip() for x in arr)
+    except json.JSONDecodeError:
+        pass
+    return bool(s)
 
 
 def build_answer_plan(
@@ -169,10 +202,7 @@ def build_answer_plan(
         if ca and cb:
             comparison_axes = kb.get_comparison_axes(ca.id, cb.id)
 
-    include_example = any(
-        (c.get("sample_questions") or "").strip() or (c.get("sample_answer") or "").strip()
-        for c in chunks
-    )
+    include_example = any(_has_non_empty_sample_question(c) for c in chunks)
     include_prereq = False
     if sq.concept_ids:
         c0 = kb.get_concept_by_id(sq.concept_ids[0])
@@ -190,23 +220,31 @@ def build_answer_plan(
 
     sections: list[AnswerSection] = []
     n_labels = len(labels)
+    cids = sq.concept_ids[:2] if sq.concept_ids else []
+    ranked_distinct: list[int] | None = None
+    if mode in _DISTINCT_CHUNK_PER_SECTION_MODES:
+        ranked_distinct = _ranked_chunk_ids(chunks, cids, kb, max_n=max(n_labels, 8))
+
     for idx, (heading, hint) in enumerate(labels):
-        # Assign concept ids cyclically or by section index
-        cids = sq.concept_ids[:2] if sq.concept_ids else []
         if mode == "compare" and idx in (1, 2) and sq.intent.compare_concepts:
             side = sq.intent.compare_concepts[0] if idx == 1 else sq.intent.compare_concepts[1]
             cc = kb.get_concept(side)
             pick_ids = _pick_chunks_for_section(chunks, [cc.id] if cc else [], kb, max_n=2)
+        elif ranked_distinct is not None:
+            pick_ids = [ranked_distinct[idx]] if idx < len(ranked_distinct) else []
         else:
             pick_ids = _pick_chunks_for_section(chunks, cids, kb, max_n=2)
 
         if not pick_ids and primary_ids:
-            pick_ids = primary_ids[: min(2, len(primary_ids))]
+            if ranked_distinct is None:
+                pick_ids = primary_ids[: min(2, len(primary_ids))]
+            elif idx == 0:
+                pick_ids = primary_ids[: min(2, len(primary_ids))]
 
         sections.append(AnswerSection(heading=heading, chunk_ids=pick_ids, content_hint=hint))
 
-    # Cap sections to avoid empty repetition
-    sections = [s for s in sections if s.chunk_ids or n_labels <= 4]
+    # Drop sections with no chunk assignment (after distinct split, later headings may be empty).
+    sections = [s for s in sections if s.chunk_ids]
     if not sections and primary_ids:
         sections = [
             AnswerSection(heading="Course material", chunk_ids=primary_ids[:3], content_hint="definition")

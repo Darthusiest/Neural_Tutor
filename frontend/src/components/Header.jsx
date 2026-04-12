@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom'
+import { ThemeToggle } from './ThemeToggle'
 
 export function Header({ user, onLogout }) {
   return (
     <header className="app-header">
       <Link className="brand" to="/chat">LING 487 Tutor</Link>
       <nav className="header-nav">
+        <ThemeToggle />
         {user ? (
           <>
             {user.is_admin ? <Link to="/admin">Admin</Link> : null}

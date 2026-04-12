@@ -77,6 +77,23 @@ class TestAnswerPlanning:
             assert plan.answer_mode == "direct_definition"
             assert plan.sections
 
+    def test_direct_definition_distinct_chunk_per_section(self, corpus, app):
+        """Avoid assigning the same top chunks to every ### section (duplicated excerpts)."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=8)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            assert plan.answer_mode == "direct_definition"
+            seen: set[int] = set()
+            for sec in plan.sections:
+                for cid in sec.chunk_ids:
+                    assert cid not in seen, f"chunk {cid} reused across sections"
+                    seen.add(cid)
+
 
 class TestValidation:
     def test_compare_missing_side_fails(self, corpus, app):

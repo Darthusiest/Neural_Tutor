@@ -26,6 +26,7 @@ from app.services.generation.llm import generate_boosted_explanation as generate
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import build_structured_query
 from app.services.query_understanding import analyze_query
+from app.services.conversational_responses import classify_no_match_query, varied_no_chunk_course_answer
 from app.services.reasoning_pipeline import PipelineResult, pipeline_diagnostics_dict, run_reasoning_pipeline
 from app.services.retrieval_v2 import EnhancedRetrievalResult
 from app.services.retrieval import (
@@ -151,26 +152,21 @@ def handle_chat_turn(
     structured_on = bool(current_app.config.get("STRUCTURED_PIPELINE_ENABLED"))
     pipeline_extra: dict[str, Any] | None = None
     pr: PipelineResult | None = None
+    no_match_kind: str | None = None
     if structured_on:
         pr = run_reasoning_pipeline(text, top_k=5)
         r = pr.enhanced_result
         pipeline_extra = pipeline_diagnostics_dict(pr)
         if not r.chunks:
-            course_answer = (
-                "Course Answer:\nThis question appears outside the LING 487 materials "
-                "I can access, or retrieval found no relevant lecture chunk. "
-                "Try rephrasing using terms from the course, or ask about a specific lecture topic."
-            )
+            no_match_kind = classify_no_match_query(text)
+            course_answer = varied_no_chunk_course_answer(no_match_kind)
         else:
             course_answer = pr.course_answer
     else:
         r = retrieve_enhanced(text, top_k=5)
         if not r.chunks:
-            course_answer = (
-                "Course Answer:\nThis question appears outside the LING 487 materials "
-                "I can access, or retrieval found no relevant lecture chunk. "
-                "Try rephrasing using terms from the course, or ask about a specific lecture topic."
-            )
+            no_match_kind = classify_no_match_query(text)
+            course_answer = varied_no_chunk_course_answer(no_match_kind)
         else:
             course_answer = format_course_answer(r.chunks)
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -183,17 +179,20 @@ def handle_chat_turn(
     subq_n = len(pr.structured_query.sub_questions) if pr else 0
     validation_for_boost = pr.validation if pr else None
 
-    need_boost, boost_reason = should_use_gemini_boost(
-        user_query=text,
-        confidence=r.confidence,
-        validation=validation_for_boost,
-        confidence_threshold=threshold,
-        boost_toggle=boost_toggle,
-        mode=mode,
-        query_type=qt,
-        answer_intent=answer_intent,
-        subquestion_count=subq_n,
-    )
+    if not r.chunks:
+        need_boost, boost_reason = False, None
+    else:
+        need_boost, boost_reason = should_use_gemini_boost(
+            user_query=text,
+            confidence=r.confidence,
+            validation=validation_for_boost,
+            confidence_threshold=threshold,
+            boost_toggle=boost_toggle,
+            mode=mode,
+            query_type=qt,
+            answer_intent=answer_intent,
+            subquestion_count=subq_n,
+        )
 
     boosted = None
     boost_provider: str | None = None
@@ -271,6 +270,7 @@ def handle_chat_turn(
                 "boost_provider": boost_provider,
                 "boost_reason": boost_reason,
                 "query_complexity": pipeline_extra.get("query_complexity") if pipeline_extra else None,
+                "no_match_kind": no_match_kind,
             }
         ),
     )

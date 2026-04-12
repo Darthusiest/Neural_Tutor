@@ -6,6 +6,7 @@ from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
 from app.services.knowledge.structured_query import StructuredQuery
+from app.services.retrieval import _sample_questions_as_text
 
 
 def _bullet_lines_from_chunk(c: dict[str, Any]) -> list[str]:
@@ -27,18 +28,28 @@ def generate_structured_answer(
 ) -> str:
     """Build **Course Answer:** with section headings from the plan (grounded in chunks)."""
     lines: list[str] = ["Course Answer:", ""]
+    emitted_chunk_ids: set[int] = set()
 
     for sec in plan.sections:
         section_chunks = chunks_by_ids(all_chunks, sec.chunk_ids)
         if not section_chunks:
             continue
+        to_emit = [c for c in section_chunks if c.get("id") not in emitted_chunk_ids]
+        if not to_emit:
+            continue
         if len(plan.sections) > 1 or sec.heading:
             lines.append(f"### {sec.heading}")
             lines.append("")
-        for c in section_chunks:
+        for c in to_emit:
+            cid = c.get("id")
+            if cid is not None:
+                emitted_chunk_ids.add(int(cid))
             num = c.get("lecture_number")
-            topic = c.get("topic", "")
-            lines.append(f"Lecture {num} — {topic}")
+            topic = (c.get("topic") or "").strip()
+            if topic:
+                lines.append(f"**Lecture {num}** · {topic}")
+            else:
+                lines.append(f"**Lecture {num}**")
             for bl in _bullet_lines_from_chunk(c):
                 lines.append(f"- {bl}")
             lines.append("")
@@ -59,12 +70,13 @@ def generate_structured_answer(
 
     if plan.include_example:
         for c in all_chunks[:2]:
-            sq_text = (c.get("sample_questions") or "").strip()
-            if sq_text:
-                lines.append("### Example question (from materials)")
-                lines.append("")
-                lines.append(f"- {sq_text[:500]}")
-                lines.append("")
-                break
+            sq_text = _sample_questions_as_text(c).strip()
+            if not sq_text or sq_text in ("[]", "null", "None"):
+                continue
+            lines.append("### Example question (from materials)")
+            lines.append("")
+            lines.append(f"- {sq_text[:500]}")
+            lines.append("")
+            break
 
     return "\n".join(lines).rstrip()

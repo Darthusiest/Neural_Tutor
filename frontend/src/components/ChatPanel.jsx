@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api/client'
 
 export function ChatPanel({
@@ -12,6 +12,7 @@ export function ChatPanel({
   ensureSession,
   onRefreshAfterStudy,
 }) {
+  const messagesEndRef = useRef(null)
   const [quiz, setQuiz] = useState(null)
   const [quizTopic, setQuizTopic] = useState('')
   const [shortText, setShortText] = useState('')
@@ -22,6 +23,13 @@ export function ChatPanel({
   const [lectureNum, setLectureNum] = useState('4')
   const [summaryTopic, setSummaryTopic] = useState('')
   const [studyBusy, setStudyBusy] = useState(false)
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [messages])
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -293,6 +301,7 @@ export function ChatPanel({
         ) : (
           messages.map((m) => <MessageBlock key={m.id} m={m} />)
         )}
+        <div ref={messagesEndRef} className="messages-end" aria-hidden="true" />
       </div>
 
       {mode === 'chat' ? (

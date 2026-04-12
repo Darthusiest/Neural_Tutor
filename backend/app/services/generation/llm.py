@@ -152,7 +152,9 @@ def generate_plan_constrained_answer(
         "You write the **Course Answer** section for LING 487. "
         "Follow ANSWER_PLAN sections in order. Use ONLY RETRIEVED_CHUNKS for facts; "
         "do not invent citations or topics. Start with the exact line:\n\nCourse Answer:\n\n"
-        "then use ### headings matching the plan when multiple sections exist."
+        "then use ### headings matching the plan when multiple sections exist. "
+        "Do not repeat the same lecture excerpt or bullet block under multiple headings; "
+        "each section should add new material from the chunks."
     )
     payload = {
         "student_question": sq.intent.original_query,
