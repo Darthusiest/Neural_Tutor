@@ -16,6 +16,7 @@ This folder holds a **narrative running record**: design decisions, retrieval be
 |--------------|--------|
 | User-visible behavior, API routes, env vars, config keys | Root [`README.md`](../README.md) (Current status, API table, setup) |
 | DB tables, columns, migrations | [`backend/docs/schema.md`](../backend/docs/schema.md) |
+| Admin analytics HTTP API | [`backend/docs/admin_insights.md`](../backend/docs/admin_insights.md) when routes or behavior change |
 | Auth, CSRF, local testing quirks | [`backend/docs/AUTH_LOCAL.md`](../backend/docs/AUTH_LOCAL.md) if applicable |
 | **Release-style “what shipped”** | [`CHANGELOG.md`](../CHANGELOG.md) — add under `[Unreleased]` or a new dated section |
 | **Design / rationale / tuning notes** | New file under [`entries/`](entries/) — `YYYY-MM-DD-short-slug.md` |

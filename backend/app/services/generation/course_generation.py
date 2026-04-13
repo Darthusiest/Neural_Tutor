@@ -16,20 +16,21 @@ def generate_course_answer(
     plan: AnswerPlan,
     chunks: list[dict[str, Any]],
     sq: StructuredQuery,
-) -> tuple[str, str]:
+) -> tuple[str, str, dict[str, Any]]:
     """
     Generate the main **Course Answer** only.
 
     Primary path: OpenAI (plan-constrained) when ``PRIMARY_COURSE_ANSWER_OPENAI`` and
     ``OPENAI_API_KEY`` are set. Fallback: rule-based structured template.
 
-    Returns ``(text, primary_model)`` where ``primary_model`` is ``"openai"`` or ``"rule_based"``.
+    Returns ``(text, primary_model, primary_llm_usage)`` where ``primary_model`` is
+    ``"openai"`` or ``"rule_based"``, and ``primary_llm_usage`` is OpenAI metadata (or empty).
     """
     use_openai = bool(current_app.config.get("PRIMARY_COURSE_ANSWER_OPENAI")) and bool(
         current_app.config.get("OPENAI_API_KEY")
     )
     if use_openai:
-        text, _usage = generate_plan_constrained_answer(plan, chunks, sq)
+        text, usage_meta = generate_plan_constrained_answer(plan, chunks, sq)
         if text and text.strip():
-            return text.strip(), "openai"
-    return generate_structured_answer(plan, chunks, sq), "rule_based"
+            return text.strip(), "openai", usage_meta or {}
+    return generate_structured_answer(plan, chunks, sq), "rule_based", {}

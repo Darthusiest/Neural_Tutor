@@ -12,6 +12,8 @@ This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite
 
 **Structured pipeline JSON** (e.g. `validation_checks_json`) is produced by code under [`app/services/answers/`](../app/services/answers/) (see `answer_validation.ValidationResult`).
 
+**Admin insights** (read-only reporting): aggregates and drill-downs are computed in [`app/services/admin_insights.py`](../app/services/admin_insights.py) over the tables below; HTTP API reference in [`admin_insights.md`](admin_insights.md).
+
 ## users
 
 | Column | Type | Notes |
@@ -80,7 +82,7 @@ One row per assistant turn that runs retrieval. Stores query features, aggregate
 | is_low_confidence | Boolean nullable | |
 | is_off_topic | Boolean nullable | |
 | latency_ms | Integer nullable | |
-| token_usage_json | Text nullable | |
+| token_usage_json | Text nullable | When structured pipeline uses OpenAI for the Course Answer, primary usage metadata JSON (same shape as `primary` in `response_variants.token_usage_json`) |
 | retrieved_chunk_ids | Text nullable | **deprecated**; use `retrieval_chunk_hits` |
 | query_type_v2 | String(64) nullable | Structured pipeline **answer_intent** (e.g. `direct_definition`, `compare`) when enabled |
 | sub_questions_json | Text nullable | JSON array of decomposition sub-question strings |
@@ -134,7 +136,7 @@ One row per assistant message: course answer, optional boost, and generation met
 | provider_name | String(64) nullable | |
 | course_answer_prompt_version | String(32) nullable | |
 | boost_prompt_version | String(32) nullable | |
-| token_usage_json | Text nullable | |
+| token_usage_json | Text nullable | Optional `{"primary": {...}, "boost": {...}}` — OpenAI chat usage under `usage`, plus `model` / `provider`; boost may include Gemini `usageMetadata` |
 | course_answer_length | Integer nullable | |
 | boosted_answer_length | Integer nullable | |
 | response_fingerprint | String(40) nullable, indexed | SHA-256 prefix (32 hex chars) |

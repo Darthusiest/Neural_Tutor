@@ -196,6 +196,8 @@ def handle_chat_turn(
 
     boosted = None
     boost_provider: str | None = None
+    boost_usage_meta: dict[str, Any] | None = None
+    primary_llm_usage: dict[str, Any] = pr.primary_llm_usage if pr else {}
     primary_for_log = pipeline_extra.get("primary_model") if pipeline_extra else None
     val_sev = (
         pipeline_extra.get("validation", {}).get("severity") if pipeline_extra else None
@@ -225,15 +227,17 @@ def handle_chat_turn(
                 )
             if boosted:
                 boost_provider = gmeta.get("provider", "gemini")
+                boost_usage_meta = gmeta
 
         use_openai_fallback = bool(current_app.config.get("OPENAI_BOOST_FALLBACK")) and bool(
             current_app.config.get("OPENAI_API_KEY")
         )
         if not boosted and use_openai_fallback:
             ctx = json.dumps(r.chunks) if r.chunks else "[]"
-            boosted, _usage = generate_openai_boost_fallback(text, ctx)
+            boosted, ometa = generate_openai_boost_fallback(text, ctx)
             if boosted:
                 boost_provider = "openai"
+                boost_usage_meta = ometa
 
     logger.info(
         "chat_turn structured=%s confidence=%.3f primary_model=%s validation_severity=%s "
@@ -277,6 +281,31 @@ def handle_chat_turn(
     db.session.add(assistant)
     db.session.flush()
 
+    def _token_usage_blob() -> str | None:
+        parts: dict[str, Any] = {}
+        if primary_llm_usage:
+            parts["primary"] = primary_llm_usage
+        if boost_usage_meta:
+            parts["boost"] = boost_usage_meta
+        if not parts:
+            return None
+        return json.dumps(parts)
+
+    def _primary_log_token_json() -> str | None:
+        if not primary_llm_usage:
+            return None
+        return json.dumps(primary_llm_usage)
+
+    rv_model = None
+    rv_provider = None
+    if primary_for_log == "openai" and primary_llm_usage:
+        rv_model = primary_llm_usage.get("model") or current_app.config.get(
+            "OPENAI_CHAT_MODEL", "gpt-4o-mini"
+        )
+        rv_provider = "openai"
+    elif primary_for_log == "rule_based":
+        rv_provider = "rule_based"
+
     # --- RetrievalLog (enriched) ---
     log = RetrievalLog(
         session_id=session.id,
@@ -300,7 +329,7 @@ def handle_chat_turn(
         is_low_confidence=low_confidence,
         is_off_topic=len(r.chunks) == 0,
         latency_ms=latency_ms,
-        token_usage_json=None,
+        token_usage_json=_primary_log_token_json(),
         query_type_v2=(pipeline_extra.get("answer_intent") if pipeline_extra else None),
         sub_questions_json=json.dumps(pipeline_extra.get("sub_questions", [])) if pipeline_extra else None,
         answer_mode=pipeline_extra.get("answer_mode") if pipeline_extra else None,
@@ -352,11 +381,11 @@ def handle_chat_turn(
         boost_reason=boost_reason,
         boost_auto_triggered=bool(need_boost and not boost_toggle and boost_reason),
         boost_toggle_user_selected=boost_toggle,
-        model_name=None,
-        provider_name=None,
+        model_name=rv_model,
+        provider_name=rv_provider,
         course_answer_prompt_version=None,
         boost_prompt_version=None,
-        token_usage_json=None,
+        token_usage_json=_token_usage_blob(),
         course_answer_length=len(course_answer),
         boosted_answer_length=len(boosted) if boosted else None,
         response_fingerprint=_response_fingerprint(course_answer),

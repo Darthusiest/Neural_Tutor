@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.answers.answer_generation import generate_structured_answer
@@ -35,6 +35,7 @@ class PipelineResult:
     used_llm_for_answer: bool
     primary_model: str
     query_complexity: str
+    primary_llm_usage: dict[str, Any] = field(default_factory=dict)
 
 
 def run_reasoning_pipeline(
@@ -95,11 +96,14 @@ def run_reasoning_pipeline(
             used_llm_for_answer=False,
             primary_model="none",
             query_complexity=complexity,
+            primary_llm_usage={},
         )
 
     plan = build_answer_plan(sq, enhanced.chunks, enhanced.supporting_chunks, kb=kb)
 
-    course_answer, primary_model = generate_course_answer(plan, enhanced.chunks, sq)
+    course_answer, primary_model, primary_llm_usage = generate_course_answer(
+        plan, enhanced.chunks, sq
+    )
     used_llm = primary_model == "openai"
 
     pl_lectures = [c.get("lecture_number") for c in enhanced.chunks if c.get("lecture_number") is not None]
@@ -109,6 +113,7 @@ def run_reasoning_pipeline(
         course_answer = generate_structured_answer(plan, enhanced.chunks, sq)
         primary_model = "rule_based"
         used_llm = False
+        primary_llm_usage = {}
         validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
 
     enhanced.structured_query = sq
@@ -124,6 +129,7 @@ def run_reasoning_pipeline(
         used_llm_for_answer=used_llm,
         primary_model=primary_model,
         query_complexity=complexity,
+        primary_llm_usage=primary_llm_usage or {},
     )
 
 

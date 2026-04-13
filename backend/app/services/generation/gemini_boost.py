@@ -98,12 +98,17 @@ def generate_gemini_boosted_explanation(
         return None, {"error": "no_text", "provider": "gemini"}
 
     if not text or not str(text).strip():
-        return None, {"provider": "gemini"}
+        return None, {"provider": "gemini", "model": model}
+
+    meta: dict[str, Any] = {"provider": "gemini", "model": model}
+    um = data.get("usageMetadata")
+    if isinstance(um, dict):
+        meta["usage"] = um
 
     out = str(text).strip()
     if not out.lower().startswith("boosted explanation"):
         out = "Boosted Explanation:\n\n" + out
-    return out, {"provider": "gemini", "model": model}
+    return out, meta
 
 
 # Design-doc name: secondary boost uses Gemini only (never the primary Course Answer).

@@ -91,15 +91,18 @@ def _openai_chat(
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         logger.warning("OpenAI HTTP error: %s %s", e.code, e.read()[:500])
-        return None, {"error": f"http_{e.code}"}
+        model = current_app.config.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        return None, {"error": f"http_{e.code}", "model": model, "provider": "openai"}
     except OSError as e:
         logger.warning("OpenAI request failed: %s", e)
-        return None, {"error": str(e)}
+        model = current_app.config.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        return None, {"error": str(e), "model": model, "provider": "openai"}
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return None, {"error": "invalid_json"}
+        model = current_app.config.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        return None, {"error": "invalid_json", "model": model, "provider": "openai"}
 
     usage = data.get("usage") or {}
     text = (
@@ -107,9 +110,10 @@ def _openai_chat(
         .get("message", {})
         .get("content")
     )
+    meta = {"usage": usage, "model": model, "provider": "openai"}
     if not text or not str(text).strip():
-        return None, usage
-    return str(text).strip(), usage
+        return None, meta
+    return str(text).strip(), meta
 
 
 def generate_boosted_explanation(

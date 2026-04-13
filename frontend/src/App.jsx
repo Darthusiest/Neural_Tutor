@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { apiFetch } from './api/client'
 import { Layout } from './components/Layout'
 import { ThemeToggle } from './components/ThemeToggle'
+import { AdminRoute } from './components/AdminRoute'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminPage } from './pages/AdminPage'
 import { ChatPage } from './pages/ChatPage'
@@ -85,7 +86,9 @@ function AppRoutes({ user, onAuth, onLogout }) {
           path="/admin"
           element={
             <ProtectedRoute user={user}>
-              <AdminPage />
+              <AdminRoute user={user}>
+                <AdminPage />
+              </AdminRoute>
             </ProtectedRoute>
           }
         />

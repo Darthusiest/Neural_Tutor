@@ -11,6 +11,7 @@ Full-stack app for a course-specific tutor: **React + Vite** frontend, **Flask +
 | [`progress/README.md`](progress/README.md) | **Policy:** what to update for each kind of change |
 | [`progress/entries/`](progress/entries/) | Dated narrative notes (decisions, tuning, follow-ups) |
 | [`backend/docs/schema.md`](backend/docs/schema.md) | SQLite tables / columns |
+| [`backend/docs/admin_insights.md`](backend/docs/admin_insights.md) | Admin analytics HTTP API (`/api/admin/...`) |
 | [`backend/docs/AUTH_LOCAL.md`](backend/docs/AUTH_LOCAL.md) | Auth, CSRF, local testing |
 
 ## Repository layout
@@ -32,11 +33,12 @@ Full-stack app for a course-specific tutor: **React + Vite** frontend, **Flask +
 | `db`, `login_manager`, `csrf`, `limiter` | [`backend/app/extensions.py`](backend/app/extensions.py) |
 | Auth + CSRF token route | [`backend/app/routes/auth.py`](backend/app/routes/auth.py) |
 | Chat, sessions, feedback | [`backend/app/routes/chat.py`](backend/app/routes/chat.py) |
+| Admin insights | [`backend/app/routes/admin.py`](backend/app/routes/admin.py) |
 | JSON input + password/email checks + timing helpers | [`backend/app/utils/security.py`](backend/app/utils/security.py) |
 | Lecture import + lexical retrieval + v2 orchestration + cache | [`lectures/lecture_loader.py`](backend/app/services/lectures/lecture_loader.py), [`retrieval.py`](backend/app/services/retrieval.py), [`retrieval_v2.py`](backend/app/services/retrieval_v2.py), [`lecture_data.py`](backend/app/services/lecture_data.py) |
 | Structured reasoning (concept KB, plan, validation) | [`knowledge/concept_kb.py`](backend/app/services/knowledge/concept_kb.py), [`knowledge/domain_knowledge.py`](backend/app/services/knowledge/domain_knowledge.py) (lexical aliases / typo helpers), [`knowledge/structured_query.py`](backend/app/services/knowledge/structured_query.py), [`answers/answer_planning.py`](backend/app/services/answers/answer_planning.py), [`answers/answer_generation.py`](backend/app/services/answers/answer_generation.py), [`generation/course_generation.py`](backend/app/services/generation/course_generation.py), [`generation/generation_input.py`](backend/app/services/generation/generation_input.py) (clean LLM input), [`generation/output_cleanup.py`](backend/app/services/generation/output_cleanup.py) (post-filter + section enforcement), [`answers/answer_validation.py`](backend/app/services/answers/answer_validation.py), [`reasoning_pipeline.py`](backend/app/services/reasoning_pipeline.py), [`generation/boost_triggers.py`](backend/app/services/generation/boost_triggers.py), [`generation/gemini_boost.py`](backend/app/services/generation/gemini_boost.py) |
 | Study modes (quiz / compare / summary) | [`routes/study.py`](backend/app/routes/study.py), [`study.py`](backend/app/services/study.py) |
-| Chat turn orchestration + analytics persistence | [`chat_orchestrator.py`](backend/app/services/chat_orchestrator.py), [`conversational_responses.py`](backend/app/services/conversational_responses.py) (varied no-chunk replies) |
+| Chat turn orchestration + analytics persistence | [`chat_orchestrator.py`](backend/app/services/chat_orchestrator.py), [`conversational_responses.py`](backend/app/services/conversational_responses.py) (varied no-chunk replies), [`admin_insights.py`](backend/app/services/admin_insights.py) (admin aggregate queries) |
 | Lectures API (topics, summary, retrieve) | [`routes/lectures.py`](backend/app/routes/lectures.py) |
 | Analytics / feedback / outcomes models | [`models/analytics.py`](backend/app/models/analytics.py) |
 | Password reset email (Resend) | [`backend/app/services/reset_email.py`](backend/app/services/reset_email.py) |
@@ -52,10 +54,10 @@ Full-stack app for a course-specific tutor: **React + Vite** frontend, **Flask +
 - **Retrieval:** Lexical **token-aligned** scoring in [`retrieval.py`](backend/app/services/retrieval.py) (field weights, phrases, confidence, diagnostics; optional **`lecture_filter`** + **`summary_rank`** for single-lecture ranked lists). **Retrieval v2** ([`retrieval_v2.py`](backend/app/services/retrieval_v2.py)) adds query classification, alias expansion, typo hints, and strategy-specific chunk lists (compare uses side-only subqueries and merged diagnostics; synthesis uses a primary pass plus light augmentation; single-lecture summary is ranked and capped by **`SUMMARY_MAX_CHUNKS`** in [`config.py`](backend/app/config.py)). **`load_lecture_cache()`** / **`invalidate_lecture_cache()`** on import.
 - **Study:** **`POST /api/study/quiz/next`**, **`/quiz/answer`**, **`/compare`**, **`/summary`** — grounded in lecture chunks; optional GPT comparison when OpenAI is configured ([`routes/study.py`](backend/app/routes/study.py)).
 - **Chat:** Sessions and messages persist. When **`STRUCTURED_PIPELINE_ENABLED`** (default on in [`config.py`](backend/app/config.py)), [`handle_chat_turn`](backend/app/services/chat_orchestrator.py) runs [`run_reasoning_pipeline`](backend/app/services/reasoning_pipeline.py): **`retrieve_enhanced`** → structured query + decomposition → **answer plan** → primary **Course Answer** via OpenAI when **`PRIMARY_COURSE_ANSWER_OPENAI`** and **`OPENAI_API_KEY`** are set ([`generation/course_generation.py`](backend/app/services/generation/course_generation.py), [`llm.py`](backend/app/services/generation/llm.py) — final **student-facing** tutor copy (no internal retrieval jargon); LLM input is **question**, **concepts**, **primary/supporting** teaching text from [`build_generation_input`](backend/app/services/generation/generation_input.py) (plan-split chunk prose); tutor rules live in the **`llm.py`** system prompt; [`output_cleanup`](backend/app/services/generation/output_cleanup.py) strips leaky lines and enforces `###` sections; four `###` headings through **Why it matters**), else rule-based templates in [`answers/answer_generation.py`](backend/app/services/answers/answer_generation.py) (**same** four sections; no lecture IDs / keyword dumps in the template) → **validation** (pass / weak / fail). Otherwise the legacy path uses **`retrieve_enhanced`** + [`format_course_answer`](backend/app/services/retrieval.py). Concept metadata lives in [`data/LING487_STRUCTURED_PIPELINE_KB.json`](backend/data/LING487_STRUCTURED_PIPELINE_KB.json) (config **`KB_JSON_PATH`**). Persists **`retrieval_logs`** (including pipeline diagnostics), **`retrieval_chunk_hits`**, **`response_variants`**, **`message_outcomes`**. Assistant **`payload_json`** includes **`course_answer`**, **`confidence`**, optional **`query_type`**, optional **`pipeline_diagnostics`**, **`primary_model`**, **`validation_severity`**, **`boost_provider`**, **`boost_reason`**, **`query_complexity`**, optional **`no_match_kind`** when retrieval found no chunks (`greeting` / `short_ack` / `off_topic`; [`conversational_responses.py`](backend/app/services/conversational_responses.py) picks multi-paragraph **Course Answer** copy from rotating templates; **boost** does not run without chunks), and optional **`boosted_explanation`**. **Boosted Explanation** is secondary only: gated by [`should_use_boost`](backend/app/services/generation/boost_triggers.py) (alias of `should_use_gemini_boost`); produced by **Gemini** ([`gemini_boost.generate_boosted_explanation`](backend/app/services/generation/gemini_boost.py)) when a Google AI key is set. Optional **`OPENAI_BOOST_FALLBACK=1`** uses OpenAI for boost only if Gemini is unavailable or fails.
-- **UI:** ChatGPT-style layout; modes `chat` / `quiz` / `compare` / `summary` with study controls in [`ChatPanel.jsx`](frontend/src/components/ChatPanel.jsx); boost checkbox; the message column **scrolls to the latest message** when new content arrives; assistant/user message text uses **`pre-wrap`** so multi-line **Course Answer** sections keep line breaks; **light/dark theme** toggle in the header (auth pages: top-right fixed control); preference persisted in **`localStorage`**; **`ProtectedRoute`** + **`ErrorBoundary`**; auth and reset flows; admin insights stub.
+- **UI:** ChatGPT-style layout; modes `chat` / `quiz` / `compare` / `summary` with study controls in [`ChatPanel.jsx`](frontend/src/components/ChatPanel.jsx); boost checkbox; the message column **scrolls to the latest message** when new content arrives; assistant/user message text uses **`pre-wrap`** so multi-line **Course Answer** sections keep line breaks; **light/dark theme** toggle in the header (auth pages: top-right fixed control); preference persisted in **`localStorage`**; **`ProtectedRoute`** + **`ErrorBoundary`**; auth and reset flows; **Admin insights** ([`/admin`](frontend/src/App.jsx)): UTC aggregates, low-confidence list + CSV, chunk analytics, model/token rollups ([`AdminPage.jsx`](frontend/src/pages/AdminPage.jsx)); [`AdminRoute`](frontend/src/components/AdminRoute.jsx) sends non-admins to **`/chat`**.
 - **Feedback:** `POST /api/feedback` accepts thumbs / preference plus optional enriched fields: `helpfulness_rating` (1-5), `resolved`, `follow_up_required`, `follow_up_type`, `explicit_confusion_flag`, `feedback_note`, `preference_strength`. All enriched fields are nullable; the endpoint is backward-compatible with the original thumb-only payload.
 
-**Not done yet:** rich compare/summary/quiz-specific answer copy (beyond retrieval + boost triggers), admin **insights** aggregates over stored analytics, optional Render manifests, email verification / account lockout / formal audit pipeline.
+**Not done yet:** rich compare/summary/quiz-specific answer copy (beyond retrieval + boost triggers), deeper admin tooling (e.g. offset paging UI, per-day token time series), optional Render manifests, email verification / account lockout / formal audit pipeline.
 
 ## Local setup
 
@@ -123,7 +125,11 @@ Dev URL: `http://127.0.0.1:5173`. [`vite.config.js`](frontend/vite.config.js) pr
 
 ### Admin insights
 
-`GET /api/admin/insights` returns **403** unless `users.is_admin` is true. Example promotion:
+**Admin analytics** (all **403** unless `users.is_admin`): **`GET /api/admin/insights?days=`** — dashboard aggregates plus **`models_and_tokens`** rollups; **`GET /api/admin/insights/low-confidence?limit=&offset=`** — paged rows (question snippet, confidence, IDs; no user emails); **`GET /api/admin/insights/low-confidence.csv`** — CSV export (capped); **`GET /api/admin/insights/chunks?limit=`** — top **`lecture_chunk_id`** hits in low-confidence retrievals vs overall. Implemented in [`admin_insights.py`](backend/app/services/admin_insights.py) and [`routes/admin.py`](backend/app/routes/admin.py). Primary OpenAI **Course Answer** and boost calls persist **`token_usage_json`** / **`model_name`** on **`response_variants`** (and primary usage on **`retrieval_logs`**) from [`chat_orchestrator.py`](backend/app/services/chat_orchestrator.py). The **`/admin`** SPA uses [`AdminRoute`](frontend/src/components/AdminRoute.jsx) so non-admins go to **`/chat`**.
+
+Full endpoint table and PII notes: [`backend/docs/admin_insights.md`](backend/docs/admin_insights.md).
+
+Example promotion to admin:
 
 ```bash
 sqlite3 backend/ling487.db "UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';"
@@ -156,7 +162,10 @@ All **`POST` / `PUT` / `PATCH` / `DELETE`** API routes expect **`Content-Type: a
 | POST | `/api/study/quiz/answer` | `chunk_id`, `question_type`, `quiz_token`, optional answer fields, optional `session_id` |
 | POST | `/api/study/compare` | `concept_a`, `concept_b`, optional `expand`, optional `session_id` |
 | POST | `/api/study/summary` | `kind` (`lecture` \| `topic`), `lecture_number` or `topic`, optional `session_id` |
-| GET | `/api/admin/insights` | Admin-only stub |
+| GET | `/api/admin/insights` | Admin-only; optional `days` (1–365); aggregates + `models_and_tokens` ([`admin_insights.py`](backend/app/services/admin_insights.py)) |
+| GET | `/api/admin/insights/low-confidence` | Admin-only; `days`, `limit`, `offset` — paged low-confidence retrieval logs |
+| GET | `/api/admin/insights/low-confidence.csv` | Admin-only; `days` — CSV download (capped rows) |
+| GET | `/api/admin/insights/chunks` | Admin-only; `days`, `limit` — chunk frequency (weak vs overall) |
 
 Lecture routes are rate-limited (e.g. **120/min** for GET catalog endpoints, **90/min** for POST retrieve); see [`lectures.py`](backend/app/routes/lectures.py).
 
@@ -176,6 +185,9 @@ Lecture routes are rate-limited (e.g. **120/min** for GET catalog endpoints, **9
 | `GET .../lectures/topics`, `GET .../lectures/<n>/summary` | 120 / minute |
 | `POST .../lectures/retrieve` | 90 / minute |
 | `GET .../admin/insights` | 120 / minute |
+| `GET .../admin/insights/low-confidence` | 60 / minute |
+| `GET .../admin/insights/low-confidence.csv` | 30 / minute |
+| `GET .../admin/insights/chunks` | 60 / minute |
 
 Use **`RATELIMIT_STORAGE_URI`** (e.g. **Redis**) when running multiple Gunicorn workers so limits are shared.
 
@@ -189,6 +201,7 @@ Use **`RATELIMIT_STORAGE_URI`** (e.g. **Redis**) when running multiple Gunicorn 
 - **Secrets** live in backend **`.env`** only (`os.getenv` in [`config.py`](backend/app/config.py)); never put **OpenAI** or **Gemini / Google AI** keys in the frontend. Frontend env is for **`VITE_*`** public config only.
 - **CSRF:** [Flask-WTF](https://flask-wtf.palletsprojects.com/) validates **`X-CSRFToken`** on unsafe methods. The SPA uses [`frontend/src/api/client.js`](frontend/src/api/client.js) to call **`GET /api/auth/csrf`** and attach the token; CORS allows that header for **`FRONTEND_ORIGIN`**.
 - **Rate limits:** [Flask-Limiter](https://flask-limiter.readthedocs.io/) (per-IP defaults in the table above). Set **`RATELIMIT_STORAGE_URI`** to **Redis** when using multiple workers.
+- **Admin routes:** `GET /api/admin/*` requires the same session cookie as other authenticated routes; **`is_admin`** is enforced server-side (see [`routes/admin.py`](backend/app/routes/admin.py)).
 - **Passwords:** enforced on register and reset (length + upper / lower / digit / special) in [`app/utils/security.py`](backend/app/utils/security.py).
 - **Hardening:** duplicate-register races → **`IntegrityError`** + rollback; strict JSON + **`application/json`** via **`parse_request_json`** on auth and chat writes; password reset uses **`hmac.compare_digest`**, timing padding, and uniform responses where applicable; missing-user login path uses **`burn_auth_timing_budget`**; failures and notable events go to the **`auth.security`** logger.
 - **Git:** [`.gitignore`](.gitignore) covers `.env`, `*.db`, `node_modules/`, `dist/`, `build/`, `instance/`, etc.
@@ -202,9 +215,9 @@ Use **`RATELIMIT_STORAGE_URI`** (e.g. **Redis**) when running multiple Gunicorn 
 
 ## Next steps
 
-- **Analytics-driven tuning:** Use `retrieval_logs` (score margin, coverage, low-confidence flags), `retrieval_chunk_hits` (per-chunk field scores), `feedback` (enriched signals), and `message_outcomes` (rephrase/follow-up detection) to tune `FIELD_WEIGHTS`, phrase bonuses, and `CONFIDENCE_THRESHOLD` in [`retrieval.py`](backend/app/services/retrieval.py). Build admin insights aggregates over these tables.
+- **Analytics-driven tuning:** Use **[`/admin`](frontend/src/App.jsx)** and [`GET /api/admin/insights`](backend/app/routes/admin.py) (aggregates, chunk analytics, low-confidence drill-down) plus raw SQL on `retrieval_logs`, `retrieval_chunk_hits`, `feedback`, and `message_outcomes` to tune `FIELD_WEIGHTS`, phrase bonuses, and `CONFIDENCE_THRESHOLD` in [`retrieval.py`](backend/app/services/retrieval.py). See [`backend/docs/admin_insights.md`](backend/docs/admin_insights.md).
 - **Boost evaluation:** Compare `response_variants.boost_used` and `boost_reason` against `feedback.preferred` and `feedback.resolved` to measure boost win-rate; use `response_fingerprint` to detect repeated weak answers. Assistant `payload_json.boost_provider` distinguishes Gemini vs OpenAI fallback.
-- **LLM observability:** Persist `token_usage_json` and model/provider names on `response_variants` (`model_name` / `provider_name`) for primary vs boost — wiring is partial; see [`generation/llm.py`](backend/app/services/generation/llm.py) and [`generation/gemini_boost.py`](backend/app/services/generation/gemini_boost.py).
+- **LLM cost analytics:** `response_variants.token_usage_json` and `model_name` / `provider_name` are populated on structured-pipeline turns when OpenAI (and optionally Gemini boost) return usage; extend with per-day rollups or budgets if needed ([`generation/llm.py`](backend/app/services/generation/llm.py), [`gemini_boost.py`](backend/app/services/generation/gemini_boost.py)).
 - **Embedding retrieval:** Add `backend="embedding"` to [`retrieve_chunks`](backend/app/services/retrieval.py); schema supports `RetrievalChunkHit` scoring data for hybrid ranking.
-- **Dataset quality:** Query `retrieval_chunk_hits` joined to `feedback`/`message_outcomes` to find chunks that correlate with bad outcomes (low helpfulness, rephrases, confusion flags); use results to split, rewrite, or expand lecture content.
+- **Dataset quality:** Admin **chunks** endpoint surfaces frequent `lecture_chunk_id` hits; join to `feedback` / `message_outcomes` offline for chunk-level quality work.
 - **Production email:** Resend; remove reliance on **`dev_reset_token`** outside debug.
