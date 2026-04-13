@@ -128,6 +128,22 @@ class TestRuleBasedTutorFormat:
             assert "### Example / Intuition" in text
             assert "### Why it matters" in text
 
+    def test_compare_answer_no_per_line_scaffold_spam(self, corpus, app):
+        """Regression: compare mode must not repeat 'First idea' / 'In one line' on every bullet."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("Compare MFCCs and formants")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=8)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            assert plan.answer_mode == "compare"
+            text = generate_structured_answer(plan, r.chunks, sq)
+            assert text.count("**First idea:**") <= 1
+            assert text.count("**In one line:**") <= 1
+            assert text.count("**Second idea:**") <= 1
+
 
 class TestEndToEndPipeline:
     def test_pipeline_returns_answer(self, corpus, app):

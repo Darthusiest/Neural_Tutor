@@ -15,6 +15,17 @@ from app.models.analytics import Feedback, MessageOutcome, ResponseVariant, Retr
 from app.models.content import LectureChunk
 
 
+def _validation_severity_select_sql() -> str:
+    """JSON path for validation severity; SQLite vs PostgreSQL."""
+    dialect = db.engine.dialect.name
+    if dialect == "sqlite":
+        return "json_extract(validation_checks_json, '$.severity')"
+    if dialect == "postgresql":
+        return "(validation_checks_json::json)->>'severity'"
+    # Best-effort fallback (e.g. MySQL would need its own branch)
+    return "json_extract(validation_checks_json, '$.severity')"
+
+
 def _utc_window(days: int) -> tuple[datetime, datetime]:
     """Inclusive since, inclusive until in naive UTC (matches typical SQLite storage)."""
     until = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -120,13 +131,14 @@ def compute_insights_summary(days: int = 7) -> dict[str, Any]:
         label = "null" if key is None else ("true" if key else "false")
         validation_passed[label] = int(n)
 
-    # Severity from JSON (SQLite json_extract)
+    # Severity from JSON (dialect-specific JSON operators)
     severity_counts: dict[str, int] = {}
     try:
+        sev_expr = _validation_severity_select_sql()
         raw_sev = db.session.execute(
             text(
-                """
-                SELECT json_extract(validation_checks_json, '$.severity') AS sev, COUNT(*)
+                f"""
+                SELECT {sev_expr} AS sev, COUNT(*)
                 FROM retrieval_logs
                 WHERE created_at >= :since AND created_at <= :until
                   AND validation_checks_json IS NOT NULL
@@ -383,7 +395,7 @@ def chunk_analytics(days: int, limit: int) -> dict[str, Any]:
             FROM retrieval_chunk_hits h
             JOIN retrieval_logs r ON r.id = h.retrieval_log_id
             WHERE r.created_at >= :since AND r.created_at <= :until
-              AND r.is_low_confidence = 1
+              AND r.is_low_confidence IS TRUE
             GROUP BY h.lecture_chunk_id
             ORDER BY hit_count DESC
             LIMIT :lim
@@ -649,7 +661,7 @@ def compute_content_quality(days: int) -> dict[str, Any]:
             FROM retrieval_chunk_hits h
             JOIN retrieval_logs r ON r.id = h.retrieval_log_id
             WHERE r.created_at >= :since AND r.created_at <= :until
-              AND r.is_low_confidence = 1
+              AND r.is_low_confidence IS TRUE
             GROUP BY h.lecture_chunk_id
             ORDER BY hit_count DESC
             LIMIT :lim

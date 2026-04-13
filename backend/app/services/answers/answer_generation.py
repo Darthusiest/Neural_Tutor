@@ -140,25 +140,31 @@ def _build_explanation_bullets(
     skip_first_chunk_lines: int = 0,
 ) -> list[str]:
     """Bullets for ### Explanation (compare vs default). Skips lines already used in Direct Answer."""
-    _compare_label = {
-        "One-line distinction": "In one line",
-        "Concept A": "First idea",
-        "Concept B": "Second idea",
-        "Direct comparison": "Putting them together",
-        "Why the difference matters": "Why it matters",
-    }
     if plan.answer_mode == "compare":
+        # One heading per plan section; at most a few lines under each (no per-line
+        # "First idea / In one line" scaffolding—that produced hundreds of repeated labels).
         lines: list[str] = []
         for sec in plan.sections:
             if not sec.chunk_ids:
                 continue
-            label = _compare_label.get(sec.heading, sec.heading)
+            heading = sec.heading
+            blob: list[str] = []
             for c in chunks_by_ids(all_chunks, sec.chunk_ids):
-                for bl in _bullet_lines_from_chunk(c)[:5]:
-                    lines.append(f"**{label}:** {bl}")
+                for bl in _bullet_lines_from_chunk(c)[:4]:
+                    blob.append(bl.strip())
+                    if len(blob) >= 4:
+                        break
+                if len(blob) >= 4:
+                    break
+            blob = _dedupe_lines(blob, cap=4)
+            if not blob:
+                continue
+            lines.append(f"**{heading}:** {blob[0]}")
+            for extra in blob[1:]:
+                lines.append(extra)
         if plan.comparison_axes:
-            lines.append("**What to weigh:** " + "; ".join(plan.comparison_axes[:4]))
-        return _dedupe_lines(lines, cap=18)
+            lines.append("**Contrast to keep in mind:** " + "; ".join(plan.comparison_axes[:4]))
+        return _dedupe_lines(lines, cap=22)
 
     expl: list[str] = []
     if not primary:
@@ -171,10 +177,11 @@ def _build_explanation_bullets(
         expl.extend(first_lines[skip_first_chunk_lines:])
     for c in primary[1:]:
         expl.extend(_bullet_lines_from_chunk(c))
-    for cid in plan.supporting_chunk_ids[:4]:
+    # Cap supporting material to reduce retrieval contamination (unrelated chunks).
+    for cid in plan.supporting_chunk_ids[:3]:
         c = next((x for x in all_chunks if x.get("id") == cid), None)
         if c:
-            expl.extend(_bullet_lines_from_chunk(c)[:4])
+            expl.extend(_bullet_lines_from_chunk(c)[:2])
     return _dedupe_lines(expl, cap=16)
 
 

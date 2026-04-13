@@ -14,6 +14,11 @@ _BANNED_LINE_PATTERNS = [
     r"(?im)^.*\bindexed\b.*$",
     r"(?im)^.*\bsource_material\b.*$",
     r"(?im)^.*\bdebug\b.*$",
+    # Planner / outline scaffolding that must not reach students (LLM echo).
+    r"(?im)^\s*\*?\*?In one line:.*$",
+    r"(?im)^\s*\*?\*?First idea:.*$",
+    r"(?im)^\s*\*?\*?Second idea:.*$",
+    r"(?im)^\s*\*?\*?Putting them together:.*$",
 ]
 
 

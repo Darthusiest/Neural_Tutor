@@ -24,6 +24,23 @@ from app.services.retrieval import (
 
 QuizType = Literal["mc", "short"]
 
+# Filter junk "overlap" tokens in compare keyword sets (stops similarity lists like "defining, different, distinct").
+_KEYWORD_STOPWORDS: frozenset[str] = frozenset(
+    """
+    a an the and or but if as of at by for from in into is it its no not on onto or such than that the their
+    them then these they this those to too up via was were what when where which while who whom whose why
+    will with within without both each few more most other same some such than very can could should would
+    about above after again against all also any around as be been being below between both
+    defining different distinct have has had having do does did done get gets got how however
+    key keys like likely mainly many may might must need needs new next often once only onto our out over
+    own per perhaps quite rather really said say says see seen she should since so some such than that
+    their them then there these they this those though through throughout thus to too toward under until
+    up upon us use used uses using very via want wants was way we well were what when where whether which
+    while who whom whose why will with within without would yet you your
+    analogy analogies definitions definition examples example
+    """.split()
+)
+
 
 def _secret() -> str:
     return current_app.config.get("SECRET_KEY") or "dev-secret"
@@ -296,45 +313,48 @@ def format_compare_answer(
 
     ka = _keyword_set(chunks_a)
     kb = _keyword_set(chunks_b)
-    overlap = sorted(ka & kb)[:12]
-    only_a = sorted(ka - kb)[:10]
-    only_b = sorted(kb - ka)[:10]
+    overlap = sorted(ka & kb)
+    only_a = sorted(ka - kb)
+    only_b = sorted(kb - ka)
 
     lines.extend(["", "### Similarities", ""])
-    if overlap:
+    overlap = [t for t in overlap if t not in _KEYWORD_STOPWORDS][:10]
+    if len(overlap) >= 3:
         lines.append(
-            "Both ideas connect through these course themes or terms (from retrieved sections):"
+            "Both ideas show up in related course material. Shared themes you will see across the excerpts above "
+            f"include: {', '.join(overlap[:8])}."
         )
-        for t in overlap:
-            lines.append(f"- {t}")
     else:
         lines.append(
-            "- The materials describe each idea in different vocabulary; both are grounded in the same course, "
-            "but the excerpts emphasize different aspects (see the concept sections above)."
+            "- The notes above ground each term in concrete definitions and examples; read **Concept A** and "
+            "**Concept B** side by side and name what stays the same (e.g. both are part of how we represent "
+            "speech or models in this course)."
         )
 
     lines.extend(["", "### Differences", ""])
+    only_a = [t for t in only_a if t not in _KEYWORD_STOPWORDS][:8]
+    only_b = [t for t in only_b if t not in _KEYWORD_STOPWORDS][:8]
     if only_a:
-        lines.append(f"- **{label_a}** is associated more with: {', '.join(only_a[:8])}.")
+        lines.append(
+            f"- **{label_a}** is tied more strongly in the keywords to: {', '.join(only_a)}."
+        )
     if only_b:
-        lines.append(f"- **{label_b}** is associated more with: {', '.join(only_b[:8])}.")
+        lines.append(
+            f"- **{label_b}** is tied more strongly in the keywords to: {', '.join(only_b)}."
+        )
     if not only_a and not only_b:
         lines.append(
-            "- Use the **Concept A** and **Concept B** sections above: contrast the definitions, "
-            "examples, and lecture contexts line by line."
+            f"- Contrast the **Concept A** and **Concept B** blocks above: pick one distinction per paragraph "
+            f"({label_a} vs {label_b}) using the course wording, not generic ML vocabulary."
         )
 
     lines.extend(["", "### When each matters", ""])
     lines.append(
-        f"- Choose **{label_a}** when the question is about the first cluster of ideas above "
-        f"(definitions, examples, and lecture hooks in that column)."
+        f"- Use **{label_a}** when the prompt asks about the ideas in the first column; use **{label_b}** when "
+        "the prompt targets the second."
     )
     lines.append(
-        f"- Choose **{label_b}** when the question targets the second cluster—its definitions, "
-        "examples, and typical exam prompts shown there."
-    )
-    lines.append(
-        "- If the task asks you to **relate** them, start from similarities, then spell out the contrast using the **Differences** bullets."
+        "- If you must relate them, state one clean contrast sentence, then support it with a phrase from each column above."
     )
     return "\n".join(lines).rstrip()
 
@@ -348,7 +368,7 @@ def _keyword_set(chunks: list[dict[str, Any]]) -> set[str]:
             if isinstance(arr, list):
                 for x in arr:
                     s = str(x).strip().lower()
-                    if len(s) > 2:
+                    if len(s) > 2 and s not in _KEYWORD_STOPWORDS:
                         out.add(s)
         except json.JSONDecodeError:
             pass
@@ -444,10 +464,15 @@ def _format_summary_recap(chunks: list[dict[str, Any]], title: str) -> str:
         lines.append(f"- Sections span lecture material in **L{lec_nums[0]}** through the listed topics above.")
     else:
         lines.append("- Connections are **within-lecture**: headings above follow the order of ideas in the notes.")
-    topics = [str(c.get("topic") or "").split("—")[0].strip() for c in chunks[:5]]
-    topics = [t for t in topics if t]
+    topics: list[str] = []
+    seen_topic: set[str] = set()
+    for c in chunks[:8]:
+        t = str(c.get("topic") or "").split("—")[0].strip()
+        if t and t not in seen_topic:
+            seen_topic.add(t)
+            topics.append(t)
     if topics:
-        lines.append(f"- Topics to cross-link while studying: {', '.join(topics[:5])}.")
+        lines.append(f"- Topics to cross-link while studying: {', '.join(topics[:6])}.")
     return "\n".join(lines).rstrip()
 
 
