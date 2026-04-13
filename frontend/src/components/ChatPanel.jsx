@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api/client'
+import { MarkdownContent } from './MarkdownContent'
 
 export function ChatPanel({
   messages,
@@ -328,12 +329,16 @@ function MessageBlock({ m }) {
     <div className="msg assistant">
       <div className="msg-block course">
         <div className="label">Course Answer</div>
-        <div className="msg-body">{m.course_answer || ''}</div>
+        <div className="msg-body msg-body--md">
+          <MarkdownContent>{m.course_answer || ''}</MarkdownContent>
+        </div>
       </div>
       {m.boosted_explanation ? (
         <div className="msg-block boost">
           <div className="label">Boosted Explanation</div>
-          <div className="msg-body">{m.boosted_explanation}</div>
+          <div className="msg-body msg-body--md">
+            <MarkdownContent>{m.boosted_explanation}</MarkdownContent>
+          </div>
         </div>
       ) : null}
     </div>

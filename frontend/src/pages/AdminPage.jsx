@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiFetch } from '../api/client'
 
 const DAY_OPTIONS = [7, 14, 30, 90]
+const LOW_CONF_PAGE_SIZE = 20
 
 function Section({ title, children }) {
   return (
@@ -35,11 +36,13 @@ function formatDict(obj) {
 
 export function AdminPage() {
   const [days, setDays] = useState(7)
+  const [lcOffset, setLcOffset] = useState(0)
   const [data, setData] = useState(null)
   const [lowConf, setLowConf] = useState(null)
   const [chunks, setChunks] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [lcLoading, setLcLoading] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
 
   useEffect(() => {
@@ -49,14 +52,12 @@ export function AdminPage() {
     const q = `days=${days}`
     ;(async () => {
       try {
-        const [summary, lc, ch] = await Promise.all([
+        const [summary, ch] = await Promise.all([
           apiFetch(`/api/admin/insights?${q}`),
-          apiFetch(`/api/admin/insights/low-confidence?${q}&limit=20&offset=0`),
           apiFetch(`/api/admin/insights/chunks?${q}&limit=15`),
         ])
         if (!cancelled) {
           setData(summary)
-          setLowConf(lc)
           setChunks(ch)
         }
       } catch (e) {
@@ -70,6 +71,27 @@ export function AdminPage() {
     }
   }, [days])
 
+  useEffect(() => {
+    let cancelled = false
+    setLcLoading(true)
+    const q = `days=${days}`
+    ;(async () => {
+      try {
+        const lc = await apiFetch(
+          `/api/admin/insights/low-confidence?${q}&limit=${LOW_CONF_PAGE_SIZE}&offset=${lcOffset}`,
+        )
+        if (!cancelled) setLowConf(lc)
+      } catch (e) {
+        if (!cancelled) setError(e.data?.error || e.message)
+      } finally {
+        if (!cancelled) setLcLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [days, lcOffset])
+
   const w = data?.window
   const vol = data?.volume
   const ret = data?.retrieval
@@ -80,6 +102,11 @@ export function AdminPage() {
   const mt = data?.models_and_tokens
 
   const csvHref = `/api/admin/insights/low-confidence.csv?days=${days}`
+
+  const lcLimit = lowConf?.limit ?? LOW_CONF_PAGE_SIZE
+  const lcTotal = lowConf?.total ?? 0
+  const canPrevLc = lcOffset > 0
+  const canNextLc = lowConf != null && lcTotal > lcOffset + lcLimit
 
   return (
     <div className="center-page wide">
@@ -94,7 +121,10 @@ export function AdminPage() {
           Window (days){' '}
           <select
             value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            onChange={(e) => {
+              setDays(Number(e.target.value))
+              setLcOffset(0)
+            }}
             aria-label="Time window in days"
           >
             {DAY_OPTIONS.map((d) => (
@@ -195,6 +225,25 @@ export function AdminPage() {
                 Total matching: {lowConf.total}. Showing {lowConf.items?.length ?? 0} (limit{' '}
                 {lowConf.limit}, offset {lowConf.offset}). Session/message IDs only — no user emails.
               </p>
+              <div className="admin-insights-pager">
+                <button
+                  type="button"
+                  disabled={!canPrevLc || lcLoading}
+                  onClick={() => setLcOffset((o) => Math.max(0, o - lcLimit))}
+                  aria-label="Previous low-confidence page"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={!canNextLc || lcLoading}
+                  onClick={() => setLcOffset((o) => o + lcLimit)}
+                  aria-label="Next low-confidence page"
+                >
+                  Next
+                </button>
+                {lcLoading ? <span className="muted">Loading…</span> : null}
+              </div>
               {lowConf.items && lowConf.items.length > 0 ? (
                 <ul className="admin-insights-list">
                   {lowConf.items.map((row) => (
