@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app.extensions import db
 from app.models import ChatSession, Message, ResponseVariant, RetrievalLog, User
-from app.services.admin_insights import compute_insights_summary
+from app.services.admin_insights import compute_insights_summary, compute_tokens_by_day
 
 from tests.conftest import register_user
 
@@ -226,3 +228,114 @@ def test_token_rollup_from_response_variant(app):
     mt = data["models_and_tokens"]
     assert mt["sum_total_tokens_estimated"] == 42
     assert mt["by_provider"].get("openai", 0) >= 1
+
+
+def test_compute_tokens_by_day_groups_by_utc_date(app):
+    import json
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    day_a = (now - timedelta(days=4)).replace(hour=8, minute=0, second=0, microsecond=0)
+    day_b = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    key_a = day_a.date().isoformat()
+    key_b = day_b.date().isoformat()
+
+    with app.app_context():
+        u = User(email="dayroll@test.dev", is_admin=False)
+        u.set_password(_PW)
+        db.session.add(u)
+        db.session.flush()
+        s = ChatSession(user_id=u.id, title="s")
+        db.session.add(s)
+        db.session.flush()
+        m1 = Message(session_id=s.id, role="assistant", content_text="a")
+        m2 = Message(session_id=s.id, role="assistant", content_text="b")
+        db.session.add_all([m1, m2])
+        db.session.flush()
+        db.session.add(
+            ResponseVariant(
+                message_id=m1.id,
+                course_answer="Course Answer:\n\nx",
+                created_at=day_a,
+                token_usage_json=json.dumps(
+                    {"primary": {"usage": {"total_tokens": 10}, "model": "gpt-4o-mini"}}
+                ),
+            )
+        )
+        db.session.add(
+            ResponseVariant(
+                message_id=m2.id,
+                course_answer="Course Answer:\n\ny",
+                created_at=day_b,
+                token_usage_json=json.dumps(
+                    {
+                        "primary": {"usage": {"total_tokens": 20}},
+                        "boost": {"usage": {"total_tokens": 5}},
+                    }
+                ),
+            )
+        )
+        db.session.commit()
+
+        out = compute_tokens_by_day(30)
+
+    assert len(out["days"]) == 2
+    assert out["days"][0]["date"] == key_a
+    assert out["days"][0]["sum_tokens_estimated"] == 10
+    assert out["days"][0]["response_variants"] == 1
+    assert out["days"][1]["date"] == key_b
+    assert out["days"][1]["sum_tokens_estimated"] == 25
+    assert out["days"][1]["variants_with_token_totals"] == 1
+
+
+def test_tokens_by_day_endpoint_forbidden(client):
+    register_user(client, "noadm_tok@test.dev", _PW)
+    client.post(
+        "/api/auth/login",
+        json={"email": "noadm_tok@test.dev", "password": _PW},
+        content_type="application/json",
+    )
+    r = client.get("/api/admin/insights/tokens-by-day?days=7")
+    assert r.status_code == 403
+
+
+def test_cost_summary_and_content_quality_endpoints(client, app):
+    register_user(client, "adm_cost@test.dev", _PW)
+    with app.app_context():
+        u = User.query.filter_by(email="adm_cost@test.dev").first()
+        u.is_admin = True
+        db.session.commit()
+
+    client.post(
+        "/api/auth/login",
+        json={"email": "adm_cost@test.dev", "password": _PW},
+        content_type="application/json",
+    )
+    r = client.get("/api/admin/insights/cost-summary?days=7")
+    assert r.status_code == 200
+    b = r.get_json()
+    assert "sum_tokens_estimated" in b
+    assert "over_cap" in b
+
+    r2 = client.get("/api/admin/insights/content-quality?days=7")
+    assert r2.status_code == 200
+    assert "weak_chunks_by_low_confidence_hits" in r2.get_json()
+
+
+def test_tokens_by_day_endpoint_ok(client, app):
+    register_user(client, "adm_tokday@test.dev", _PW)
+    with app.app_context():
+        u = User.query.filter_by(email="adm_tokday@test.dev").first()
+        u.is_admin = True
+        db.session.commit()
+
+    client.post(
+        "/api/auth/login",
+        json={"email": "adm_tokday@test.dev", "password": _PW},
+        content_type="application/json",
+    )
+    r = client.get("/api/admin/insights/tokens-by-day?days=14")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert "window" in body
+    assert "days" in body
+    assert isinstance(body["days"], list)

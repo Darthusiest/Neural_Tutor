@@ -8,11 +8,13 @@ from flask_wtf.csrf import generate_csrf
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db, limiter
-from app.models import PasswordResetToken, User
+from app.models import EmailVerificationToken, PasswordResetToken, User
+from app.services.audit import log_audit_event
 from app.services.reset_email import (
     ResetEmailResult,
     resend_reset_is_configured,
     send_password_reset_email,
+    send_verification_email,
 )
 from app.utils.security import (
     burn_auth_timing_budget,
@@ -30,6 +32,12 @@ bp = Blueprint("auth", __name__)
 DUMMY_TOKEN_HASH = "0" * 64
 _FORGET_MIN_SECONDS = 0.085
 _RESET_MIN_SECONDS = 0.085
+
+
+def _email_verified(user: User) -> bool:
+    if not current_app.config.get("EMAIL_VERIFICATION_REQUIRED"):
+        return True
+    return user.email_verified_at is not None
 
 
 @bp.route("/csrf", methods=["GET"])
@@ -53,11 +61,32 @@ def register():
     if msg := validate_password_strength(password):
         return jsonify({"error": msg}), 400
 
+    verify_required = current_app.config.get("EMAIL_VERIFICATION_REQUIRED")
+    resend_ok = resend_reset_is_configured()
+
     user = User(email=email)
     user.set_password(password)
+    if not verify_required or not resend_ok:
+        user.email_verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
     db.session.add(user)
     try:
+        db.session.flush()
+        if verify_required and resend_ok:
+            raw = secrets.token_urlsafe(32)
+            EmailVerificationToken.query.filter(
+                EmailVerificationToken.user_id == user.id,
+                EmailVerificationToken.consumed_at.is_(None),
+            ).delete(synchronize_session=False)
+            ev = EmailVerificationToken(
+                user_id=user.id,
+                token_hash=hash_token(raw),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+            )
+            db.session.add(ev)
         db.session.commit()
+        if verify_required and resend_ok:
+            send_verification_email(user.email, raw)
     except IntegrityError:
         db.session.rollback()
         security_log("register_conflict", email=email)
@@ -68,8 +97,18 @@ def register():
         security_log("register_db_error", email=email)
         return jsonify({"error": "registration failed"}), 500
 
+    log_audit_event("register", actor_user_id=user.id, actor_email=email, metadata={"verified": bool(user.email_verified_at)})
     login_user(user)
-    return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}}), 201
+    return jsonify(
+        {
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "is_admin": user.is_admin,
+                "email_verified": _email_verified(user),
+            }
+        }
+    ), 201
 
 
 @bp.route("/login", methods=["POST"])
@@ -86,7 +125,13 @@ def login():
         security_log("login_invalid_email_shape")
         return jsonify({"error": "invalid credentials"}), 401
 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     user = User.query.filter_by(email=email).first()
+    if user and user.locked_until and user.locked_until > now:
+        log_audit_event("login_blocked_locked", actor_email=email, severity="warning")
+        security_log("login_locked", email=email)
+        return jsonify({"error": "account temporarily locked; try again later"}), 401
+
     if user:
         ok = user.check_password(password)
     else:
@@ -94,10 +139,45 @@ def login():
         ok = False
     if not ok:
         security_log("login_failed", email=email)
+        if user:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            max_a = int(current_app.config.get("LOGIN_MAX_ATTEMPTS", 8))
+            if user.failed_login_attempts >= max_a:
+                mins = int(current_app.config.get("LOGIN_LOCKOUT_MINUTES", 15))
+                user.locked_until = now + timedelta(minutes=mins)
+                log_audit_event(
+                    "account_lockout",
+                    actor_user_id=user.id,
+                    actor_email=email,
+                    severity="warning",
+                    metadata={"attempts": user.failed_login_attempts},
+                )
+            try:
+                db.session.commit()
+            except SQLAlchemyError:
+                db.session.rollback()
+        log_audit_event("login_failed", actor_email=email, severity="notice")
         return jsonify({"error": "invalid credentials"}), 401
 
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+
+    log_audit_event("login_success", actor_user_id=user.id, actor_email=email)
     login_user(user)
-    return jsonify({"user": {"id": user.id, "email": user.email, "is_admin": user.is_admin}})
+    return jsonify(
+        {
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "is_admin": user.is_admin,
+                "email_verified": _email_verified(user),
+            }
+        }
+    )
 
 
 @bp.route("/logout", methods=["POST"])
@@ -118,6 +198,7 @@ def me():
                 "id": current_user.id,
                 "email": current_user.email,
                 "is_admin": current_user.is_admin,
+                "email_verified": _email_verified(current_user),
             }
         }
     )
@@ -169,11 +250,22 @@ def forgot_password():
                 security_log("forgot_db_error", email=email)
             else:
                 email_result = send_password_reset_email(user.email, raw)
+                log_audit_event("password_reset_requested", actor_user_id=user.id, actor_email=email)
                 if email_result == ResetEmailResult.FAILED:
                     security_log("forgot_email_failed", email=email)
                 resend_ok = resend_reset_is_configured()
                 force_dev = current_app.config.get("DEV_RETURN_RESET_TOKEN", False)
-                if current_app.debug and (not resend_ok or force_dev):
+                allow_explicit = current_app.config.get("ALLOW_DEV_RESET_TOKEN_IN_JSON", False)
+                # Never expose reset tokens in JSON when not in Flask debug mode (production).
+                include_dev_token = False
+                if current_app.debug:
+                    if allow_explicit:
+                        include_dev_token = True
+                    elif not resend_ok:
+                        include_dev_token = True
+                    elif force_dev:
+                        include_dev_token = True
+                if include_dev_token:
                     body = dict(body)
                     body["dev_reset_token"] = raw
         return jsonify(body), 200
@@ -236,8 +328,69 @@ def reset_password():
             security_log("reset_db_error")
             return jsonify({"error": "password reset failed"}), 500
 
+        log_audit_event("password_reset_complete", actor_user_id=user.id, actor_email=user.email)
         return jsonify({"ok": True}), 200
     finally:
         timing_pad(t0, _RESET_MIN_SECONDS)
 
+
+@bp.route("/verify-email", methods=["POST"])
+@limiter.limit("20 per minute")
+def verify_email():
+    """Consume a one-time email verification token from the link query string."""
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
+    token = (data.get("token") or "").strip()
+    if msg := validate_reset_token_format(token):
+        return jsonify({"error": msg}), 400
+    th = hash_token(token)
+    row = EmailVerificationToken.query.filter_by(token_hash=th).first()
+    if row is None:
+        return jsonify({"error": "invalid or expired token"}), 400
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    if row.consumed_at is not None or row.expires_at < now_naive:
+        return jsonify({"error": "invalid or expired token"}), 400
+    user = db.session.get(User, row.user_id)
+    if not user:
+        return jsonify({"error": "invalid or expired token"}), 400
+    user.email_verified_at = now_naive
+    row.consumed_at = now_naive
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"error": "verification failed"}), 500
+    log_audit_event("email_verified", actor_user_id=user.id, actor_email=user.email)
+    return jsonify({"ok": True})
+
+
+@bp.route("/resend-verification", methods=["POST"])
+@login_required
+@limiter.limit("5 per minute")
+def resend_verification():
+    if not resend_reset_is_configured():
+        return jsonify({"error": "email delivery not configured"}), 503
+    if _email_verified(current_user):
+        return jsonify({"message": "already verified"}), 200
+    raw = secrets.token_urlsafe(32)
+    EmailVerificationToken.query.filter(
+        EmailVerificationToken.user_id == current_user.id,
+        EmailVerificationToken.consumed_at.is_(None),
+    ).delete(synchronize_session=False)
+    ev = EmailVerificationToken(
+        user_id=current_user.id,
+        token_hash=hash_token(raw),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+    )
+    db.session.add(ev)
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"error": "failed"}), 500
+    send_verification_email(current_user.email, raw)
+    log_audit_event("verification_email_resent", actor_user_id=current_user.id, actor_email=current_user.email)
+    return jsonify({"message": "sent"}), 200
 

@@ -18,6 +18,9 @@ sqlite3 backend/ling487.db "UPDATE users SET is_admin = 1 WHERE email = 'you@exa
 | GET | `/api/admin/insights/low-confidence` | `days`, `limit` (≤200), `offset` | Paged **`is_low_confidence`** retrieval logs: IDs, truncated question, confidence, pipeline fields. **No user emails.** 60/min. |
 | GET | `/api/admin/insights/low-confidence.csv` | `days` | Same window as JSON drill-down; CSV attachment; capped row count. 30/min. |
 | GET | `/api/admin/insights/chunks` | `days`, `limit` (≤100) | Top **`lecture_chunk_id`** by hit count: in low-confidence retrievals vs overall; joined to **`lecture_chunks`** for topic / lecture number. 60/min. |
+| GET | `/api/admin/insights/tokens-by-day` | `days` (1–365, default 7) | Per **UTC calendar day**: **`response_variants`** count, estimated sum of primary+boost tokens (same rules as dashboard rollups), count of variants with nonzero usage. Oldest → newest. 60/min. |
+| GET | `/api/admin/insights/cost-summary` | `days` | Token totals vs optional **`LLM_MONTHLY_TOKEN_CAP`** / warn threshold; optional USD via **`LLM_COST_USD_PER_MTOKENS`**; spike note. 60/min. |
+| GET | `/api/admin/insights/content-quality` | `days` | Heuristic **weak chunks** (low-confidence hit counts) + thumbs-down count. 60/min. |
 
 All filters use **`created_at`** in **UTC** (naive timestamps stored as UTC in typical setups).
 
@@ -29,5 +32,4 @@ When the structured pipeline uses **OpenAI** for the primary Course Answer, [`ch
 
 ## Follow-ups
 
-- Paging controls in the SPA for low-confidence (beyond first page).
-- Per-day token time series (would require date-bucketed queries or extra columns).
+- Optional chart visualization for **`tokens-by-day`**; budget / cap alerts (not implemented).

@@ -67,8 +67,6 @@ def lecture_retrieve():
             r = search_lecture_chunks(q, top_k=top_k, backend="embedding")
         else:
             r = search_lecture_chunks(q, top_k=top_k, backend="hybrid")
-    except NotImplementedError:
-        return jsonify({"error": "embedding/hybrid retrieval is not implemented yet"}), 501
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 

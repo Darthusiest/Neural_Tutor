@@ -761,15 +761,36 @@ def retrieve_chunks(
 
     ``backend="keyword"`` — lexical engine (this module).
 
-    ``backend="embedding"`` — reserved: dense retriever returning the same ``RetrievalResult`` shape.
+    ``backend="embedding"`` — cosine similarity over stored vectors (requires ``embed-chunks`` + ``OPENAI_API_KEY``).
 
-    ``backend="hybrid"`` — reserved: fuse lexical + dense scores (see ``RETRIEVAL_HYBRID_ENABLED`` / future work).
+    ``backend="hybrid"`` — weighted fusion of lexical + dense (see ``HYBRID_*_WEIGHT``).
     """
+    from flask import current_app, has_app_context
+
+    def _emb_enabled() -> bool:
+        if has_app_context():
+            return bool(current_app.config.get("EMBEDDING_RETRIEVAL_ENABLED"))
+        return False
+
     if backend == "embedding":
-        raise NotImplementedError("embedding retrieval is not implemented yet")
+        if not _emb_enabled():
+            raise ValueError(
+                "embedding retrieval is disabled; set EMBEDDING_RETRIEVAL_ENABLED=1 in the environment"
+            )
+        from app.services.embedding_retrieval import retrieve_embedding_only
+
+        return retrieve_embedding_only(
+            query, top_k=top_k, lecture_filter=lecture_filter, summary_rank=summary_rank
+        )
     if backend == "hybrid":
-        raise NotImplementedError(
-            "hybrid retrieval is not implemented yet (lexical + dense fusion)"
+        if not _emb_enabled():
+            raise ValueError(
+                "hybrid retrieval requires embeddings; set EMBEDDING_RETRIEVAL_ENABLED=1"
+            )
+        from app.services.embedding_retrieval import retrieve_hybrid
+
+        return retrieve_hybrid(
+            query, top_k=top_k, lecture_filter=lecture_filter, summary_rank=summary_rank
         )
     if backend != "keyword":
         raise ValueError(f"unknown retrieval backend: {backend!r}")

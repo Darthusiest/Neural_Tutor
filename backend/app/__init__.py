@@ -84,6 +84,16 @@ def create_app(config_object: type | None = None) -> Flask:
             load_lecture_cache()
         print(f"Imported {n} lecture sections into lecture_chunks.")
 
+    @app.cli.command("embed-chunks")
+    @click.option("--batch-size", default=32, show_default=True, type=int)
+    def embed_chunks_cmd(batch_size):
+        """Compute OpenAI embeddings for all lecture_chunks (requires OPENAI_API_KEY)."""
+        from app.services.embed_chunks_job import run_embed_chunks
+
+        with app.app_context():
+            n, model = run_embed_chunks(batch_size=max(1, min(batch_size, 128)))
+        print(f"Embedded {n} chunks with model {model}.")
+
     with app.app_context():
         from sqlalchemy import inspect
         from sqlalchemy.exc import OperationalError

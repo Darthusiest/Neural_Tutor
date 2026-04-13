@@ -63,6 +63,11 @@ class Config:
         "http://127.0.0.1:5173/reset-password",
     ).rstrip("/")
 
+    EMAIL_VERIFICATION_BASE_URL = os.getenv(
+        "EMAIL_VERIFICATION_BASE_URL",
+        "http://127.0.0.1:5173/verify-email",
+    ).rstrip("/")
+
     # Debug-only: include dev_reset_token in JSON when Resend is configured (see AUTH_LOCAL.md).
     DEV_RETURN_RESET_TOKEN = os.getenv("DEV_RETURN_RESET_TOKEN", "0") == "1"
 
@@ -91,9 +96,34 @@ class Config:
         os.getenv("RETRIEVAL_PHRASE_FIELD_WEIGHT_JSON"),
     )
 
-    # Future: dense / hybrid retrieval (not implemented in v1 keyword path).
+    # Dense / hybrid retrieval (embedding path requires backfilled vectors; see embed-chunks CLI).
+    EMBEDDING_RETRIEVAL_ENABLED = os.getenv("EMBEDDING_RETRIEVAL_ENABLED", "0") == "1"
     RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "0") == "1"
-    EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "")
+    EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "text-embedding-3-small")
+    HYBRID_LEXICAL_WEIGHT = float(os.getenv("HYBRID_LEXICAL_WEIGHT", "0.45"))
+    HYBRID_EMBEDDING_WEIGHT = float(os.getenv("HYBRID_EMBEDDING_WEIGHT", "0.55"))
+
+    # Study: optional structured pipeline + optional LLM polish for study copy (compare/summary/quiz).
+    STRUCTURED_STUDY_PIPELINE_ENABLED = os.getenv("STRUCTURED_STUDY_PIPELINE_ENABLED", "0") == "1"
+    STUDY_MODE_LLM_POLISH = os.getenv("STUDY_MODE_LLM_POLISH", "0") == "1"
+
+    # Auth: email verification, lockout, audit (see migrations).
+    EMAIL_VERIFICATION_REQUIRED = os.getenv("EMAIL_VERIFICATION_REQUIRED", "0") == "1"
+    LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "8"))
+    LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
+
+    # Production safety: never expose dev_reset_token in JSON unless explicitly allowed (dev/QA only).
+    ALLOW_DEV_RESET_TOKEN_IN_JSON = os.getenv("ALLOW_DEV_RESET_TOKEN_IN_JSON", "0") == "1"
+    # True when not in debug and dev token override is off (used with ALLOW_DEV_RESET_TOKEN_IN_JSON).
+    PRODUCTION_LIKE = os.getenv("FLASK_ENV", "").lower() == "production" or os.getenv(
+        "PRODUCTION_MODE", "0"
+    ) == "1"
+
+    # LLM cost analytics (optional caps; tokens from response_variants.token_usage_json).
+    LLM_MONTHLY_TOKEN_CAP = int(os.getenv("LLM_MONTHLY_TOKEN_CAP", "0")) or None  # 0 = unset
+    LLM_MONTHLY_TOKEN_WARN_FRACTION = float(os.getenv("LLM_MONTHLY_TOKEN_WARN_FRACTION", "0.8"))
+    LLM_COST_USD_PER_MTOKENS = float(os.getenv("LLM_COST_USD_PER_MTOKENS", "0") or 0) or None
+    LLM_SPIKE_DAY_OVER_DAY_RATIO = float(os.getenv("LLM_SPIKE_DAY_OVER_DAY_RATIO", "2.5"))
 
     # v2 summary mode: max chunks returned for a single-lecture summary (ranked lexically).
     SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "48"))
@@ -130,3 +160,10 @@ class TestConfig(Config):
     GEMINI_API_KEY = ""
     GOOGLE_API_KEY = ""
     OPENAI_BOOST_FALLBACK = False
+    EMBEDDING_RETRIEVAL_ENABLED = False
+    RETRIEVAL_HYBRID_ENABLED = False
+    STRUCTURED_STUDY_PIPELINE_ENABLED = False
+    STUDY_MODE_LLM_POLISH = False
+    EMAIL_VERIFICATION_REQUIRED = False
+    ALLOW_DEV_RESET_TOKEN_IN_JSON = False
+    PRODUCTION_LIKE = False

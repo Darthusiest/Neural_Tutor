@@ -56,3 +56,16 @@ def test_forgot_password_returns_200_regardless(client):
     )
     assert r2.status_code == 200
     assert r2.get_json().get("message") == msg
+
+
+def test_forgot_password_never_includes_dev_reset_token_in_test_app(client):
+    """Production-like test client (debug off): JSON must not contain reset tokens."""
+    register_user(client, "notoken@test.dev", _VALID_PASSWORD)
+    r = client.post(
+        "/api/auth/forgot-password",
+        json={"email": "notoken@test.dev"},
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert "dev_reset_token" not in body

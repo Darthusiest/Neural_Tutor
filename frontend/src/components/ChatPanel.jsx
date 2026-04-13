@@ -89,6 +89,7 @@ export function ChatPanel({
         question_type: 'mc',
         quiz_token: quiz.quiz_token,
         selected_index: parseInt(sel, 10),
+        options: quiz.options,
       },
       'quiz/answer'
     )

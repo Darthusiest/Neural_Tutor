@@ -23,6 +23,35 @@ This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite
 | password_hash | String(256) | Werkzeug hash |
 | created_at | DateTime | server default now |
 | is_admin | Boolean | default false |
+| email_verified_at | DateTime nullable | set when email is verified |
+| failed_login_attempts | Integer | lockout counter |
+| locked_until | DateTime nullable | temporary lockout end |
+
+## email_verification_tokens
+
+| Column | Type | Notes |
+|--------|------|--------|
+| id | Integer PK | |
+| user_id | FK → users.id, CASCADE | |
+| token_hash | String(64), unique | |
+| expires_at | DateTime | |
+| consumed_at | DateTime nullable | |
+
+## audit_events
+
+Append-only security audit (no secrets). See [`app/services/audit.py`](../app/services/audit.py).
+
+| Column | Type | Notes |
+|--------|------|--------|
+| id | Integer PK | |
+| created_at | DateTime, indexed | |
+| actor_user_id | FK → users.id nullable | |
+| actor_email | String(255) nullable | |
+| event_type | String(64), indexed | e.g. `login_success`, `login_failed`, `register` |
+| severity | String(16) nullable | |
+| ip | String(64) nullable | |
+| user_agent | String(512) nullable | |
+| metadata_json | Text nullable | small JSON |
 
 ## password_reset_tokens
 
@@ -183,6 +212,7 @@ Heuristic outcome for the **previous** assistant message when the user sends a f
 | Column | Type | Notes |
 |--------|------|--------|
 | id | Integer PK | |
+| chunk_key | String(128) UNIQUE, indexed | stable import identity |
 | lecture_number | Integer, indexed | |
 | topic | String(512), indexed | e.g. `{lecture title} — {section heading}` |
 | keywords | Text | JSON array of strings |
@@ -190,5 +220,10 @@ Heuristic outcome for the **previous** assistant message when the user sends a f
 | clean_explanation | Text | Pedagogical text |
 | sample_questions | Text nullable | JSON array of strings |
 | sample_answer | Text nullable | Single exemplar answer |
+| chunk_type | String(32) nullable | retrieval v2 |
+| concept_family | String(64) nullable | retrieval v2 |
+| embedding_model | String(64) nullable | OpenAI embedding model id when present |
+| embedding_dim | SmallInteger nullable | vector length |
+| embedding_blob | BLOB nullable | float32 little-endian vector (`flask embed-chunks`) |
 
 Seed JSON may use `source_text` or `content`; the loader maps both to `source_excerpt` (see [`lecture_loader.py`](../app/services/lectures/lecture_loader.py)).

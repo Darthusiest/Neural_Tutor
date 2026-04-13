@@ -13,6 +13,10 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, server_default=db.func.now())
     is_admin = db.Column(db.Boolean, nullable=False, default=False)
 
+    email_verified_at = db.Column(db.DateTime, nullable=True)
+    failed_login_attempts = db.Column(db.Integer, nullable=False, default=0)
+    locked_until = db.Column(db.DateTime, nullable=True)
+
     chat_sessions = db.relationship(
         "ChatSession", back_populates="user", cascade="all, delete-orphan"
     )

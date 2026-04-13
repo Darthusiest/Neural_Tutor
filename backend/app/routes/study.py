@@ -114,12 +114,19 @@ def quiz_answer():
         except (TypeError, ValueError):
             return jsonify({"error": "selected_index must be an integer"}), 400
 
+    mc_options = data.get("options")
+    if isinstance(mc_options, list):
+        mc_options = [str(x) for x in mc_options]
+    else:
+        mc_options = None
+
     reveal = build_quiz_reveal(
         cid,
         qtype,
         quiz_token=token,
         user_answer=user_answer,
         selected_index=selected_index,
+        mc_options=mc_options,
     )
     if "error" in reveal:
         return jsonify(reveal), 400

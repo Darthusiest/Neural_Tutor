@@ -1,0 +1,34 @@
+# Render Blueprint — Neural Tutor (API + static SPA)
+# https://render.com/docs/blueprint-spec
+#
+# After deploy: set VITE_API_BASE_URL on the frontend build to your API URL, or use
+# a single-origin proxy (see README "Deployment (Render)").
+#
+version: "1"
+services:
+  - type: web
+    name: neural-tutor-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && flask --app wsgi db upgrade
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 wsgi:app
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      # Set in the Render dashboard (secrets):
+      # FLASK_SECRET_KEY, DATABASE_URL (or rely on default SQLite path — not durable on free tier),
+      # FRONTEND_ORIGIN, OPENAI_*, RESEND_*, PASSWORD_RESET_BASE_URL, SESSION_COOKIE_SECURE=1, etc.
+
+  - type: web
+    name: neural-tutor-web
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npx --yes serve@14 -s dist -l $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      # Production build must know API origin for fetch/CSRF (set in dashboard):
+      # VITE_API_BASE_URL=https://neural-tutor-api.onrender.com

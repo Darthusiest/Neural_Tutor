@@ -42,3 +42,8 @@ class LectureChunk(db.Model):
     sample_answer = db.Column(db.Text, nullable=True)
     chunk_type = db.Column(db.String(32), nullable=True)
     concept_family = db.Column(db.String(64), nullable=True)
+
+    # OpenAI text-embedding-* (float32 little-endian; dim matches embedding_model)
+    embedding_model = db.Column(db.String(64), nullable=True)
+    embedding_dim = db.Column(db.SmallInteger, nullable=True)
+    embedding_blob = db.Column(db.LargeBinary, nullable=True)

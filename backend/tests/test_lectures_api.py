@@ -118,11 +118,12 @@ def test_retrieve_keyword(client, app):
     assert chunk0.get("source_excerpt") == chunk0.get("source_text")
 
 
-def test_retrieve_embedding_501(client):
+def test_retrieve_embedding_disabled_returns_400(client):
     _auth(client)
     r = client.post(
         "/api/lectures/retrieve",
         json={"query": "anything", "backend": "embedding"},
         content_type="application/json",
     )
-    assert r.status_code == 501
+    assert r.status_code == 400
+    assert "disabled" in r.get_json().get("error", "").lower()

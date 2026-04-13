@@ -465,6 +465,80 @@ def _tokens_from_block(block: dict[str, Any]) -> int:
     return 0
 
 
+def _sum_tokens_from_usage_json(token_usage_json: str | None) -> tuple[int, bool]:
+    """Sum primary + boost usage from ``response_variants.token_usage_json``; True if sum > 0."""
+    if not token_usage_json:
+        return 0, False
+    try:
+        d = json.loads(token_usage_json)
+    except json.JSONDecodeError:
+        return 0, False
+    row_total = 0
+    for key in ("primary", "boost"):
+        block = d.get(key)
+        if isinstance(block, dict):
+            row_total += _tokens_from_block(block)
+    return row_total, row_total > 0
+
+
+def compute_tokens_by_day(days: int) -> dict[str, Any]:
+    """
+    Per-calendar-day (UTC, naive ``created_at``) rollups of **response_variants** in the window.
+
+    Token totals match the same estimation rules as ``models_and_tokens`` / ``_rollup_models_tokens``.
+    """
+    since, until = _utc_window(days)
+    rvs = (
+        db.session.query(ResponseVariant)
+        .filter(
+            ResponseVariant.created_at >= since,
+            ResponseVariant.created_at <= until,
+        )
+        .order_by(ResponseVariant.created_at.asc())
+        .all()
+    )
+    buckets: dict[str, dict[str, int]] = {}
+    for rv in rvs:
+        if not rv.created_at:
+            continue
+        day_key = rv.created_at.date().isoformat()
+        if day_key not in buckets:
+            buckets[day_key] = {
+                "response_variants": 0,
+                "sum_tokens_estimated": 0,
+                "variants_with_token_totals": 0,
+            }
+        b = buckets[day_key]
+        b["response_variants"] += 1
+        total, has_tokens = _sum_tokens_from_usage_json(rv.token_usage_json)
+        b["sum_tokens_estimated"] += total
+        if has_tokens:
+            b["variants_with_token_totals"] += 1
+
+    days_list: list[dict[str, Any]] = []
+    for date_str in sorted(buckets.keys()):
+        row = buckets[date_str]
+        st = row["sum_tokens_estimated"]
+        days_list.append(
+            {
+                "date": date_str,
+                "response_variants": row["response_variants"],
+                "sum_tokens_estimated": st if st else None,
+                "variants_with_token_totals": row["variants_with_token_totals"],
+            }
+        )
+
+    return {
+        "window": {
+            "days": max(1, min(int(days), 365)),
+            "since": since.isoformat() + "Z",
+            "until": until.isoformat() + "Z",
+            "timezone_note": "Dates are UTC calendar days from response_variants.created_at (naive UTC).",
+        },
+        "days": days_list,
+    }
+
+
 def _rollup_models_tokens(since: datetime, until: datetime) -> dict[str, Any]:
     rvs = (
         db.session.query(ResponseVariant)
@@ -483,18 +557,8 @@ def _rollup_models_tokens(since: datetime, until: datetime) -> dict[str, Any]:
             by_provider[rv.provider_name] = by_provider.get(rv.provider_name, 0) + 1
         if rv.model_name:
             by_model[rv.model_name] = by_model.get(rv.model_name, 0) + 1
-        if not rv.token_usage_json:
-            continue
-        try:
-            d = json.loads(rv.token_usage_json)
-        except json.JSONDecodeError:
-            continue
-        row_total = 0
-        for key in ("primary", "boost"):
-            block = d.get(key)
-            if isinstance(block, dict):
-                row_total += _tokens_from_block(block)
-        if row_total > 0:
+        row_total, has_pos = _sum_tokens_from_usage_json(rv.token_usage_json)
+        if has_pos:
             total_tokens += row_total
             with_counts += 1
 
@@ -504,6 +568,127 @@ def _rollup_models_tokens(since: datetime, until: datetime) -> dict[str, Any]:
         "response_variants_with_token_totals": with_counts,
         "by_provider": by_provider,
         "by_primary_model_name": by_model,
+    }
+
+
+def compute_cost_summary(days: int = 30) -> dict[str, Any]:
+    """
+    Token totals vs optional monthly cap, optional USD estimate, day-over-day spike hint.
+    """
+    from flask import current_app
+
+    since, until = _utc_window(days)
+    rvs = (
+        db.session.query(ResponseVariant)
+        .filter(
+            ResponseVariant.created_at >= since,
+            ResponseVariant.created_at <= until,
+        )
+        .all()
+    )
+    total_tokens = 0
+    for rv in rvs:
+        row_total, _ = _sum_tokens_from_usage_json(rv.token_usage_json)
+        total_tokens += row_total
+
+    cap = current_app.config.get("LLM_MONTHLY_TOKEN_CAP")
+    warn_frac = float(current_app.config.get("LLM_MONTHLY_TOKEN_WARN_FRACTION", 0.8))
+    warn_threshold = int(cap * warn_frac) if cap else None
+    usd_per_m = current_app.config.get("LLM_COST_USD_PER_MTOKENS")
+    est_usd = (total_tokens / 1_000_000.0 * usd_per_m) if usd_per_m and total_tokens else None
+
+    by_day = compute_tokens_by_day(days)["days"]
+    spike_ratio = float(current_app.config.get("LLM_SPIKE_DAY_OVER_DAY_RATIO", 2.5))
+    spike_note: str | None = None
+    if len(by_day) >= 2:
+        sums = [d.get("sum_tokens_estimated") or 0 for d in by_day]
+        for i in range(1, len(sums)):
+            prev = sums[i - 1]
+            cur = sums[i]
+            if prev and cur >= prev * spike_ratio:
+                spike_note = (
+                    f"Day {by_day[i]['date']} token sum (~{cur}) is "
+                    f">= {spike_ratio}x prior day (~{prev})."
+                )
+                break
+
+    over_cap = cap is not None and total_tokens > cap
+    near_warn = warn_threshold is not None and total_tokens >= warn_threshold and not over_cap
+
+    return {
+        "window": {
+            "days": max(1, min(int(days), 365)),
+            "since": since.isoformat() + "Z",
+            "until": until.isoformat() + "Z",
+        },
+        "sum_tokens_estimated": total_tokens if total_tokens else None,
+        "response_variants_in_window": len(rvs),
+        "cap_tokens": cap,
+        "warn_threshold_tokens": warn_threshold,
+        "over_cap": over_cap,
+        "near_warn_threshold": near_warn,
+        "estimated_usd": round(est_usd, 4) if est_usd is not None else None,
+        "usd_assumption_note": "LLM_COST_USD_PER_MTOKENS blended estimate; not provider billing."
+        if usd_per_m
+        else None,
+        "spike_note": spike_note,
+    }
+
+
+def compute_content_quality(days: int) -> dict[str, Any]:
+    """
+    Heuristic weak chunks: frequent in low-confidence retrievals and negative feedback.
+    """
+    since, until = _utc_window(days)
+    lim = 25
+
+    weak_rows = db.session.execute(
+        text(
+            """
+            SELECT h.lecture_chunk_id, COUNT(*) AS hit_count
+            FROM retrieval_chunk_hits h
+            JOIN retrieval_logs r ON r.id = h.retrieval_log_id
+            WHERE r.created_at >= :since AND r.created_at <= :until
+              AND r.is_low_confidence = 1
+            GROUP BY h.lecture_chunk_id
+            ORDER BY hit_count DESC
+            LIMIT :lim
+            """
+        ),
+        {"since": since, "until": until, "lim": lim},
+    ).fetchall()
+
+    neg_count = (
+        db.session.query(func.count(Feedback.id))
+        .filter(
+            Feedback.created_at >= since,
+            Feedback.created_at <= until,
+            Feedback.course_thumb == "down",
+        )
+        .scalar()
+        or 0
+    )
+
+    out_weak: list[dict[str, Any]] = []
+    for chunk_id, cnt in weak_rows:
+        chunk = db.session.get(LectureChunk, int(chunk_id))
+        out_weak.append(
+            {
+                "lecture_chunk_id": int(chunk_id),
+                "low_confidence_hit_count": int(cnt),
+                "lecture_number": chunk.lecture_number if chunk else None,
+                "topic": (chunk.topic[:200] if chunk and chunk.topic else None),
+            }
+        )
+
+    return {
+        "window": {
+            "days": max(1, min(int(days), 365)),
+            "since": since.isoformat() + "Z",
+            "until": until.isoformat() + "Z",
+        },
+        "weak_chunks_by_low_confidence_hits": out_weak,
+        "course_thumb_down_count": int(neg_count),
     }
 
 

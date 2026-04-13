@@ -104,11 +104,13 @@ def test_format_course_answer():
     assert "Phones" in out
 
 
-def test_retrieve_chunks_embedding_not_implemented():
-    with pytest.raises(NotImplementedError):
-        retrieve_chunks("test", backend="embedding")
+def test_retrieve_chunks_embedding_requires_flag(app):
+    with app.app_context():
+        with pytest.raises(ValueError, match="disabled"):
+            retrieve_chunks("test", backend="embedding")
 
 
-def test_retrieve_chunks_hybrid_not_implemented():
-    with pytest.raises(NotImplementedError):
-        retrieve_chunks("test", backend="hybrid")
+def test_retrieve_chunks_hybrid_requires_flag(app):
+    with app.app_context():
+        with pytest.raises(ValueError, match="requires embeddings"):
+            retrieve_chunks("test", backend="hybrid")

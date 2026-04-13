@@ -34,12 +34,45 @@ function formatDict(obj) {
     .join(', ')
 }
 
+function TokenSparkline({ series }) {
+  const pts = series?.days || []
+  if (!pts || pts.length < 2) {
+    return <p className="muted">Add more days with usage to see a trend.</p>
+  }
+  const vals = pts.map((d) => Number(d.sum_tokens_estimated) || 0)
+  const max = Math.max(...vals, 1)
+  const w = 420
+  const h = 72
+  const pad = 6
+  const step = vals.length > 1 ? (w - 2 * pad) / (vals.length - 1) : 0
+  const points = vals
+    .map((v, i) => {
+      const x = pad + i * step
+      const y = h - pad - (v / max) * (h - 2 * pad)
+      return `${x},${y}`
+    })
+    .join(' ')
+  return (
+    <svg
+      className="admin-token-sparkline"
+      viewBox={`0 0 ${w} ${h}`}
+      role="img"
+      aria-label="Token usage trend"
+    >
+      <polyline fill="none" stroke="var(--color-primary)" strokeWidth="2" points={points} />
+    </svg>
+  )
+}
+
 export function AdminPage() {
   const [days, setDays] = useState(7)
   const [lcOffset, setLcOffset] = useState(0)
   const [data, setData] = useState(null)
   const [lowConf, setLowConf] = useState(null)
   const [chunks, setChunks] = useState(null)
+  const [tokensByDay, setTokensByDay] = useState(null)
+  const [costSummary, setCostSummary] = useState(null)
+  const [contentQuality, setContentQuality] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [lcLoading, setLcLoading] = useState(false)
@@ -52,13 +85,19 @@ export function AdminPage() {
     const q = `days=${days}`
     ;(async () => {
       try {
-        const [summary, ch] = await Promise.all([
+        const [summary, ch, tbd, cost, cq] = await Promise.all([
           apiFetch(`/api/admin/insights?${q}`),
           apiFetch(`/api/admin/insights/chunks?${q}&limit=15`),
+          apiFetch(`/api/admin/insights/tokens-by-day?${q}`),
+          apiFetch(`/api/admin/insights/cost-summary?${q}`),
+          apiFetch(`/api/admin/insights/content-quality?${q}`),
         ])
         if (!cancelled) {
           setData(summary)
           setChunks(ch)
+          setTokensByDay(tbd)
+          setCostSummary(cost)
+          setContentQuality(cq)
         }
       } catch (e) {
         if (!cancelled) setError(e.data?.error || e.message)
@@ -171,6 +210,55 @@ export function AdminPage() {
             <Kv label="By primary model name" value={formatDict(mt?.by_primary_model_name)} />
           </Section>
 
+          {tokensByDay ? (
+            <Section title="Token usage by day (UTC)">
+              <p className="muted">
+                {tokensByDay.window?.timezone_note ?? 'Per calendar day from response variant timestamps.'}
+              </p>
+              {tokensByDay.days && tokensByDay.days.length > 0 ? (
+                <table className="admin-insights-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Date (UTC)</th>
+                      <th scope="col">Response variants</th>
+                      <th scope="col">Sum tokens (est.)</th>
+                      <th scope="col">Variants with usage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tokensByDay.days.map((row) => (
+                      <tr key={row.date}>
+                        <td>{row.date}</td>
+                        <td>{row.response_variants}</td>
+                        <td>{row.sum_tokens_estimated ?? '—'}</td>
+                        <td>{row.variants_with_token_totals}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="muted">No response variants in this window.</p>
+              )}
+              <h3 className="admin-insights-sub">Trend</h3>
+              <TokenSparkline series={tokensByDay} />
+            </Section>
+          ) : null}
+
+          {costSummary ? (
+            <Section title="Cost & budget (estimated)">
+              <p className="muted">
+                {costSummary.usd_assumption_note ?? 'Set LLM_COST_USD_PER_MTOKENS for USD estimates.'}
+              </p>
+              <Kv label="Sum tokens (window)" value={costSummary.sum_tokens_estimated ?? '—'} />
+              <Kv label="Cap (LLM_MONTHLY_TOKEN_CAP)" value={costSummary.cap_tokens ?? '—'} />
+              <Kv label="Warn threshold" value={costSummary.warn_threshold_tokens ?? '—'} />
+              <Kv label="Over cap" value={costSummary.over_cap ? 'yes' : 'no'} />
+              <Kv label="Near warn" value={costSummary.near_warn_threshold ? 'yes' : 'no'} />
+              <Kv label="Estimated USD (blended)" value={costSummary.estimated_usd ?? '—'} />
+              <Kv label="Spike note" value={costSummary.spike_note ?? '—'} />
+            </Section>
+          ) : null}
+
           <Section title="Retrieval">
             <Kv
               label="Avg confidence"
@@ -256,6 +344,28 @@ export function AdminPage() {
                 </ul>
               ) : (
                 <p className="muted">No low-confidence rows in this window.</p>
+              )}
+            </Section>
+          ) : null}
+
+          {contentQuality ? (
+            <Section title="Content quality (heuristic)">
+              <p className="muted">
+                Chunks flagged often in low-confidence retrievals; thumbs-down count in window.
+              </p>
+              <Kv label="Course thumb down (count)" value={contentQuality.course_thumb_down_count ?? '—'} />
+              {contentQuality.weak_chunks_by_low_confidence_hits &&
+              contentQuality.weak_chunks_by_low_confidence_hits.length > 0 ? (
+                <ul className="admin-insights-list">
+                  {contentQuality.weak_chunks_by_low_confidence_hits.map((row) => (
+                    <li key={row.lecture_chunk_id}>
+                      <strong>L{row.lecture_number ?? '?'}</strong> · low-conf hits {row.low_confidence_hit_count}
+                      {row.topic ? <span> — {row.topic}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="muted">No weak-chunk signal in this window.</p>
               )}
             </Section>
           ) : null}

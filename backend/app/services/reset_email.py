@@ -84,6 +84,56 @@ def send_password_reset_email(to_email: str, plaintext_token: str) -> ResetEmail
         return ResetEmailResult.FAILED
 
 
+def send_verification_email(to_email: str, plaintext_token: str) -> ResetEmailResult:
+    """Send email verification link (same Resend config as password reset)."""
+    api_key = (current_app.config.get("RESEND_API_KEY") or "").strip()
+    from_email = (current_app.config.get("RESEND_FROM_EMAIL") or "").strip()
+    base_url = (current_app.config.get("EMAIL_VERIFICATION_BASE_URL") or "").strip().rstrip("/")
+
+    if not api_key or not from_email:
+        current_app.logger.warning(
+            "Verification email skipped: set RESEND_API_KEY and RESEND_FROM_EMAIL"
+        )
+        return ResetEmailResult.SKIPPED_NO_CONFIG
+
+    if not base_url:
+        current_app.logger.error("EMAIL_VERIFICATION_BASE_URL is empty")
+        return ResetEmailResult.FAILED
+
+    query = urlencode({"token": plaintext_token})
+    link = f"{base_url}?{query}"
+
+    subject = "Verify your LING 487 Tutor email"
+    html = (
+        "<p>Confirm your email address for your LING 487 Tutor account.</p>"
+        f'<p><a href="{link}">Verify email</a></p>'
+        "<p>If you did not create an account, you can ignore this email.</p>"
+    )
+    text = (
+        "Confirm your email address for your LING 487 Tutor account.\n\n"
+        f"Open this link:\n{link}\n\n"
+        "If you did not create an account, ignore this email.\n"
+    )
+
+    params = {
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+        "text": text,
+    }
+    try:
+        with _resend_send_lock:
+            resend.api_key = api_key
+            resend.Emails.send(params)
+        return ResetEmailResult.SENT
+    except Exception:
+        current_app.logger.exception(
+            "Resend failed while sending verification to %s", to_email
+        )
+        return ResetEmailResult.FAILED
+
+
 def resend_reset_is_configured() -> bool:
     """True when both Resend env vars are non-empty (used for dev token policy)."""
     api_key = (current_app.config.get("RESEND_API_KEY") or "").strip()
