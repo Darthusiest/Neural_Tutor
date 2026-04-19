@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.answers.compare_render import render_compare_multi_markdown, render_compare_two_markdown
 from app.services.knowledge.structured_query import StructuredQuery
 from app.services.retrieval import _sample_questions_as_text
 
@@ -211,6 +212,32 @@ def generate_structured_answer(
     sq: StructuredQuery,
 ) -> str:
     """Build **Course Answer:** with the tutor four-section layout (aligned with OpenAI primary path)."""
+    rc = sq.response_constraints
+    if rc.allow_incorrect_statements:
+        safe = (
+            "Course Answer:\n\n"
+            "### Direct Answer\n"
+            "I can’t mix deliberately false statements with true ones in a tutor response.\n\n"
+            "### Explanation\n"
+            "- If you want practice, ask for a short quiz with separate options, or ask for common "
+            "misconceptions explained *as* misconceptions.\n\n"
+            "### Example / Intuition\n"
+            "Try: “What is a typical mistake people make about softmax vs hardmax?”\n\n"
+            "### Why it matters\n"
+            "Clear, correct explanations are safer for learning than blended true/false prompts."
+        )
+        return safe
+
+    if plan.answer_mode == "compare_multi" and plan.evidence_bundles:
+        bundles = list(plan.evidence_bundles.values())
+        return render_compare_multi_markdown(bundles, all_chunks, sq)
+
+    if plan.answer_mode == "compare" and len(plan.evidence_bundles) >= 2:
+        keys = list(plan.evidence_bundles.keys())
+        bundle_a = plan.evidence_bundles[keys[0]]
+        bundle_b = plan.evidence_bundles[keys[1]]
+        return render_compare_two_markdown(plan, all_chunks, sq, bundle_a, bundle_b)
+
     primary = _primary_chunks_ordered(plan, all_chunks)
     if not primary:
         return (
@@ -232,6 +259,14 @@ def generate_structured_answer(
     example = _example_intuition_block(primary)
     why = _why_matters_block(plan, sq, primary)
 
+    n = rc.exact_explanation_count
+    if n and n >= 2:
+        while len(expl_bullets) < n:
+            expl_bullets.append(
+                "Another angle on the same idea from the notes (distinct wording): see the preceding bullets."
+            )
+        expl_bullets = expl_bullets[:n]
+
     lines: list[str] = [
         "Course Answer:",
         "",
@@ -242,12 +277,57 @@ def generate_structured_answer(
         "### Explanation",
         "",
     ]
-    for b in expl_bullets:
-        lines.append(f"- {b}")
-    if len(expl_bullets) == 0:
-        lines.append(
-            "- The notes may pack the idea into a short block—say if you want it slower or with a diagram."
+    if n and n >= 2:
+        for i in range(min(n, 12)):
+            chunk = expl_bullets[i] if i < len(expl_bullets) else expl_bullets[-1] if expl_bullets else ""
+            lines.append(f"#### Explanation {i + 1}")
+            lines.append("")
+            lines.append(chunk or "(See course text.)")
+            lines.append("")
+    else:
+        for b in expl_bullets:
+            lines.append(f"- {b}")
+        if len(expl_bullets) == 0:
+            lines.append(
+                "- The notes may pack the idea into a short block—say if you want it slower or with a diagram."
+            )
+
+    if rc.repeat_explanation_times and rc.repeat_explanation_times >= 2:
+        block = "\n".join(f"- {b}" for b in expl_bullets) if expl_bullets else direct
+        lines.extend(
+            [
+                "",
+                "### Repeated explanation (as requested)",
+                "",
+                block,
+            ]
         )
+
+    if rc.intuition_only:
+        lines.extend(
+            [
+                "",
+                "### Example / Intuition",
+                "",
+                "(Technical training details omitted for intuition-only request.)",
+                "",
+                "### Why it matters",
+                "",
+                why,
+            ]
+        )
+        return "\n".join(lines).rstrip()
+
+    if rc.no_examples:
+        lines.extend(
+            [
+                "",
+                "### Why it matters",
+                "",
+                why,
+            ]
+        )
+        return "\n".join(lines).rstrip()
 
     lines.extend(
         [

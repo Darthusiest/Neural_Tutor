@@ -190,9 +190,26 @@ code {
   overflow: auto;
 }
 
+.session-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.15rem;
+  border-radius: 6px;
+}
+
+.session-row:hover {
+  background: var(--color-session-hover);
+}
+
+.session-row:has(.session-link.active) {
+  background: var(--color-session-active);
+}
+
 .session-link {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   padding: 0.45rem 0.35rem;
   border-radius: 6px;
   text-decoration: none;
@@ -201,11 +218,43 @@ code {
 }
 
 .session-link:hover {
-  background: var(--color-session-hover);
+  background: transparent;
 }
 
 .session-link.active {
-  background: var(--color-session-active);
+  background: transparent;
+}
+
+.session-rename,
+.session-delete {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-rename {
+  font-size: 1rem;
+}
+
+.session-rename:hover:not(:disabled),
+.session-delete:hover:not(:disabled) {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.session-rename:disabled,
+.session-delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .session-title {

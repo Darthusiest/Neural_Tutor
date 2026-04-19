@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from flask import current_app
+
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import StructuredQuery
@@ -78,13 +80,31 @@ def build_generation_input(
     primary_text = _compress_text_list(primary_text)
     supporting_text = _compress_text_list(supporting_text)
 
-    return {
+    out: dict[str, Any] = {
         "question": structured_query.intent.original_query,
         "concepts": _primary_concept_names(structured_query),
         "answer_mode": answer_plan.answer_mode,
         "primary_content": primary_text,
         "supporting_content": supporting_text,
     }
+    if bool(current_app.config.get("SECTION_CONTRACTS_ENABLED", True)) and answer_plan.section_specs:
+        blocks: list[str] = []
+        for spec in answer_plan.section_specs[:12]:
+            chs = chunks_by_ids(retrieved_chunks, spec.source_chunk_ids)
+            texts: list[str] = []
+            for c in chs:
+                t = _chunk_teaching_text(c)
+                if t:
+                    texts.append(t)
+            blob = _compress_text_list(texts)
+            forb = ", ".join(spec.forbidden_terms[:8]) if spec.forbidden_terms else "(none)"
+            blocks.append(
+                f"[{spec.section_id} | entity={spec.entity_id or 'n/a'} | avoid: {forb}]\n"
+                + "\n".join(blob)
+            )
+        out["section_contracts"] = "\n\n---\n\n".join(blocks)
+        out["response_constraints"] = structured_query.response_constraints.to_dict()
+    return out
 
 
 def format_generation_prompt_user_message(clean_input: dict[str, Any]) -> str:
@@ -100,6 +120,22 @@ def format_generation_prompt_user_message(clean_input: dict[str, Any]) -> str:
         lines = [s.strip() for s in items if s and str(s).strip()]
         return "\n".join(lines) if lines else "(none)"
 
+    extra = ""
+    rc = clean_input.get("response_constraints") or {}
+    if rc:
+        extra += "\nHard student constraints (must obey):\n"
+        if rc.get("no_examples"):
+            extra += "- Do not use examples, e.g., or analogies.\n"
+        if rc.get("intuition_only"):
+            extra += "- Intuition only: no training recipes, losses, or parameter updates.\n"
+        if rc.get("exact_explanation_count"):
+            extra += f"- Provide exactly {rc['exact_explanation_count']} distinct labeled explanations.\n"
+        if rc.get("repeat_explanation_times"):
+            extra += "- Repeat the core explanation verbatim in a second block.\n"
+    sec = clean_input.get("section_contracts")
+    if sec:
+        extra += f"\nSection-scoped evidence (do not swap content across sections):\n{sec}\n"
+
     return (
         "Answer the following question using the provided course material.\n\n"
         f"Question:\n{question}\n\n"
@@ -107,4 +143,5 @@ def format_generation_prompt_user_message(clean_input: dict[str, Any]) -> str:
         f"Teaching style (hint only; do not echo this label as jargon):\n{mode}\n\n"
         f"Primary Content:\n{_joined(primary)}\n\n"
         f"Supporting Content:\n{_joined(supporting)}"
+        f"{extra}"
     )

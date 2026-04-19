@@ -4,6 +4,8 @@ For the **current product/API overview** and setup steps, see the root [`README.
 
 For a **concise shipped-features list** (release-style), see [`CHANGELOG.md`](../CHANGELOG.md) at the repo root.
 
+**New chat / AI session:** use [`context-for-new-chat.md`](context-for-new-chat.md) as a condensed handoff (stack, env, migrations, hot paths, recent fixes).
+
 This folder holds a **narrative running record**: design decisions, retrieval behavior notes, bugs fixed, and follow-ups—especially what you would not put in a one-line changelog bullet.
 
 ---

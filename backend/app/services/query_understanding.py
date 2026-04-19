@@ -44,6 +44,9 @@ class QueryIntent:
     lecture_numbers: list[int]
     detected_concepts: list[str]
     compare_concepts: tuple[str, str] | None = None
+    """First two compared items (backward compatible). Use ``compare_entities`` for full list."""
+    compare_entities: list[str] = field(default_factory=list)
+    """Ordered entity strings for compare (length >= 2 when multi-compare)."""
     typo_corrections: dict[str, str] = field(default_factory=dict)
 
 
@@ -87,12 +90,73 @@ _SYNTHESIS_RE = re.compile(
 # Compare concept extraction
 # ---------------------------------------------------------------------------
 
+def _strip_leading_compare_phrase(s: str) -> str:
+    """Remove leading compare/difference phrasing so entity lists parse cleanly."""
+    s = s.strip()
+    s = re.sub(
+        r"^(?:compare|contrast|difference\s+between|what\s+is\s+the\s+difference\s+between)\s+",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    return s.strip()
+
+
+_MULTI_VS_SPLIT = re.compile(r"\s+vs\.?\s+|\s+versus\s+", re.IGNORECASE)
+
+
+def extract_compare_entities(query: str) -> list[str] | None:
+    """
+    Return ordered compared entities (2+).
+
+    Supports ``A vs B vs C``, comma lists after *compare*, and legacy two-entity patterns.
+    """
+    body = _strip_leading_compare_phrase(query)
+    body = body.split("?")[0].strip().rstrip(".,")
+    parts = [p.strip() for p in _MULTI_VS_SPLIT.split(body) if p.strip()]
+    if len(parts) >= 3:
+        return _normalize_entity_labels(parts)
+    if len(parts) == 2:
+        return _normalize_entity_labels(parts)
+
+    m_list = re.search(
+        r"\b(?:compare|contrast)\s+(.+)$",
+        query,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m_list:
+        tail = m_list.group(1).strip().rstrip("?.")
+        bits = re.split(r",|\band\b", tail)
+        bits = [b.strip() for b in bits if b.strip()]
+        if len(bits) >= 3:
+            return _normalize_entity_labels(bits)
+
+    pair = _extract_compare_concepts(query)
+    if pair:
+        a = _strip_leading_compare_phrase(pair[0]).strip().rstrip("?.,")
+        b = pair[1].strip().rstrip("?.,")
+        if a and b:
+            return _normalize_entity_labels([a, b])
+    return None
+
+
+def _normalize_entity_labels(parts: list[str]) -> list[str]:
+    out: list[str] = []
+    for p in parts[:8]:
+        p = p.strip().rstrip("?.,")
+        p = _strip_leading_compare_phrase(p)
+        if p:
+            out.append(p.strip())
+    return out
+
+
 def _extract_compare_concepts(query: str) -> tuple[str, str] | None:
     for pat in (_COMPARE_RE, _COMPARE_SIMPLE_RE):
         m = pat.search(query)
         if m:
             a = m.group(1).strip().rstrip("?.,")
             b = m.group(2).strip().rstrip("?.,")
+            a = _strip_leading_compare_phrase(a)
             if a and b:
                 return (a, b)
     return None
@@ -203,7 +267,17 @@ def analyze_query(query: str) -> QueryIntent:
             expanded_query = expanded_query + " " + fixed
 
     detected = _detect_concepts(corrected)
-    compare_pair = _extract_compare_concepts(query) if qtype == QueryType.COMPARE else None
+    compare_entities: list[str] = []
+    compare_pair: tuple[str, str] | None = None
+    if qtype == QueryType.COMPARE:
+        ce = extract_compare_entities(query)
+        if ce and len(ce) >= 2:
+            compare_entities = ce
+            compare_pair = (ce[0], ce[1])
+        else:
+            compare_pair = _extract_compare_concepts(query)
+            if compare_pair:
+                compare_entities = [compare_pair[0].strip(), compare_pair[1].strip()]
 
     return QueryIntent(
         query_type=qtype,
@@ -214,5 +288,6 @@ def analyze_query(query: str) -> QueryIntent:
         lecture_numbers=all_lec,
         detected_concepts=detected,
         compare_concepts=compare_pair,
+        compare_entities=compare_entities,
         typo_corrections=typo_map,
     )

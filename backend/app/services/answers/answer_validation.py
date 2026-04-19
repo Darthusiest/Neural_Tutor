@@ -11,7 +11,15 @@ from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
 
 
-CRITICAL_CHECK_NAMES = frozenset({"must_be_course_grounded", "must_cover_both_sides"})
+CRITICAL_CHECK_NAMES = frozenset(
+    {
+        "must_be_course_grounded",
+        "must_cover_both_sides",
+        "must_not_leak_forbidden_terms",
+        "must_not_have_examples_when_blocked",
+        "must_not_have_technical_when_intuition_only",
+    }
+)
 
 
 def compute_validation_severity(checks_failed: list[str]) -> str:
@@ -86,10 +94,71 @@ def _must_define_primary_concept(answer: str, sq: StructuredQuery, kb: ConceptKB
 
 
 def _must_cover_both_sides(answer: str, sq: StructuredQuery, kb: ConceptKB) -> bool:
-    if not sq.intent.compare_concepts:
+    if len(sq.intent.compare_entities) >= 2:
+        a, b = sq.intent.compare_entities[0], sq.intent.compare_entities[1]
+        return _mentions_term(answer, a) and _mentions_term(answer, b)
+    if sq.intent.compare_concepts:
+        a, b = sq.intent.compare_concepts
+        return _mentions_term(answer, a) and _mentions_term(answer, b)
+    return True
+
+
+def _must_cover_compare_multi(answer: str, sq: StructuredQuery) -> bool:
+    if sq.answer_intent != "compare_multi":
         return True
-    a, b = sq.intent.compare_concepts
-    return _mentions_term(answer, a) and _mentions_term(answer, b)
+    ents = sq.intent.compare_entities
+    if len(ents) < 3:
+        return True
+    hits = 0
+    for e in ents:
+        if _mentions_term(answer, e):
+            hits += 1
+    return hits >= min(len(ents), 4)
+
+
+def _must_not_leak_forbidden_terms(answer: str, sq: StructuredQuery, plan: AnswerPlan, kb: ConceptKB) -> bool:
+    """Block obvious cross-topic leaks for single-concept definition-style answers."""
+    if sq.answer_intent in ("compare", "compare_multi"):
+        return True
+    if len(sq.concept_ids) != 1:
+        return True
+    from app.services.answers.entity_retrieval import forbidden_terms_for_concept
+
+    terms = forbidden_terms_for_concept(sq.concept_ids[0], [], kb)
+    al = answer.lower()
+    for t in terms:
+        if len(t) > 5 and t in al:
+            return False
+    return True
+
+
+def _must_not_have_examples_when_blocked(answer: str, sq: StructuredQuery) -> bool:
+    if not sq.response_constraints.no_examples:
+        return True
+    al = answer.lower()
+    if "for example" in al or "e.g." in al or "analogy" in al:
+        return False
+    return True
+
+
+def _must_not_have_technical_when_intuition_only(answer: str, sq: StructuredQuery) -> bool:
+    if not sq.response_constraints.intuition_only:
+        return True
+    al = answer.lower()
+    tech = re.compile(
+        r"\b(gradient|backprop|epoch|loss function|matrix|layer norm|batch norm|weight decay)\b",
+        re.IGNORECASE,
+    )
+    return tech.search(al) is None
+
+
+def _must_not_be_boilerplate_summary(answer: str, sq: StructuredQuery) -> bool:
+    if sq.answer_intent != "lecture_summary":
+        return True
+    al = answer.lower()
+    if "this lecture thread builds definitions" in al or "this lecture thread" in al and "builds definitions" in al:
+        return False
+    return True
 
 
 def _must_include_comparison_axis(answer: str, plan: AnswerPlan) -> bool:
@@ -139,6 +208,7 @@ def _must_include_multiple_lectures(answer: str, sq: StructuredQuery) -> bool:
 
 
 def _must_name_connecting_concepts(answer: str) -> bool:
+    """Require substantive bridge language (not only generic filler)."""
     al = answer.lower()
     if len(al) > 400:
         return True
@@ -149,11 +219,13 @@ def _must_name_connecting_concepts(answer: str) -> bool:
             "representation",
             "prediction",
             "compression",
-            "learning",
             "lecture",
             "connect",
             "progression",
-            "concept",
+            "dependency",
+            "sequence",
+            "dynamic programming",
+            "backpropagation",
         )
     )
 
@@ -202,6 +274,9 @@ def validate_answer(
     if ai == "compare":
         run("must_cover_both_sides", _must_cover_both_sides(answer, sq, kb))
         run("must_include_comparison_axis", _must_include_comparison_axis(answer, plan))
+    if ai == "compare_multi":
+        run("must_cover_compare_multi", _must_cover_compare_multi(answer, sq))
+        run("must_include_comparison_axis", _must_include_comparison_axis(answer, plan))
     if ai == "lecture_summary":
         run("must_stay_in_scope", _must_stay_in_scope(answer, sq, plan))
         run("must_cover_main_anchors", _must_cover_main_anchors(answer, sq, kb))
@@ -211,10 +286,19 @@ def validate_answer(
     if ai in ("multi_step_explanation", "scoped_explanation"):
         run("must_answer_how_or_why", _must_answer_how_or_why(answer))
 
+    run("must_not_leak_forbidden_terms", _must_not_leak_forbidden_terms(answer, sq, plan, kb))
+    run("must_not_have_examples_when_blocked", _must_not_have_examples_when_blocked(answer, sq))
+    run("must_not_have_technical_when_intuition_only", _must_not_have_technical_when_intuition_only(answer, sq))
+    run("must_not_be_boilerplate_summary", _must_not_be_boilerplate_summary(answer, sq))
+
     run("must_respect_lecture_scope", _must_respect_lecture_scope(answer, plan, plns))
 
     generic = len(answer) < 120 and not sq.concept_ids
-    missing_side = ai == "compare" and not _must_cover_both_sides(answer, sq, kb)
+    missing_side = False
+    if ai == "compare":
+        missing_side = not _must_cover_both_sides(answer, sq, kb)
+    elif ai == "compare_multi":
+        missing_side = not _must_cover_compare_multi(answer, sq)
 
     ok = len(failed) == 0
     severity = compute_validation_severity(failed)

@@ -2,11 +2,15 @@
 
 Admin-only analytics over chat **`retrieval_logs`**, **`response_variants`**, **`feedback`**, **`message_outcomes`**, and **`retrieval_chunk_hits`** / **`lecture_chunks`**. Implementation: [`app/services/admin_insights.py`](../app/services/admin_insights.py); routes: [`app/routes/admin.py`](../app/routes/admin.py). Blueprint prefix: **`/api/admin`**.
 
-**Auth:** session cookie + **`users.is_admin`** (`GET /api/auth/me` exposes `is_admin`). Non-admins receive **403**. Promote a user locally:
+**Auth:** session cookie + **`users.is_admin`** (`GET /api/auth/me` exposes `is_admin`). Non-admins receive **403**. Promote a user locally (SQLite):
 
 ```bash
 sqlite3 backend/ling487.db "UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';"
 ```
+
+On **PostgreSQL**, use your SQL client, e.g. `psql` with the same `UPDATE` against the `users` table.
+
+**Implementation note:** Dashboard queries use dialect-aware SQL where needed (e.g. JSON extraction for validation **severity** on SQLite vs PostgreSQL) so analytics work with either database.
 
 **SPA:** [`/admin`](../../frontend/src/App.jsx) uses [`AdminRoute`](../../frontend/src/components/AdminRoute.jsx) (non-admins redirect to `/chat`).
 

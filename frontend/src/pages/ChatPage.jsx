@@ -82,6 +82,38 @@ export function ChatPage({ user }) {
     await refreshSessions()
   }
 
+  async function handleRenameSession(sid, currentTitle) {
+    const next = window.prompt('Rename chat', currentTitle)
+    if (next === null) return
+    const trimmed = next.trim()
+    const title = trimmed || 'New chat'
+    try {
+      const data = await apiFetch(`/api/sessions/${sid}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      })
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sid ? { ...s, title: data.session.title } : s))
+    } catch {
+      await refreshSessions().catch(() => {})
+    }
+  }
+
+  async function handleDeleteSession(sid) {
+    if (!window.confirm('Delete this chat? This cannot be undone.')) return
+    try {
+      await apiFetch(`/api/sessions/${sid}`, { method: 'DELETE' })
+      setSessions((prev) => prev.filter((s) => s.id !== sid))
+      if (activeId === sid) {
+        setMessages([])
+        nav('/chat')
+      }
+    } catch {
+      await refreshSessions().catch(() => {})
+    }
+  }
+
   async function handleSend(text) {
     let sid = activeId
     if (!sid) {
@@ -127,6 +159,8 @@ export function ChatPage({ user }) {
         sessions={sessions}
         activeId={activeId}
         onNewChat={handleNewChat}
+        onRenameSession={handleRenameSession}
+        onDeleteSession={handleDeleteSession}
         disabled={sending}
       />
       <ChatPanel

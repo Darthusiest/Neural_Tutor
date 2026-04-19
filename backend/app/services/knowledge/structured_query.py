@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.services.answers.response_constraints import ResponseConstraints, parse_response_constraints
 from app.services.knowledge.concept_kb import ConceptKB, ConceptMeta, get_kb
 from app.services.query_understanding import QueryIntent, QueryType
 
@@ -32,6 +33,7 @@ class StructuredQuery:
     lecture_scope: list[int]
     answer_style: str
     decomposition_template: list[str]
+    response_constraints: ResponseConstraints = field(default_factory=ResponseConstraints)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +45,7 @@ class StructuredQuery:
             "lecture_scope": list(self.lecture_scope),
             "answer_style": self.answer_style,
             "decomposition_template": list(self.decomposition_template),
+            "response_constraints": self.response_constraints.to_dict(),
         }
 
 
@@ -153,6 +156,35 @@ def decompose_query(intent: QueryIntent, kb: ConceptKB, concepts: list[ConceptMe
                 purpose="define",
             )
         ]
+
+    if qt == QueryType.COMPARE and len(intent.compare_entities) > 2:
+        for raw in intent.compare_entities:
+            part = raw.strip()
+            cmeta = kb.get_concept(part) or kb.get_concept(part.split()[0])
+            subs.append(
+                SubQuestion(
+                    text=f"What is {part}?",
+                    target_concept_id=cmeta.id if cmeta else None,
+                    purpose="compare_side",
+                    lecture_scope=cmeta.lecture_scope if cmeta else [],
+                )
+            )
+        joined = ", ".join(intent.compare_entities[:6])
+        subs.append(
+            SubQuestion(
+                text=f"How do {joined} differ along role, computation, and typical use?",
+                target_concept_id=None,
+                purpose="mechanism",
+            )
+        )
+        subs.append(
+            SubQuestion(
+                text="Why do these distinctions matter for speech / ML in this course?",
+                target_concept_id=None,
+                purpose="connection",
+            )
+        )
+        return subs
 
     if qt == QueryType.COMPARE and intent.compare_concepts:
         a, b = intent.compare_concepts
@@ -276,7 +308,12 @@ def decompose_query(intent: QueryIntent, kb: ConceptKB, concepts: list[ConceptMe
 def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> StructuredQuery:
     kb = kb or get_kb()
     concepts = _resolve_kb_concepts(intent, kb)
-    if intent.compare_concepts:
+    if intent.compare_entities:
+        for part in intent.compare_entities:
+            c = kb.get_concept(part.strip()) or kb.get_concept(part.split()[0])
+            if c and all(c.id != x.id for x in concepts):
+                concepts.append(c)
+    elif intent.compare_concepts:
         for part in intent.compare_concepts:
             c = kb.get_concept(part.strip())
             if c and all(c.id != x.id for x in concepts):
@@ -284,6 +321,8 @@ def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> 
     concept_ids = [c.id for c in concepts]
 
     answer_intent = _QUERY_TYPE_TO_ANSWER_INTENT.get(intent.query_type, "multi_step_explanation")
+    if intent.query_type == QueryType.COMPARE and len(intent.compare_entities) > 2:
+        answer_intent = "compare_multi"
     lecture_scope = _lecture_scope_union(intent, concepts)
     hints = _retrieval_hints(concepts)
 
@@ -296,6 +335,7 @@ def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> 
         answer_style = "quiz"
 
     sub_questions = decompose_query(intent, kb, concepts)
+    rc = parse_response_constraints(intent.original_query)
 
     return StructuredQuery(
         intent=intent,
@@ -306,4 +346,5 @@ def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> 
         lecture_scope=lecture_scope,
         answer_style=answer_style,
         decomposition_template=template,
+        response_constraints=rc,
     )

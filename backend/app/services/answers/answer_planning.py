@@ -3,11 +3,41 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from flask import has_app_context
+
+from app.services.answers.entity_retrieval import (
+    ConceptEvidenceBundle,
+    build_bundles_for_compare,
+    build_bundles_multi,
+    score_chunk_for_entity,
+)
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
+
+
+@dataclass
+class SectionSpec:
+    """Narrow contract for one rendered section (generation / validation)."""
+
+    section_id: str
+    purpose: str
+    entity_id: str | None
+    source_chunk_ids: list[int]
+    content_hint: str
+    forbidden_terms: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "section_id": self.section_id,
+            "purpose": self.purpose,
+            "entity_id": self.entity_id,
+            "source_chunk_ids": list(self.source_chunk_ids),
+            "content_hint": self.content_hint,
+            "forbidden_terms": list(self.forbidden_terms),
+        }
 
 
 @dataclass
@@ -32,6 +62,8 @@ class AnswerPlan:
     include_related_concepts: list[str]
     comparison_axes: list[str]
     lecture_scope: list[int]
+    section_specs: list[SectionSpec] = field(default_factory=list)
+    evidence_bundles: dict[str, ConceptEvidenceBundle] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +77,8 @@ class AnswerPlan:
             "include_related_concepts": list(self.include_related_concepts),
             "comparison_axes": list(self.comparison_axes),
             "lecture_scope": list(self.lecture_scope),
+            "section_specs": [s.to_dict() for s in self.section_specs],
+            "evidence_bundles": {k: v.to_dict() for k, v in self.evidence_bundles.items()},
         }
 
 
@@ -92,6 +126,11 @@ ANSWER_PLAN_SECTION_LABELS: dict[str, list[tuple[str, str]]] = {
         ("Purpose or motivation", "definition"),
         ("Example", "example"),
     ],
+    "compare_multi": [
+        ("Compared items", "definition"),
+        ("Contrasts", "comparison_axis"),
+        ("Why contrasts matter", "connection"),
+    ],
 }
 
 # One primary chunk per section (ordered by relevance) — avoids repeating the same excerpt
@@ -121,6 +160,14 @@ def _score_chunk_for_concept(chunk: dict[str, Any], concept_id: str, kb: Concept
     return score
 
 
+def _entity_scoring_enabled() -> bool:
+    if not has_app_context():
+        return True
+    from flask import current_app
+
+    return bool(current_app.config.get("ENTITY_EVIDENCE_SCORING_ENABLED", True))
+
+
 def _ranked_chunk_ids(
     chunks: list[dict[str, Any]],
     concept_ids: list[str],
@@ -129,15 +176,22 @@ def _ranked_chunk_ids(
 ) -> list[int]:
     """All chunk ids for ``chunks``, ordered by relevance to ``concept_ids`` (deduplicated)."""
     scored: list[tuple[float, int]] = []
+    use_entity = _entity_scoring_enabled() and len(concept_ids) >= 1
+    primary_c = concept_ids[0] if concept_ids else None
+    peers = concept_ids[1:] if len(concept_ids) > 1 else []
+
     for c in chunks:
         cid = c.get("id")
         if cid is None:
             continue
-        s = 0.0
-        for k in concept_ids:
-            s += _score_chunk_for_concept(c, k, kb)
-        if s == 0.0 and concept_ids:
-            s = 0.1  # weak fallback
+        if use_entity and primary_c:
+            s, _ = score_chunk_for_entity(c, primary_c, kb, peer_concept_ids=peers)
+        else:
+            s = 0.0
+            for k in concept_ids:
+                s += _score_chunk_for_concept(c, k, kb)
+            if s == 0.0 and concept_ids:
+                s = 0.1  # weak fallback only when entity scoring off
         scored.append((s, int(cid)))
     scored.sort(key=lambda x: -x[0])
     out: list[int] = []
@@ -176,6 +230,12 @@ def _has_non_empty_sample_question(c: dict[str, Any]) -> bool:
     return bool(s)
 
 
+def _forbidden_for_entity(entity_id: str, peer_ids: list[str], kb: ConceptKB) -> list[str]:
+    from app.services.answers.entity_retrieval import forbidden_terms_for_concept
+
+    return forbidden_terms_for_concept(entity_id, peer_ids, kb)[:12]
+
+
 def build_answer_plan(
     sq: StructuredQuery,
     chunks: list[dict[str, Any]],
@@ -202,7 +262,10 @@ def build_answer_plan(
         if ca and cb:
             comparison_axes = kb.get_comparison_axes(ca.id, cb.id)
 
+    rc = sq.response_constraints
     include_example = any(_has_non_empty_sample_question(c) for c in chunks)
+    if rc.no_examples:
+        include_example = False
     include_prereq = False
     if sq.concept_ids:
         c0 = kb.get_concept_by_id(sq.concept_ids[0])
@@ -214,23 +277,151 @@ def build_answer_plan(
         c0 = kb.get_concept_by_id(sq.concept_ids[0])
         if c0:
             for rid in c0.related[:5]:
-                rc = kb.get_concept_by_id(rid)
-                if rc:
-                    related_names.append(rc.name)
+                rc_meta = kb.get_concept_by_id(rid)
+                if rc_meta:
+                    related_names.append(rc_meta.name)
 
-    sections: list[AnswerSection] = []
+    section_specs: list[SectionSpec] = []
+    evidence_bundles: dict[str, ConceptEvidenceBundle] = {}
+
+    # --- Multi-entity compare (3+) ---
+    if mode == "compare_multi" and len(sq.concept_ids) >= 2:
+        bundles = build_bundles_multi(chunks, sq.concept_ids[:8], kb, top_per_entity=3)
+        for b in bundles:
+            evidence_bundles[b.concept_id] = b
+        sections: list[AnswerSection] = []
+        for b in bundles:
+            sections.append(
+                AnswerSection(heading=b.label, chunk_ids=b.chunk_ids[:3], content_hint="definition")
+            )
+        primary_union: list[int] = []
+        seen_u: set[int] = set()
+        for b in bundles:
+            for i in b.chunk_ids:
+                if i not in seen_u:
+                    seen_u.add(i)
+                    primary_union.append(i)
+        if not primary_union:
+            primary_union = primary_ids[:6]
+        return AnswerPlan(
+            answer_mode=mode,
+            sections=sections or [
+                AnswerSection(heading="Course material", chunk_ids=primary_ids[:3], content_hint="definition")
+            ],
+            primary_chunk_ids=primary_union or primary_ids,
+            supporting_chunk_ids=sup_ids,
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=include_prereq,
+            include_related_concepts=related_names,
+            comparison_axes=comparison_axes or ["role", "computation", "typical use"],
+            lecture_scope=list(sq.lecture_scope),
+            section_specs=section_specs,
+            evidence_bundles=evidence_bundles,
+        )
+
+    # --- Two-way compare with isolated evidence pools ---
+    if mode == "compare" and len(sq.concept_ids) >= 2:
+        ca_id, cb_id = sq.concept_ids[0], sq.concept_ids[1]
+        bundle_a, bundle_b = build_bundles_for_compare(chunks, ca_id, cb_id, kb)
+        evidence_bundles[ca_id] = bundle_a
+        evidence_bundles[cb_id] = bundle_b
+
+        def _safe(ids: list[int]) -> list[int]:
+            return ids if ids else primary_ids[:1]
+
+        a_ids = _safe(bundle_a.chunk_ids)
+        b_ids = _safe(bundle_b.chunk_ids)
+        intro_ids: list[int] = []
+        if a_ids and b_ids:
+            intro_ids = [a_ids[0], b_ids[0]]
+        elif a_ids:
+            intro_ids = list(a_ids[:2])
+        elif b_ids:
+            intro_ids = list(b_ids[:2])
+        else:
+            intro_ids = primary_ids[:2]
+
+        contrast_ids = [a_ids[0], b_ids[0]] if a_ids and b_ids else intro_ids
+        sections = [
+            AnswerSection(heading="One-line distinction", chunk_ids=intro_ids, content_hint="comparison_axis"),
+            AnswerSection(heading=f"Concept A — {bundle_a.label}", chunk_ids=a_ids[:2], content_hint="definition"),
+            AnswerSection(heading=f"Concept B — {bundle_b.label}", chunk_ids=b_ids[:2], content_hint="definition"),
+            AnswerSection(heading="Direct comparison", chunk_ids=contrast_ids, content_hint="comparison_axis"),
+            AnswerSection(heading="Why the difference matters", chunk_ids=contrast_ids, content_hint="connection"),
+        ]
+        section_specs = [
+            SectionSpec(
+                section_id="intro",
+                purpose="one_line_each",
+                entity_id=None,
+                source_chunk_ids=intro_ids,
+                content_hint="comparison_axis",
+                forbidden_terms=[],
+            ),
+            SectionSpec(
+                section_id="side_a",
+                purpose="definition",
+                entity_id=ca_id,
+                source_chunk_ids=a_ids[:2],
+                content_hint="definition",
+                forbidden_terms=_forbidden_for_entity(ca_id, [cb_id], kb),
+            ),
+            SectionSpec(
+                section_id="side_b",
+                purpose="definition",
+                entity_id=cb_id,
+                source_chunk_ids=b_ids[:2],
+                content_hint="definition",
+                forbidden_terms=_forbidden_for_entity(cb_id, [ca_id], kb),
+            ),
+            SectionSpec(
+                section_id="contrast",
+                purpose="comparison_axis",
+                entity_id=None,
+                source_chunk_ids=contrast_ids,
+                content_hint="comparison_axis",
+                forbidden_terms=[],
+            ),
+            SectionSpec(
+                section_id="why",
+                purpose="connection",
+                entity_id=None,
+                source_chunk_ids=contrast_ids,
+                content_hint="connection",
+                forbidden_terms=[],
+            ),
+        ]
+        merged_primary: list[int] = []
+        seen_m: set[int] = set()
+        for i in a_ids + b_ids + intro_ids:
+            if i not in seen_m:
+                seen_m.add(i)
+                merged_primary.append(i)
+        return AnswerPlan(
+            answer_mode=mode,
+            sections=sections,
+            primary_chunk_ids=merged_primary or primary_ids,
+            supporting_chunk_ids=sup_ids,
+            include_example=include_example,
+            include_analogy=False,
+            include_prerequisites=include_prereq,
+            include_related_concepts=related_names,
+            comparison_axes=comparison_axes,
+            lecture_scope=list(sq.lecture_scope),
+            section_specs=section_specs,
+            evidence_bundles=evidence_bundles,
+        )
+
+    sections = []
     n_labels = len(labels)
     cids = sq.concept_ids[:2] if sq.concept_ids else []
     ranked_distinct: list[int] | None = None
     if mode in _DISTINCT_CHUNK_PER_SECTION_MODES:
-        ranked_distinct = _ranked_chunk_ids(chunks, cids, kb, max_n=max(n_labels, 8))
+        ranked_distinct = _ranked_chunk_ids(chunks, cids[:1] if cids else [], kb, max_n=max(n_labels, 8))
 
     for idx, (heading, hint) in enumerate(labels):
-        if mode == "compare" and idx in (1, 2) and sq.intent.compare_concepts:
-            side = sq.intent.compare_concepts[0] if idx == 1 else sq.intent.compare_concepts[1]
-            cc = kb.get_concept(side)
-            pick_ids = _pick_chunks_for_section(chunks, [cc.id] if cc else [], kb, max_n=2)
-        elif ranked_distinct is not None:
+        if ranked_distinct is not None:
             pick_ids = [ranked_distinct[idx]] if idx < len(ranked_distinct) else []
         else:
             pick_ids = _pick_chunks_for_section(chunks, cids, kb, max_n=2)
@@ -242,8 +433,20 @@ def build_answer_plan(
                 pick_ids = primary_ids[: min(2, len(primary_ids))]
 
         sections.append(AnswerSection(heading=heading, chunk_ids=pick_ids, content_hint=hint))
+        peer = cids[1:] if len(cids) > 1 else []
+        ec = cids[0] if cids else None
+        forb: list[str] = _forbidden_for_entity(ec, peer, kb) if ec else []
+        section_specs.append(
+            SectionSpec(
+                section_id=f"sec_{idx}",
+                purpose=hint,
+                entity_id=ec,
+                source_chunk_ids=pick_ids,
+                content_hint=hint,
+                forbidden_terms=forb,
+            )
+        )
 
-    # Drop sections with no chunk assignment (after distinct split, later headings may be empty).
     sections = [s for s in sections if s.chunk_ids]
     if not sections and primary_ids:
         sections = [
@@ -261,6 +464,8 @@ def build_answer_plan(
         include_related_concepts=related_names,
         comparison_axes=comparison_axes,
         lecture_scope=list(sq.lecture_scope),
+        section_specs=section_specs,
+        evidence_bundles=evidence_bundles,
     )
 
 

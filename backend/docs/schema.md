@@ -1,4 +1,6 @@
-# SQLite schema (SQLAlchemy models)
+# Database schema (SQLAlchemy models)
+
+The app supports **SQLite** (default local file) and **PostgreSQL** (set **`DATABASE_URL`**, e.g. `postgresql+psycopg2://…`; see root [`README.md`](../../README.md)). Table definitions are the same; column types below are **logical** (SQLite and PostgreSQL may represent them slightly differently).
 
 Tables are created with:
 
@@ -6,9 +8,9 @@ Tables are created with:
 cd backend && flask --app wsgi init-db
 ```
 
-**Alembic:** the app registers Flask-Migrate ([`app/__init__.py`](../app/__init__.py)). For an existing database that predates analytics columns, run `flask --app wsgi db upgrade` after pulling migrations (see [`migrations/versions/`](../migrations/versions/)). Fresh clones can use `init-db` alone when starting from an empty file.
+**Alembic:** the app registers Flask-Migrate ([`app/__init__.py`](../app/__init__.py)). For an existing database that predates analytics columns, run `flask --app wsgi db upgrade` after pulling migrations (see [`migrations/versions/`](../migrations/versions/)). Fresh clones can use `init-db` alone when starting from an empty file. **Production** databases should use **`db upgrade`**, not only `init-db`, so migrations stay aligned with code.
 
-This document mirrors [`app/models/`](../app/models/). Types are logical (SQLite may store them differently).
+This document mirrors [`app/models/`](../app/models/).
 
 **Structured pipeline JSON** (e.g. `validation_checks_json`) is produced by code under [`app/services/answers/`](../app/services/answers/) (see `answer_validation.ValidationResult`).
 

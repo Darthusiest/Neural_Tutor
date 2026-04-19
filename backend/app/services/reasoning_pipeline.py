@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from flask import current_app
+
 from app.services.answers.answer_generation import generate_structured_answer
 from app.services.answers.answer_planning import AnswerPlan, build_answer_plan
 from app.services.answers.answer_validation import ValidationResult, validate_answer
@@ -20,7 +22,7 @@ def _estimate_query_complexity(sq: StructuredQuery, intent: QueryIntent) -> str:
         return "complex"
     if intent.query_type in (QueryType.COMPARE, QueryType.SYNTHESIS):
         return "complex"
-    if sq.answer_intent in ("compare", "cross_lecture_synthesis"):
+    if sq.answer_intent in ("compare", "compare_multi", "cross_lecture_synthesis"):
         return "complex"
     return "simple"
 
@@ -75,6 +77,8 @@ def run_reasoning_pipeline(
             include_related_concepts=[],
             comparison_axes=[],
             lecture_scope=list(sq.lecture_scope),
+            section_specs=[],
+            evidence_bundles={},
         )
         vr = ValidationResult(
             passed=True,
@@ -108,6 +112,21 @@ def run_reasoning_pipeline(
 
     pl_lectures = [c.get("lecture_number") for c in enhanced.chunks if c.get("lecture_number") is not None]
     validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
+
+    if bool(current_app.config.get("PIPELINE_RETRIEVAL_RETRY_ENABLED", True)) and validation.severity == "fail":
+        enhanced2 = retrieve_enhanced(query, top_k=top_k + 6, backend=backend)
+        if len(enhanced2.chunks) > len(enhanced.chunks):
+            enhanced = enhanced2
+            sq = build_structured_query(intent, kb=kb)
+            plan = build_answer_plan(sq, enhanced.chunks, enhanced.supporting_chunks, kb=kb)
+            course_answer, primary_model, primary_llm_usage = generate_course_answer(
+                plan, enhanced.chunks, sq
+            )
+            used_llm = primary_model == "openai"
+            pl_lectures = [
+                c.get("lecture_number") for c in enhanced.chunks if c.get("lecture_number") is not None
+            ]
+            validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
 
     if used_llm and validation.severity == "fail":
         course_answer = generate_structured_answer(plan, enhanced.chunks, sq)

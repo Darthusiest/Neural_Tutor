@@ -70,6 +70,38 @@ def _handle_definition(expanded_q: str, intent: QueryIntent, top_k: int) -> Enha
 def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
     """Retrieve chunks for *both* sides of a compare query."""
     side_diag: tuple[RetrievalDiagnostics | None, RetrievalDiagnostics | None] | None = None
+    if intent.compare_entities and len(intent.compare_entities) >= 3:
+        lec_hint = ""
+        if intent.lecture_numbers:
+            lec_hint = f"lecture {intent.lecture_numbers[0]} "
+        merged: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        confs: list[float] = []
+        diag: RetrievalDiagnostics | None = None
+        for ent in intent.compare_entities[:8]:
+            sub_q = f"{lec_hint}{ent.strip()}".strip()
+            r = retrieve_chunks(sub_q, top_k=max(top_k, 4))
+            if diag is None:
+                diag = r.diagnostics
+            confs.append(r.confidence)
+            for c in r.chunks:
+                cid = c.get("id")
+                if cid is not None and cid not in seen:
+                    seen.add(cid)
+                    merged.append(c)
+            if len(merged) >= top_k * 5:
+                break
+        conf = min(confs) if confs else 0.5
+        detected = (merged[0].get("topic") or "").split("—")[0].strip() if merged else None
+        cap = max(top_k * 3, 18)
+        return EnhancedRetrievalResult(
+            chunks=merged[:cap],
+            confidence=conf,
+            detected_topic=detected,
+            diagnostics=diag,
+            query_intent=intent,
+            compare_side_diagnostics=side_diag,
+        )
     if intent.compare_concepts:
         ca, cb = intent.compare_concepts
         lec_hint = ""

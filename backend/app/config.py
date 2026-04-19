@@ -131,6 +131,12 @@ class Config:
     # Structured reasoning pipeline (concept KB + answer plan + validation).
     KB_JSON_PATH = Path(os.getenv("KB_JSON_PATH", str(_DEFAULT_PIPELINE_KB_JSON)))
     STRUCTURED_PIPELINE_ENABLED = os.getenv("STRUCTURED_PIPELINE_ENABLED", "1") == "1"
+    # Entity-scored chunk ranking + per-compare evidence bundles (recommended on).
+    ENTITY_EVIDENCE_SCORING_ENABLED = os.getenv("ENTITY_EVIDENCE_SCORING_ENABLED", "1") == "1"
+    # Extra retrieval pass when validation hard-fails (wider top_k).
+    PIPELINE_RETRIEVAL_RETRY_ENABLED = os.getenv("PIPELINE_RETRIEVAL_RETRY_ENABLED", "1") == "1"
+    # Pass section specs + constraints into primary LLM user prompt (when LLM path is used).
+    SECTION_CONTRACTS_ENABLED = os.getenv("SECTION_CONTRACTS_ENABLED", "1") == "1"
     # Primary Course Answer: OpenAI when key present. PRIMARY_COURSE_ANSWER_OPENAI wins; else LLM_ANSWER_GENERATION.
     _primary_llm = os.getenv("PRIMARY_COURSE_ANSWER_OPENAI")
     if _primary_llm is None:
@@ -164,6 +170,9 @@ class TestConfig(Config):
     RETRIEVAL_HYBRID_ENABLED = False
     STRUCTURED_STUDY_PIPELINE_ENABLED = False
     STUDY_MODE_LLM_POLISH = False
+    ENTITY_EVIDENCE_SCORING_ENABLED = True
+    PIPELINE_RETRIEVAL_RETRY_ENABLED = False
+    SECTION_CONTRACTS_ENABLED = True
     EMAIL_VERIFICATION_REQUIRED = False
     ALLOW_DEV_RESET_TOKEN_IN_JSON = False
     PRODUCTION_LIKE = False

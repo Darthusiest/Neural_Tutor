@@ -5,7 +5,14 @@ from flask_login import current_user, login_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db, limiter
-from app.models import ChatSession, Feedback, Message
+from app.models import (
+    ChatSession,
+    Feedback,
+    Message,
+    MessageOutcome,
+    ResponseVariant,
+    RetrievalLog,
+)
 from app.services.chat_orchestrator import handle_chat_turn
 from app.utils.security import parse_request_json
 
@@ -76,6 +83,74 @@ def get_session(sid: int):
             }
         }
     )
+
+
+@bp.route("/sessions/<int:sid>", methods=["PATCH"])
+@login_required
+@limiter.limit("60 per minute")
+def rename_session(sid: int):
+    s = _require_user_session(sid)
+    if not s:
+        return jsonify({"error": "not found"}), 404
+    data, err = parse_request_json(request)
+    if err:
+        return err
+    assert data is not None
+    if "title" not in data:
+        return jsonify({"error": "title required"}), 400
+    title = (data.get("title") or "").strip() or "New chat"
+    s.title = title[:512]
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("rename_session failed sid=%s", sid)
+        return jsonify({"error": "could not update session"}), 500
+    return jsonify({"session": {"id": s.id, "title": s.title, "mode": s.mode}})
+
+
+@bp.route("/sessions/<int:sid>", methods=["DELETE"])
+@login_required
+@limiter.limit("30 per minute")
+def delete_session(sid: int):
+    s = _require_user_session(sid)
+    if not s:
+        return jsonify({"error": "not found"}), 404
+
+    try:
+        message_ids = [
+            mid
+            for (mid,) in db.session.query(Message.id)
+            .filter(Message.session_id == s.id)
+            .all()
+        ]
+        if message_ids:
+            # ResponseVariant references both message and retrieval_log — remove first.
+            ResponseVariant.query.filter(ResponseVariant.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
+            Feedback.query.filter(Feedback.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
+            MessageOutcome.query.filter(MessageOutcome.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
+            # Chunk hits cascade at DB level (FK ondelete=CASCADE) when the log row is removed.
+            RetrievalLog.query.filter(RetrievalLog.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
+        RetrievalLog.query.filter(
+            RetrievalLog.session_id == s.id, RetrievalLog.message_id.is_(None)
+        ).delete(synchronize_session=False)
+
+        db.session.delete(s)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("delete_session failed sid=%s", sid)
+        return jsonify({"error": "could not delete session"}), 500
+
+    return ("", 204)
 
 
 @bp.route("/sessions/<int:sid>/messages", methods=["GET"])
