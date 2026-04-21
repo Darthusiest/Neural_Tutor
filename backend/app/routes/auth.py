@@ -308,7 +308,11 @@ def reset_password():
         assert pr is not None
 
         now = datetime.now(timezone.utc)
-        if pr.used_at is not None or pr.expires_at < now:
+        # DB column is naive DateTime; stored as UTC. Normalize before comparing.
+        expires_at = pr.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if pr.used_at is not None or expires_at < now:
             security_log("reset_token_stale", token_id=pr.id)
             return jsonify({"error": "invalid or expired token"}), 400
 

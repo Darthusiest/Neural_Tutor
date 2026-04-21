@@ -149,6 +149,8 @@ def handle_chat_turn(
     text: str,
     boost_toggle: bool,
     mode: str,
+    *,
+    mode_request_source: str = "implicit",
 ) -> dict[str, Any]:
     """
     Run retrieval, build course / boosted answers, persist messages and logs.
@@ -286,6 +288,22 @@ def handle_chat_turn(
     )
 
     mode_meta = mode_metadata_for_api(r.mode_routing)
+    _mode_log: dict[str, Any] = {
+        "event": "chat_mode_routing",
+        "session_id": session.id,
+        "query_preview": (text or "")[:200],
+        "mode_request_source": mode_request_source,
+        "detected": mode_meta["detected"],
+        "effective": mode_meta["effective"],
+        "confidence": mode_meta["confidence"],
+        "signals": mode_meta["signals"],
+        "overridden": mode_meta["overridden"],
+        "ambiguous": mode_meta["ambiguous"],
+    }
+    if mode_meta.get("candidate_modes"):
+        _mode_log["candidate_modes"] = mode_meta["candidate_modes"]
+    logger.info("chat_mode_routing %s", json.dumps(_mode_log, ensure_ascii=False))
+
     assistant = Message(
         session_id=session.id,
         role="assistant",

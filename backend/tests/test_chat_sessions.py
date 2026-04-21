@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from app.extensions import db
@@ -193,6 +194,54 @@ def test_chat_mode_override_wins_over_mode(client, app):
     assert r.status_code == 200
     assert r.get_json()["mode"]["effective"] == "compare"
     assert r.get_json()["mode"]["overridden"] is True
+
+
+def test_chat_legacy_mode_only_forces_effective(client, app):
+    """Legacy ``mode`` (no ``mode_override``) still routes; ``effective`` matches client mode."""
+    _login(client, "leg-mode-only@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "session_id": sid,
+            "message": "What is softmax?",
+            "mode": "compare",
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["mode"]["effective"] == "compare"
+    assert body["mode"]["overridden"] is True
+
+
+def test_chat_logs_legacy_key_and_structured_mode_routing(caplog, client, app):
+    caplog.set_level(logging.INFO)
+    _login(client, "caplog-mode@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "session_id": sid,
+            "message": "hello",
+            "mode": "chat",
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    messages = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "legacy_chat_mode_key" in messages
+    assert "chat_mode_routing" in messages
 
 
 def test_delete_other_users_session_returns_404(client):

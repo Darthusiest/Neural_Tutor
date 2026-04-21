@@ -22,6 +22,15 @@ bp = Blueprint("chat", __name__)
 _VALID_API_MODES = frozenset({"auto", "chat", "quiz", "compare", "summary"})
 
 
+def _mode_request_source(body: dict) -> str:
+    """How the client specified routing: implicit default, legacy ``mode``, or ``mode_override``."""
+    if (body.get("mode_override") or "").strip():
+        return "override"
+    if (body.get("mode") or "").strip():
+        return "legacy"
+    return "implicit"
+
+
 def _resolve_user_api_mode(body: dict) -> str:
     """How the client wants the turn routed: explicit ``mode_override`` beats legacy ``mode``.
 
@@ -245,6 +254,7 @@ def chat():
     session_id = data.get("session_id")
     text = (data.get("message") or "").strip()
     boost_toggle = bool(data.get("boost_toggle"))
+    mode_request_source = _mode_request_source(data)
     user_api_mode = _resolve_user_api_mode(data)
 
     if not session_id or not text:
@@ -254,8 +264,21 @@ def chat():
     if not s:
         return jsonify({"error": "session not found"}), 404
 
+    if mode_request_source == "legacy":
+        current_app.logger.info(
+            "legacy_chat_mode_key session_id=%s mode=%s",
+            int(session_id),
+            (data.get("mode") or "").strip().lower(),
+        )
+
     try:
-        out = handle_chat_turn(s, text, boost_toggle, user_api_mode)
+        out = handle_chat_turn(
+            s,
+            text,
+            boost_toggle,
+            user_api_mode,
+            mode_request_source=mode_request_source,
+        )
     except SQLAlchemyError:
         db.session.rollback()
         current_app.logger.exception("chat commit failed")
