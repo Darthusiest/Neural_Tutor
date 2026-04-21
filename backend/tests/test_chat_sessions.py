@@ -144,6 +144,57 @@ def test_delete_session_removes_feedback(client, app):
         assert Feedback.query.filter_by(message_id=mid).first() is None
 
 
+def test_chat_accepts_message_without_mode_and_returns_mode_block(client, app):
+    """POST /api/chat: ``mode`` is optional; response includes ``mode`` + ``answer``."""
+    _login(client, "chat-contract@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={"session_id": sid, "message": "compare CNN and MLP"},
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert "answer" in body and body["answer"] == body.get("course_answer")
+    assert "mode" in body
+    mode = body["mode"]
+    assert mode["detected"] in ("compare", "chat", "quiz", "summary")
+    assert mode["effective"] in ("compare", "chat", "quiz", "summary")
+    assert "confidence" in mode and isinstance(mode["confidence"], (int, float))
+    assert "signals" in mode and isinstance(mode["signals"], list)
+    assert "overridden" in mode and isinstance(mode["overridden"], bool)
+    assert "ambiguous" in mode and isinstance(mode["ambiguous"], bool)
+    assert "mode_routing" in body
+
+
+def test_chat_mode_override_wins_over_mode(client, app):
+    _login(client, "chat-override@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "session_id": sid,
+            "message": "hello",
+            "mode": "chat",
+            "mode_override": "compare",
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["mode"]["effective"] == "compare"
+    assert r.get_json()["mode"]["overridden"] is True
+
+
 def test_delete_other_users_session_returns_404(client):
     _login(client, "del-a@test.dev")
     sid = client.post(

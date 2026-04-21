@@ -10,6 +10,7 @@ export function ChatPanel({
   sending,
   mode,
   onModeChange,
+  lastModeRouting,
   ensureSession,
   onRefreshAfterStudy,
 }) {
@@ -34,7 +35,7 @@ export function ChatPanel({
 
   function handleSubmit(e) {
     e.preventDefault()
-    if (mode !== 'chat') return
+    if (mode !== 'chat' && mode !== 'auto') return
     const fd = new FormData(e.target)
     const text = (fd.get('message') || '').trim()
     if (!text) return
@@ -149,13 +150,23 @@ export function ChatPanel({
             onChange={(e) => onModeChange(e.target.value)}
             disabled={sending || studyBusy}
           >
+            <option value="auto">Auto (detect)</option>
             <option value="chat">Chat</option>
             <option value="quiz">Quiz</option>
             <option value="compare">Compare</option>
             <option value="summary">Summary</option>
           </select>
         </label>
-        {mode === 'chat' ? (
+        {mode === 'auto' &&
+        (lastModeRouting?.effective ?? lastModeRouting?.effective_mode) ? (
+          <span className="muted mode-detected-hint" title="Last reply routing from the server">
+            → {lastModeRouting.effective ?? lastModeRouting.effective_mode}
+            {(lastModeRouting.ambiguous ?? lastModeRouting.mode_ambiguous)
+              ? ' (ambiguous)'
+              : ''}
+          </span>
+        ) : null}
+        {mode === 'chat' || mode === 'auto' ? (
           <label className="boost-toggle">
             <input
               type="checkbox"
@@ -296,9 +307,9 @@ export function ChatPanel({
       <div className="messages">
         {messages.length === 0 ? (
           <p className="muted">
-            {mode === 'chat'
+            {mode === 'chat' || mode === 'auto'
               ? 'Ask a question about LING 487 course material.'
-              : 'Use the controls above, or switch to Chat for free-form questions.'}
+              : 'Use the controls above, or switch to Auto or Chat for free-form questions.'}
           </p>
         ) : (
           messages.map((m) => <MessageBlock key={m.id} m={m} />)
@@ -306,7 +317,7 @@ export function ChatPanel({
         <div ref={messagesEndRef} className="messages-end" aria-hidden="true" />
       </div>
 
-      {mode === 'chat' ? (
+      {mode === 'chat' || mode === 'auto' ? (
         <form className="composer" onSubmit={handleSubmit}>
           <input name="message" placeholder="Message…" autoComplete="off" />
           <button type="submit" disabled={sending}>

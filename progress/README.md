@@ -4,7 +4,7 @@ For the **current product/API overview** and setup steps, see the root [`README.
 
 For a **concise shipped-features list** (release-style), see [`CHANGELOG.md`](../CHANGELOG.md) at the repo root.
 
-**New chat / AI session:** use [`context-for-new-chat.md`](context-for-new-chat.md) as a condensed handoff (stack, env, migrations, hot paths, recent fixes).
+**New chat / AI session:** use [`context-for-new-chat.md`](context-for-new-chat.md) — includes a **copy-paste prompt template**, constraints you want from the assistant, and hot paths. For a longer narrative handoff, see [`entries/2026-04-12-session-handoff-neural-tutor.md`](entries/2026-04-12-session-handoff-neural-tutor.md).
 
 This folder holds a **narrative running record**: design decisions, retrieval behavior notes, bugs fixed, and follow-ups—especially what you would not put in a one-line changelog bullet.
 

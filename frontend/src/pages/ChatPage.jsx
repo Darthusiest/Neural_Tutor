@@ -10,7 +10,8 @@ export function ChatPage({ user }) {
   const [sessions, setSessions] = useState([])
   const [messages, setMessages] = useState([])
   const [boostEnabled, setBoostEnabled] = useState(false)
-  const [mode, setMode] = useState('chat')
+  const [mode, setMode] = useState('auto')
+  const [lastModeRouting, setLastModeRouting] = useState(null)
   const [sending, setSending] = useState(false)
 
   const activeId = sessionId ? parseInt(sessionId, 10) : null
@@ -56,7 +57,7 @@ export function ChatPage({ user }) {
   async function handleNewChat() {
     const data = await apiFetch('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'New chat', mode: 'chat' }),
+      body: JSON.stringify({ title: 'New chat', mode: 'auto' }),
     })
     await refreshSessions()
     nav(`/chat/${data.session.id}`)
@@ -82,22 +83,13 @@ export function ChatPage({ user }) {
     await refreshSessions()
   }
 
-  async function handleRenameSession(sid, currentTitle) {
-    const next = window.prompt('Rename chat', currentTitle)
-    if (next === null) return
-    const trimmed = next.trim()
-    const title = trimmed || 'New chat'
-    try {
-      const data = await apiFetch(`/api/sessions/${sid}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ title }),
-      })
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === sid ? { ...s, title: data.session.title } : s))
-    } catch {
-      await refreshSessions().catch(() => {})
-    }
+  async function handleRenameSession(sid, newTitle) {
+    const title = (newTitle || '').trim() || 'New chat'
+    await apiFetch(`/api/sessions/${sid}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    })
+    await refreshSessions()
   }
 
   async function handleDeleteSession(sid) {
@@ -135,15 +127,25 @@ export function ChatPage({ user }) {
     ]
     setMessages(optimistic)
     try {
-      await apiFetch('/api/chat', {
+      const chatPayload = {
+        session_id: sid,
+        message: text,
+        boost_toggle: boostEnabled,
+      }
+      if (mode === 'auto') {
+        // Server detects from message; omit mode keys (optional contract).
+      } else {
+        chatPayload.mode_override = mode
+      }
+      const data = await apiFetch('/api/chat', {
         method: 'POST',
-        body: JSON.stringify({
-          session_id: sid,
-          message: text,
-          boost_toggle: boostEnabled,
-          mode,
-        }),
+        body: JSON.stringify(chatPayload),
       })
+      if (data?.mode) {
+        setLastModeRouting(data.mode)
+      } else if (data?.mode_routing) {
+        setLastModeRouting(data.mode_routing)
+      }
       await refreshMessages(sid)
       await refreshSessions()
     } catch (e) {
@@ -171,6 +173,7 @@ export function ChatPage({ user }) {
         sending={sending}
         mode={mode}
         onModeChange={setMode}
+        lastModeRouting={lastModeRouting}
         ensureSession={ensureSession}
         onRefreshAfterStudy={refreshAfterStudy}
       />

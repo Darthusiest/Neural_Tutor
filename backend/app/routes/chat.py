@@ -19,6 +19,23 @@ from app.utils.security import parse_request_json
 
 bp = Blueprint("chat", __name__)
 
+_VALID_API_MODES = frozenset({"auto", "chat", "quiz", "compare", "summary"})
+
+
+def _resolve_user_api_mode(body: dict) -> str:
+    """How the client wants the turn routed: explicit ``mode_override`` beats legacy ``mode``.
+
+    Both keys are optional; missing or empty values mean **auto** (server detects from the message).
+    Unknown values fall back to **auto**.
+    """
+    override = (body.get("mode_override") or "").strip().lower()
+    if override:
+        return override if override in _VALID_API_MODES else "auto"
+    legacy = (body.get("mode") or "").strip().lower()
+    if legacy:
+        return legacy if legacy in _VALID_API_MODES else "auto"
+    return "auto"
+
 
 def _require_user_session(sid: int) -> ChatSession | None:
     return ChatSession.query.filter_by(id=sid, user_id=current_user.id).first()
@@ -212,6 +229,14 @@ def chat():
     """
     Retrieve lecture chunks, assemble a grounded Course Answer, optionally
     request a Boosted Explanation from the LLM layer.
+
+    **Request JSON:** ``session_id`` and ``message`` are required. ``mode`` and
+    ``mode_override`` are optional (default **auto**); if both are sent,
+    ``mode_override`` wins. ``boost_toggle`` is optional.
+
+    **Response:** includes ``answer`` (same text as ``course_answer``), ``mode``
+    (``detected``, ``effective``, ``confidence``, ``signals``, ``overridden``,
+    ``ambiguous``, optional ``candidate_modes``), and legacy ``mode_routing``.
     """
     data, err = parse_request_json(request)
     if err:
@@ -220,7 +245,7 @@ def chat():
     session_id = data.get("session_id")
     text = (data.get("message") or "").strip()
     boost_toggle = bool(data.get("boost_toggle"))
-    mode = (data.get("mode") or "auto").strip()
+    user_api_mode = _resolve_user_api_mode(data)
 
     if not session_id or not text:
         return jsonify({"error": "session_id and message required"}), 400
@@ -230,7 +255,7 @@ def chat():
         return jsonify({"error": "session not found"}), 404
 
     try:
-        out = handle_chat_turn(s, text, boost_toggle, mode)
+        out = handle_chat_turn(s, text, boost_toggle, user_api_mode)
     except SQLAlchemyError:
         db.session.rollback()
         current_app.logger.exception("chat commit failed")

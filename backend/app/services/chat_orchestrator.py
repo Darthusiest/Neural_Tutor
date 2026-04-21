@@ -37,6 +37,24 @@ from app.services.retrieval_v2 import retrieve_enhanced
 
 logger = logging.getLogger(__name__)
 
+
+def mode_metadata_for_api(mode_routing: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize internal ``mode_routing`` into the public ``mode`` object on chat responses."""
+    mr = mode_routing or {}
+    out: dict[str, Any] = {
+        "detected": mr.get("detected_mode") or "chat",
+        "effective": mr.get("effective_mode") or "chat",
+        "confidence": float(mr.get("mode_confidence") or 0.0),
+        "signals": list(mr.get("mode_signals") or []),
+        "overridden": bool(mr.get("mode_was_overridden")),
+        "ambiguous": bool(mr.get("mode_ambiguous")),
+    }
+    candidates = mr.get("mode_candidate_modes")
+    if candidates:
+        out["candidate_modes"] = list(candidates)
+    return out
+
+
 # Keywords that suggest the user wants a simpler/different explanation
 _CLARIFY_KEYWORDS = frozenset(
     "clarify explain again confused unclear rephrase repeat elaborate".split()
@@ -267,6 +285,7 @@ def handle_chat_turn(
         boost_provider,
     )
 
+    mode_meta = mode_metadata_for_api(r.mode_routing)
     assistant = Message(
         session_id=session.id,
         role="assistant",
@@ -274,6 +293,7 @@ def handle_chat_turn(
         payload_json=json.dumps(
             {
                 "course_answer": course_answer,
+                "answer": course_answer,
                 "boosted_explanation": boosted,
                 "confidence": r.confidence,
                 "query_type": (
@@ -291,6 +311,7 @@ def handle_chat_turn(
                 "boost_reason": boost_reason,
                 "query_complexity": pipeline_extra.get("query_complexity") if pipeline_extra else None,
                 "no_match_kind": no_match_kind,
+                "mode": mode_meta,
                 "mode_routing": r.mode_routing or {},
             }
         ),
@@ -413,8 +434,10 @@ def handle_chat_turn(
     return {
         "assistant_message_id": assistant.id,
         "course_answer": course_answer,
+        "answer": course_answer,
         "boosted_explanation": boosted,
         "retrieval_confidence": r.confidence,
         "boost_applied": boost_used,
+        "mode": mode_meta,
         "mode_routing": r.mode_routing or {},
     }

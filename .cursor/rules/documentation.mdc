@@ -13,3 +13,5 @@ When you **add, improve, or fix** user-visible behavior, APIs, config, database 
 4. **`progress/entries/YYYY-MM-DD-slug.md`** — Use for narrative context (decisions, tuning, follow-ups) that does not belong in a changelog line.
 
 Full policy: `progress/README.md`.
+
+**New AI chat:** Point the assistant at [`progress/context-for-new-chat.md`](../../progress/context-for-new-chat.md) (or paste its suggested prompt block) so stack, constraints, and hot paths stay aligned without re-explaining the repo.
