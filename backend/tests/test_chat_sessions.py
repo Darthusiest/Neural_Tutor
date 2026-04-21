@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from app.extensions import db
 from app.models import ChatSession, Feedback, Message
 
@@ -36,6 +38,12 @@ def test_patch_session_updates_title(client, app):
         content_type="application/json",
     ).get_json()["session"]["id"]
 
+    with app.app_context():
+        before = db.session.get(ChatSession, sid)
+        assert before is not None
+        t0 = before.updated_at
+    time.sleep(0.02)
+
     r = client.patch(
         f"/api/sessions/{sid}",
         json={"title": "  new title  "},
@@ -44,11 +52,13 @@ def test_patch_session_updates_title(client, app):
     assert r.status_code == 200
     body = r.get_json()
     assert body["session"]["title"] == "new title"
+    assert body["session"].get("updated_at")
 
     with app.app_context():
         s = db.session.get(ChatSession, sid)
         assert s is not None
         assert s.title == "new title"
+        assert s.updated_at and t0 and s.updated_at > t0
 
 
 def test_patch_session_requires_title(client):

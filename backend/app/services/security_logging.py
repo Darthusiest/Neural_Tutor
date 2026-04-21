@@ -1,4 +1,4 @@
-"""Persist security audit events (server-side only)."""
+"""Persist security-related events to the database (server-side only)."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from typing import Any
 from flask import Request, has_request_context, request
 
 from app.extensions import db
-from app.models import AuditEvent
+from app.models import SecurityLogEntry
 
 
-def log_audit_event(
+def log_security_event(
     event_type: str,
     *,
-    actor_user_id: int | None = None,
-    actor_email: str | None = None,
+    user_id: int | None = None,
+    user_email: str | None = None,
     severity: str = "info",
     metadata: dict[str, Any] | None = None,
     req: Request | None = None,
@@ -28,9 +28,9 @@ def log_audit_event(
         r = req or (request if has_request_context() else None)
         ip = (r.remote_addr if r else None) or None
         ua = (r.headers.get("User-Agent", "")[:500] if r else None) or None
-        row = AuditEvent(
-            actor_user_id=actor_user_id,
-            actor_email=(actor_email[:255] if actor_email else None),
+        row = SecurityLogEntry(
+            actor_user_id=user_id,
+            actor_email=(user_email[:255] if user_email else None),
             event_type=event_type[:64],
             severity=severity[:16] if severity else None,
             ip=ip[:64] if ip else None,
@@ -44,6 +44,6 @@ def log_audit_event(
         try:
             from flask import current_app
 
-            current_app.logger.exception("audit_log_failed event_type=%s", event_type)
+            current_app.logger.exception("security_event_log_failed event_type=%s", event_type)
         except Exception:
             pass

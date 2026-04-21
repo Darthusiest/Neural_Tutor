@@ -121,7 +121,7 @@ def _plan_and_sq_for_gemini_boost(text: str, r: EnhancedRetrievalResult):
     intent = r.query_intent
     if intent is None:
         intent = analyze_query(text)
-    sq = build_structured_query(intent, kb=kb)
+    sq = build_structured_query(intent, kb=kb, mode_routing=r.mode_routing or {})
     plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
     return plan, sq
 
@@ -138,7 +138,11 @@ def handle_chat_turn(
     """
     threshold = float(current_app.config.get("CONFIDENCE_THRESHOLD", 0.35))
 
-    session.mode = mode
+    mode_norm = (mode or "auto").strip().lower()
+    if mode_norm not in ("auto", "chat", "quiz", "compare", "summary"):
+        mode_norm = "auto"
+
+    session.mode = mode_norm
 
     # Retroactively populate outcome for the previous assistant message
     _populate_previous_outcome(session, text)
@@ -153,8 +157,10 @@ def handle_chat_turn(
     pipeline_extra: dict[str, Any] | None = None
     pr: PipelineResult | None = None
     no_match_kind: str | None = None
+    top_k = int(current_app.config.get("CHAT_RETRIEVAL_TOP_K", 5))
+
     if structured_on:
-        pr = run_reasoning_pipeline(text, top_k=5)
+        pr = run_reasoning_pipeline(text, top_k=top_k, user_mode=mode_norm)
         r = pr.enhanced_result
         pipeline_extra = pipeline_diagnostics_dict(pr)
         if not r.chunks:
@@ -163,7 +169,7 @@ def handle_chat_turn(
         else:
             course_answer = pr.course_answer
     else:
-        r = retrieve_enhanced(text, top_k=5)
+        r = retrieve_enhanced(text, top_k=top_k, user_mode=mode_norm)
         if not r.chunks:
             no_match_kind = classify_no_match_query(text)
             course_answer = varied_no_chunk_course_answer(no_match_kind)
@@ -175,9 +181,19 @@ def handle_chat_turn(
 
     low_confidence = r.confidence < threshold
     qt = r.query_intent.query_type if getattr(r, "query_intent", None) else None
-    answer_intent = pr.structured_query.answer_intent if pr else None
-    subq_n = len(pr.structured_query.sub_questions) if pr else 0
+    if pr:
+        answer_intent = pr.structured_query.answer_intent
+        subq_n = len(pr.structured_query.sub_questions)
+    else:
+        intent_boost = r.query_intent or analyze_query(text)
+        sq_boost = build_structured_query(
+            intent_boost, kb=get_kb(), mode_routing=r.mode_routing or {}
+        )
+        answer_intent = sq_boost.answer_intent
+        subq_n = len(sq_boost.sub_questions)
     validation_for_boost = pr.validation if pr else None
+
+    boost_mode = (r.mode_routing or {}).get("effective_mode") or "chat"
 
     if not r.chunks:
         need_boost, boost_reason = False, None
@@ -188,7 +204,7 @@ def handle_chat_turn(
             validation=validation_for_boost,
             confidence_threshold=threshold,
             boost_toggle=boost_toggle,
-            mode=mode,
+            mode=boost_mode,
             query_type=qt,
             answer_intent=answer_intent,
             subquestion_count=subq_n,
@@ -275,6 +291,7 @@ def handle_chat_turn(
                 "boost_reason": boost_reason,
                 "query_complexity": pipeline_extra.get("query_complexity") if pipeline_extra else None,
                 "no_match_kind": no_match_kind,
+                "mode_routing": r.mode_routing or {},
             }
         ),
     )
@@ -399,4 +416,5 @@ def handle_chat_turn(
         "boosted_explanation": boosted,
         "retrieval_confidence": r.confidence,
         "boost_applied": boost_used,
+        "mode_routing": r.mode_routing or {},
     }

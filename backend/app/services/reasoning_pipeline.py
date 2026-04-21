@@ -45,6 +45,7 @@ def run_reasoning_pipeline(
     *,
     top_k: int = 5,
     backend: str = "keyword",
+    user_mode: str = "auto",
 ) -> PipelineResult:
     """
     Full structured reasoning path on top of :func:`retrieve_enhanced`.
@@ -55,14 +56,15 @@ def run_reasoning_pipeline(
     4. Validate; if LLM answer was used and validation **failed**, fall back to rule-based.
     """
     kb = get_kb()
-    enhanced = retrieve_enhanced(query, top_k=top_k, backend=backend)
+    enhanced = retrieve_enhanced(query, top_k=top_k, backend=backend, user_mode=user_mode)
     intent = enhanced.query_intent
     if intent is None:
         from app.services.query_understanding import analyze_query
 
         intent = analyze_query(query)
 
-    sq = build_structured_query(intent, kb=kb)
+    mode_routing = enhanced.mode_routing or {}
+    sq = build_structured_query(intent, kb=kb, mode_routing=mode_routing)
     complexity = _estimate_query_complexity(sq, intent)
 
     if not enhanced.chunks:
@@ -114,10 +116,16 @@ def run_reasoning_pipeline(
     validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
 
     if bool(current_app.config.get("PIPELINE_RETRIEVAL_RETRY_ENABLED", True)) and validation.severity == "fail":
-        enhanced2 = retrieve_enhanced(query, top_k=top_k + 6, backend=backend)
+        extra = int(current_app.config.get("PIPELINE_RETRY_TOP_K_EXTRA", 6))
+        enhanced2 = retrieve_enhanced(
+            query, top_k=top_k + extra, backend=backend, user_mode=user_mode
+        )
         if len(enhanced2.chunks) > len(enhanced.chunks):
             enhanced = enhanced2
-            sq = build_structured_query(intent, kb=kb)
+            intent = enhanced.query_intent or intent
+            sq = build_structured_query(
+                intent, kb=kb, mode_routing=enhanced.mode_routing or {}
+            )
             plan = build_answer_plan(sq, enhanced.chunks, enhanced.supporting_chunks, kb=kb)
             course_answer, primary_model, primary_llm_usage = generate_course_answer(
                 plan, enhanced.chunks, sq
@@ -154,7 +162,8 @@ def run_reasoning_pipeline(
 
 def pipeline_diagnostics_dict(result: PipelineResult) -> dict[str, Any]:
     """JSON-serializable dict for analytics / RetrievalLog extras."""
-    return {
+    sq_dict = result.structured_query.to_dict()
+    out: dict[str, Any] = {
         "answer_intent": result.structured_query.answer_intent,
         "sub_questions": [s.text for s in result.structured_query.sub_questions],
         "answer_mode": result.answer_plan.answer_mode,
@@ -163,5 +172,9 @@ def pipeline_diagnostics_dict(result: PipelineResult) -> dict[str, Any]:
         "primary_model": result.primary_model,
         "query_complexity": result.query_complexity,
         "answer_plan": result.answer_plan.to_dict(),
-        "structured_query": result.structured_query.to_dict(),
+        "structured_query": sq_dict,
     }
+    mr = result.enhanced_result.mode_routing
+    if mr:
+        out["mode_routing"] = mr
+    return out

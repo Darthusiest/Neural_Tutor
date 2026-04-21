@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required
@@ -55,7 +56,7 @@ def create_session():
         return err
     assert data is not None
     title = (data.get("title") or "New chat").strip() or "New chat"
-    mode = (data.get("mode") or "chat").strip()
+    mode = (data.get("mode") or "auto").strip()
     s = ChatSession(user_id=current_user.id, title=title, mode=mode)
     db.session.add(s)
     try:
@@ -100,13 +101,23 @@ def rename_session(sid: int):
         return jsonify({"error": "title required"}), 400
     title = (data.get("title") or "").strip() or "New chat"
     s.title = title[:512]
+    s.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
         db.session.commit()
     except SQLAlchemyError:
         db.session.rollback()
         current_app.logger.exception("rename_session failed sid=%s", sid)
         return jsonify({"error": "could not update session"}), 500
-    return jsonify({"session": {"id": s.id, "title": s.title, "mode": s.mode}})
+    return jsonify(
+        {
+            "session": {
+                "id": s.id,
+                "title": s.title,
+                "mode": s.mode,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            }
+        }
+    )
 
 
 @bp.route("/sessions/<int:sid>", methods=["DELETE"])
@@ -209,7 +220,7 @@ def chat():
     session_id = data.get("session_id")
     text = (data.get("message") or "").strip()
     boost_toggle = bool(data.get("boost_toggle"))
-    mode = (data.get("mode") or "chat").strip()
+    mode = (data.get("mode") or "auto").strip()
 
     if not session_id or not text:
         return jsonify({"error": "session_id and message required"}), 400

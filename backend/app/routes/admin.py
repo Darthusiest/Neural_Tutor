@@ -2,7 +2,7 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from flask_login import current_user, login_required
 
 from app.extensions import limiter
-from app.services.audit import log_audit_event
+from app.services.security_logging import log_security_event
 from app.services.admin_insights import (
     chunk_analytics,
     compute_content_quality,
@@ -24,10 +24,10 @@ def _admin_forbidden_response():
         current_user, "email_verified_at", None
     ):
         return jsonify({"error": "forbidden", "detail": "email_verification_required"}), 403
-    log_audit_event(
+    log_security_event(
         "admin_api_access",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
+        user_id=current_user.id,
+        user_email=current_user.email,
         metadata={"path": request.path},
     )
     return None

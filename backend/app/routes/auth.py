@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db, limiter
 from app.models import EmailVerificationToken, PasswordResetToken, User
-from app.services.audit import log_audit_event
+from app.services.security_logging import log_security_event
 from app.services.reset_email import (
     ResetEmailResult,
     resend_reset_is_configured,
@@ -97,7 +97,7 @@ def register():
         security_log("register_db_error", email=email)
         return jsonify({"error": "registration failed"}), 500
 
-    log_audit_event("register", actor_user_id=user.id, actor_email=email, metadata={"verified": bool(user.email_verified_at)})
+    log_security_event("register", user_id=user.id, user_email=email, metadata={"verified": bool(user.email_verified_at)})
     login_user(user)
     return jsonify(
         {
@@ -128,7 +128,7 @@ def login():
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     user = User.query.filter_by(email=email).first()
     if user and user.locked_until and user.locked_until > now:
-        log_audit_event("login_blocked_locked", actor_email=email, severity="warning")
+        log_security_event("login_blocked_locked", user_email=email, severity="warning")
         security_log("login_locked", email=email)
         return jsonify({"error": "account temporarily locked; try again later"}), 401
 
@@ -145,10 +145,10 @@ def login():
             if user.failed_login_attempts >= max_a:
                 mins = int(current_app.config.get("LOGIN_LOCKOUT_MINUTES", 15))
                 user.locked_until = now + timedelta(minutes=mins)
-                log_audit_event(
+                log_security_event(
                     "account_lockout",
-                    actor_user_id=user.id,
-                    actor_email=email,
+                    user_id=user.id,
+                    user_email=email,
                     severity="warning",
                     metadata={"attempts": user.failed_login_attempts},
                 )
@@ -156,7 +156,7 @@ def login():
                 db.session.commit()
             except SQLAlchemyError:
                 db.session.rollback()
-        log_audit_event("login_failed", actor_email=email, severity="notice")
+        log_security_event("login_failed", user_email=email, severity="notice")
         return jsonify({"error": "invalid credentials"}), 401
 
     user.failed_login_attempts = 0
@@ -166,7 +166,7 @@ def login():
     except SQLAlchemyError:
         db.session.rollback()
 
-    log_audit_event("login_success", actor_user_id=user.id, actor_email=email)
+    log_security_event("login_success", user_id=user.id, user_email=email)
     login_user(user)
     return jsonify(
         {
@@ -250,7 +250,7 @@ def forgot_password():
                 security_log("forgot_db_error", email=email)
             else:
                 email_result = send_password_reset_email(user.email, raw)
-                log_audit_event("password_reset_requested", actor_user_id=user.id, actor_email=email)
+                log_security_event("password_reset_requested", user_id=user.id, user_email=email)
                 if email_result == ResetEmailResult.FAILED:
                     security_log("forgot_email_failed", email=email)
                 resend_ok = resend_reset_is_configured()
@@ -328,7 +328,7 @@ def reset_password():
             security_log("reset_db_error")
             return jsonify({"error": "password reset failed"}), 500
 
-        log_audit_event("password_reset_complete", actor_user_id=user.id, actor_email=user.email)
+        log_security_event("password_reset_complete", user_id=user.id, user_email=user.email)
         return jsonify({"ok": True}), 200
     finally:
         timing_pad(t0, _RESET_MIN_SECONDS)
@@ -362,7 +362,7 @@ def verify_email():
     except SQLAlchemyError:
         db.session.rollback()
         return jsonify({"error": "verification failed"}), 500
-    log_audit_event("email_verified", actor_user_id=user.id, actor_email=user.email)
+    log_security_event("email_verified", user_id=user.id, user_email=user.email)
     return jsonify({"ok": True})
 
 
@@ -391,6 +391,6 @@ def resend_verification():
         db.session.rollback()
         return jsonify({"error": "failed"}), 500
     send_verification_email(current_user.email, raw)
-    log_audit_event("verification_email_resent", actor_user_id=current_user.id, actor_email=current_user.email)
+    log_security_event("verification_email_resent", user_id=current_user.id, user_email=current_user.email)
     return jsonify({"message": "sent"}), 200
 

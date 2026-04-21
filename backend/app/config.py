@@ -128,6 +128,16 @@ class Config:
     # v2 summary mode: max chunks returned for a single-lecture summary (ranked lexically).
     SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "48"))
 
+    # Chat / pipeline retrieval: chunks requested for grounding (first pass).
+    CHAT_RETRIEVAL_TOP_K = max(1, min(int(os.getenv("CHAT_RETRIEVAL_TOP_K", "5")), 100))
+    # When validation hard-fails, retry retrieval with top_k + this extra budget.
+    PIPELINE_RETRY_TOP_K_EXTRA = max(0, min(int(os.getenv("PIPELINE_RETRY_TOP_K_EXTRA", "6")), 50))
+
+    # OpenAI sampling (primary Course Answer + optional OpenAI boost paths).
+    OPENAI_TEMPERATURE_COURSE_ANSWER = float(os.getenv("OPENAI_TEMPERATURE_COURSE_ANSWER", "0.4"))
+    OPENAI_TEMPERATURE_BOOST = float(os.getenv("OPENAI_TEMPERATURE_BOOST", "0.45"))
+    OPENAI_TEMPERATURE_DEFAULT = float(os.getenv("OPENAI_TEMPERATURE_DEFAULT", "0.5"))
+
     # Structured reasoning pipeline (concept KB + answer plan + validation).
     KB_JSON_PATH = Path(os.getenv("KB_JSON_PATH", str(_DEFAULT_PIPELINE_KB_JSON)))
     STRUCTURED_PIPELINE_ENABLED = os.getenv("STRUCTURED_PIPELINE_ENABLED", "1") == "1"
@@ -151,6 +161,8 @@ class Config:
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     GEMINI_TIMEOUT_SEC = int(os.getenv("GEMINI_TIMEOUT_SEC", "60"))
+    GEMINI_TEMPERATURE_BOOST = float(os.getenv("GEMINI_TEMPERATURE_BOOST", "0.4"))
+    GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
 
 
 class TestConfig(Config):

@@ -41,14 +41,14 @@ This document mirrors [`app/models/`](../app/models/).
 
 ## audit_events
 
-Append-only security audit (no secrets). See [`app/services/audit.py`](../app/services/audit.py).
+Append-only **security event** log (no secrets). ORM: [`SecurityLogEntry`](../app/models/security_log.py) (table name remains `audit_events` from migration **005**); insert helper: [`log_security_event`](../app/services/security_logging.py).
 
 | Column | Type | Notes |
 |--------|------|--------|
 | id | Integer PK | |
 | created_at | DateTime, indexed | |
-| actor_user_id | FK → users.id nullable | |
-| actor_email | String(255) nullable | |
+| actor_user_id | FK → users.id nullable | User who triggered the event (legacy column name from migration **005**) |
+| actor_email | String(255) nullable | Same user’s email, denormalized for pre-login events (legacy column name) |
 | event_type | String(64), indexed | e.g. `login_success`, `login_failed`, `register` |
 | severity | String(16) nullable | |
 | ip | String(64) nullable | |

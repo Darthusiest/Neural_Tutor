@@ -57,7 +57,7 @@ Compare questions: Direct Answer states the main distinction; Explanation covers
 def _openai_chat(
     messages: list[dict[str, str]],
     *,
-    temperature: float = 0.5,
+    temperature: float | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """
     Minimal chat-completions call (stdlib only).
@@ -70,11 +70,16 @@ def _openai_chat(
 
     model = current_app.config.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     timeout = int(current_app.config.get("OPENAI_TIMEOUT_SEC", 60))
+    temp = (
+        float(temperature)
+        if temperature is not None
+        else float(current_app.config.get("OPENAI_TEMPERATURE_DEFAULT", 0.5))
+    )
     body = json.dumps(
         {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": temp,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -142,9 +147,10 @@ def generate_boosted_explanation(
         f"STUDENT_QUESTION:\n{user_question}\n\n"
         f"RETRIEVED_CONTEXT (JSON lecture chunks):\n{retrieved_context}"
     )
+    boost_temp = float(current_app.config.get("OPENAI_TEMPERATURE_BOOST", 0.45))
     text, usage = _openai_chat(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.45,
+        temperature=boost_temp,
     )
     return text, usage
 
@@ -171,9 +177,10 @@ def generate_comparison_boost(
         f"CONCEPT_B: {concept_b}\n\n"
         f"COURSE_ANSWER (ground truth):\n{course_answer_block}"
     )
+    boost_temp = float(current_app.config.get("OPENAI_TEMPERATURE_BOOST", 0.45))
     return _openai_chat(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.45,
+        temperature=boost_temp,
     )
 
 
@@ -193,9 +200,10 @@ def generate_plan_constrained_answer(
 
     clean_input = build_generation_input(sq, plan, chunks)
     user = format_generation_prompt_user_message(clean_input)
+    course_temp = float(current_app.config.get("OPENAI_TEMPERATURE_COURSE_ANSWER", 0.4))
     raw, usage = _openai_chat(
         [{"role": "system", "content": _COURSE_ANSWER_SYSTEM_PROMPT}, {"role": "user", "content": user}],
-        temperature=0.4,
+        temperature=course_temp,
     )
     if not raw:
         return None, usage

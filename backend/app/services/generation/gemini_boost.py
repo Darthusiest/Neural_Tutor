@@ -35,6 +35,8 @@ def generate_gemini_boosted_explanation(
 
     model = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
     timeout = int(current_app.config.get("GEMINI_TIMEOUT_SEC", "60"))
+    g_temp = float(current_app.config.get("GEMINI_TEMPERATURE_BOOST", 0.4))
+    g_max_tokens = int(current_app.config.get("GEMINI_MAX_OUTPUT_TOKENS", 2048))
 
     system_instruction = (
         "You are a teaching assistant for LING 487. Produce a **Boosted Explanation** that "
@@ -66,7 +68,7 @@ def generate_gemini_boosted_explanation(
                     "parts": [{"text": user_text}],
                 }
             ],
-            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048},
+            "generationConfig": {"temperature": g_temp, "maxOutputTokens": g_max_tokens},
         }
     ).encode("utf-8")
     req = urllib.request.Request(

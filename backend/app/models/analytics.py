@@ -4,6 +4,9 @@ Optimization-oriented analytics models for the Neural Tutor chatbot.
 Five tables capture the full decision chain from query → retrieval → response → feedback → outcome,
 structured so downstream analysis can improve retrieval ranking, boost triggering, prompt quality,
 and dataset coverage without additional schema work.
+
+Table names are ``__tablename__`` on each class (e.g. ``retrieval_logs``, ``response_variants``).
+Python class names are for code only; renaming them would require a DB migration and import updates.
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ class RetrievalLog(db.Model):
     Stores query-level features and aggregate scoring signals needed to
     calibrate CONFIDENCE_THRESHOLD, detect weak-coverage topics, and compare
     retrieval backends.
+
+    ``message_id`` is unique: at most one log row per assistant reply that ran retrieval.
     """
 
     __tablename__ = "retrieval_logs"
@@ -29,10 +34,12 @@ class RetrievalLog(db.Model):
         db.Integer, db.ForeignKey("messages.id"), nullable=True, unique=True, index=True
     )
 
-    # Query features
+    # Query features (from the user turn that led to this assistant reply)
     user_question = db.Column(db.Text, nullable=False)
+    # Space-joined lexical tokens from retrieval diagnostics (for analytics, not the raw string).
     normalized_query = db.Column(db.Text, nullable=True)
     query_tokens_json = db.Column(db.Text, nullable=True)
+    # Short label from top chunk topic — heuristic, not a separate classifier.
     detected_topic = db.Column(db.String(512), nullable=True)
     lecture_numbers_detected_json = db.Column(db.Text, nullable=True)
 
@@ -62,6 +69,7 @@ class RetrievalLog(db.Model):
     retrieved_chunk_ids = db.Column(db.Text, nullable=True)
 
     # Structured reasoning pipeline (optional; chat when STRUCTURED_PIPELINE_ENABLED).
+    # "v2" distinguishes pipeline answer_intent / plan from legacy query_type strings elsewhere.
     query_type_v2 = db.Column(db.String(64), nullable=True)
     sub_questions_json = db.Column(db.Text, nullable=True)
     answer_mode = db.Column(db.String(64), nullable=True)
@@ -81,16 +89,17 @@ class RetrievalLog(db.Model):
         cascade="all, delete-orphan",
         order_by="RetrievalChunkHit.rank",
     )
+    # One optional ResponseVariant (generated text) linked to this retrieval.
     response_variant = db.relationship(
         "ResponseVariant", back_populates="retrieval_log", uselist=False
     )
 
 
 class RetrievalChunkHit(db.Model):
-    """One row per candidate chunk considered during retrieval.
+    """One ranked lecture chunk in the retrieval result set for a :class:`RetrievalLog`.
 
-    Enables chunk-level analytics: which chunks correlate with bad outcomes,
-    which field weights drive hits, and which chunks need rewriting.
+    "Hit" means this chunk was scored and listed (rank order), not necessarily a click or web hit.
+    Use for chunk-level analytics: weak outcomes, field weights, content quality.
     """
 
     __tablename__ = "retrieval_chunk_hits"
@@ -114,6 +123,7 @@ class RetrievalChunkHit(db.Model):
 
     rank = db.Column(db.SmallInteger, nullable=False)
     score = db.Column(db.Float, nullable=False)
+    # Whether this chunk was treated as input to the final answer path (vs diagnostic-only listing).
     selected_for_answer = db.Column(db.Boolean, nullable=False, default=True)
 
     # Score decomposition from _ScoreParts
@@ -134,11 +144,10 @@ class RetrievalChunkHit(db.Model):
 
 
 class ResponseVariant(db.Model):
-    """One response per assistant message with full generation metadata.
+    """Stored primary (and optional boost) text for one assistant message + generation metadata.
 
-    Captures boost decomposition, prompt versioning, and a response fingerprint
-    so downstream analysis can measure boost win-rate, detect repeated weak
-    answers, and compare prompt/provider performance.
+    Name is historical ("variant"); in practice there is one row per assistant message
+    (``message_id`` unique). Used for analytics: boost reasons, model/provider, tokens, fingerprint.
     """
 
     __tablename__ = "response_variants"
@@ -180,11 +189,9 @@ class ResponseVariant(db.Model):
 
 
 class Feedback(db.Model):
-    """User feedback on an assistant message.
+    """Explicit user feedback on an assistant message (API / UI), not inferred behavior.
 
-    Extends simple thumbs with resolution, confusion, and preference-strength
-    signals so analytics can correlate feedback quality with retrieval and
-    response features.
+    One row per assistant message at most (``message_id`` unique).
     """
 
     __tablename__ = "feedback"
@@ -194,7 +201,7 @@ class Feedback(db.Model):
         db.Integer, db.ForeignKey("messages.id"), unique=True, nullable=False
     )
 
-    # Original thumb signals
+    # Thumbs / preference: small string codes from the client (e.g. up/down), not booleans.
     course_thumb = db.Column(db.String(8), nullable=True)
     boost_thumb = db.Column(db.String(8), nullable=True)
     preferred = db.Column(db.String(16), nullable=True)
@@ -214,11 +221,10 @@ class Feedback(db.Model):
 
 
 class MessageOutcome(db.Model):
-    """Retroactive outcome signals for an assistant message.
+    """Inferred follow-up behavior *after* an assistant message (filled on the next user turn).
 
-    Populated when the *next* user message arrives so we can detect whether
-    the previous answer resolved the question, triggered a rephrase, or
-    caused a topic change.  Conservative heuristics; not ML classifiers.
+    ``message_id`` refers to the **assistant** message being judged, not the follow-up user message.
+    Heuristic only (token overlap, keywords); not a classifier model.
     """
 
     __tablename__ = "message_outcomes"

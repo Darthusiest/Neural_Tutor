@@ -25,6 +25,11 @@ from app.services.knowledge.domain_knowledge import (
     get_related_lectures,
     infer_chunk_type,
 )
+from app.services.query_mode import (
+    apply_effective_api_mode,
+    detect_query_mode,
+    resolve_effective_mode,
+)
 from app.services.query_understanding import QueryIntent, QueryType, analyze_query
 from app.services.retrieval import (
     ChunkHitDiag,
@@ -54,6 +59,7 @@ class EnhancedRetrievalResult(RetrievalResult):
     structured_query: Any | None = None
     answer_plan: Any | None = None
     validation_result: Any | None = None
+    mode_routing: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -238,41 +244,79 @@ def retrieve_enhanced(
     *,
     top_k: int = 5,
     backend: str = "keyword",
+    user_mode: str = "auto",
 ) -> EnhancedRetrievalResult:
     """
     Full v2 retrieval pipeline.
 
     1. Analyze query → QueryIntent
-    2. Expand with aliases + typo corrections
+    2. Apply API mode routing (``user_mode`` auto-detect vs manual override)
     3. Route to strategy handler
     4. Return EnhancedRetrievalResult (superset of RetrievalResult)
     """
     if backend not in ("keyword",):
-        return _fallback_to_base(query, top_k, backend)
+        return _fallback_to_base(query, top_k, backend, user_mode=user_mode)
 
-    intent = analyze_query(query)
+    detection = detect_query_mode(query)
+    base_intent = analyze_query(query)
+    effective, was_overridden = resolve_effective_mode(user_mode, detection)
+    intent = apply_effective_api_mode(base_intent, query, effective)
+    mode_routing: dict[str, Any] = {
+        "detected_mode": detection.mode,
+        "effective_mode": effective,
+        "mode_confidence": detection.confidence,
+        "mode_signals": detection.signals,
+        "mode_ambiguous": detection.ambiguous,
+        "mode_candidate_modes": detection.candidate_modes,
+        "mode_was_overridden": was_overridden,
+    }
+
     handler = _STRATEGY.get(intent.query_type, _handle_general)
 
     logger.debug(
-        "retrieval_v2: type=%s lecs=%s concepts=%s typos=%s expanded_extra=%d",
+        "retrieval_v2: type=%s effective_mode=%s lecs=%s concepts=%s typos=%s expanded_extra=%d",
         intent.query_type.value,
+        effective,
         intent.lecture_numbers,
         intent.detected_concepts[:5],
         intent.typo_corrections,
         len(intent.expanded_tokens) - len(intent.query_tokens),
     )
 
-    return handler(intent.expanded_query, intent, top_k)
+    out = handler(intent.expanded_query, intent, top_k)
+    out.mode_routing = mode_routing
+    return out
 
 
-def _fallback_to_base(query: str, top_k: int, backend: str) -> EnhancedRetrievalResult:
+def _fallback_to_base(
+    query: str,
+    top_k: int,
+    backend: str,
+    *,
+    user_mode: str = "auto",
+) -> EnhancedRetrievalResult:
     """Non-keyword backends fall through to base retrieval (preserves NotImplementedError)."""
+    detection = detect_query_mode(query)
+    base_intent = analyze_query(query)
+    effective, was_overridden = resolve_effective_mode(user_mode, detection)
+    intent = apply_effective_api_mode(base_intent, query, effective)
+    mode_routing: dict[str, Any] = {
+        "detected_mode": detection.mode,
+        "effective_mode": effective,
+        "mode_confidence": detection.confidence,
+        "mode_signals": detection.signals,
+        "mode_ambiguous": detection.ambiguous,
+        "mode_candidate_modes": detection.candidate_modes,
+        "mode_was_overridden": was_overridden,
+    }
     base = retrieve_chunks(query, top_k=top_k, backend=backend)  # type: ignore[arg-type]
     return EnhancedRetrievalResult(
         chunks=base.chunks,
         confidence=base.confidence,
         detected_topic=base.detected_topic,
         diagnostics=base.diagnostics,
+        query_intent=intent,
+        mode_routing=mode_routing,
     )
 
 

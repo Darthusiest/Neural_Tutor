@@ -11,20 +11,23 @@ import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
-from app.services.answers.compare_render import render_compare_multi_markdown, render_compare_two_markdown
+from app.services.answers.compare_render import (
+    format_multi_entity_compare_markdown,
+    format_two_entity_compare_markdown,
+)
 from app.services.knowledge.structured_query import StructuredQuery
 from app.services.retrieval import _sample_questions_as_text
 
 
-def _bullet_lines_from_chunk(c: dict[str, Any]) -> list[str]:
-    expl = (c.get("clean_explanation") or "").strip()
+def _bullet_lines_from_chunk(lecture_chunk: dict[str, Any]) -> list[str]:
+    expl = (lecture_chunk.get("clean_explanation") or "").strip()
     if not expl:
-        expl = (c.get("source_excerpt") or "").strip()
+        expl = (lecture_chunk.get("source_excerpt") or "").strip()
     lines: list[str] = []
-    for part in expl.split("\n"):
-        p = part.strip()
-        if p:
-            lines.append(p)
+    for raw_line in expl.split("\n"):
+        line = raw_line.strip()
+        if line:
+            lines.append(line)
     return lines[:16]
 
 
@@ -53,77 +56,77 @@ def _compose_direct_answer_with_count(lines: list[str]) -> tuple[str, int]:
 
 def _first_sentence_or_line(text: str, max_len: int = 420) -> str:
     """First sentence if clear; else first line; capped for a short 'Direct Answer'."""
-    t = text.strip()
-    if not t:
+    trimmed = text.strip()
+    if not trimmed:
         return ""
     # Prefer sentence boundary in first segment
-    m = re.match(r"([^.!?]+[.!?])(\s|$)", t[:800])
-    if m:
-        return m.group(1).strip()
-    line = t.split("\n")[0].strip()
-    return line[:max_len] + ("…" if len(line) > max_len else "")
+    sentence_match = re.match(r"([^.!?]+[.!?])(\s|$)", trimmed[:800])
+    if sentence_match:
+        return sentence_match.group(1).strip()
+    first_line = trimmed.split("\n")[0].strip()
+    return first_line[:max_len] + ("…" if len(first_line) > max_len else "")
 
 
 def _dedupe_lines(lines: list[str], cap: int = 16) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for L in lines:
-        key = L.strip().lower()[:240]
+    for candidate in lines:
+        key = candidate.strip().lower()[:240]
         if not key or key in seen:
             continue
         seen.add(key)
-        out.append(L.strip())
+        out.append(candidate.strip())
         if len(out) >= cap:
             break
     return out
 
 
 def _primary_chunks_ordered(plan: AnswerPlan, all_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    ids = plan.primary_chunk_ids or []
-    out = chunks_by_ids(all_chunks, ids)
-    if out:
-        return out
+    primary_chunk_ids = plan.primary_chunk_ids or []
+    ordered = chunks_by_ids(all_chunks, primary_chunk_ids)
+    if ordered:
+        return ordered
     return list(all_chunks)[:8]
 
 
 def _example_intuition_block(primary: list[dict[str, Any]]) -> str:
-    for c in primary[:3]:
-        sa = (c.get("sample_answer") or "").strip()
-        if sa and sa not in ("[]", "null"):
-            return sa[:600]
-    for c in primary[:3]:
-        sq = _sample_questions_as_text(c).strip()
-        if sq and sq not in ("[]", "null", "None"):
+    for chunk in primary[:3]:
+        sample_answer = (chunk.get("sample_answer") or "").strip()
+        if sample_answer and sample_answer not in ("[]", "null"):
+            return sample_answer[:600]
+    for chunk in primary[:3]:
+        paired_question = _sample_questions_as_text(chunk).strip()
+        if paired_question and paired_question not in ("[]", "null", "None"):
             return (
-                f"A question the materials pair with this topic: {sq[:500]}"
-                if len(sq) < 400
-                else sq[:600]
+                f"A question the materials pair with this topic: {paired_question[:500]}"
+                if len(paired_question) < 400
+                else paired_question[:600]
             )
     if primary:
-        ex = (primary[0].get("source_excerpt") or "").strip()
-        if len(ex) > 40:
-            return _first_sentence_or_line(ex[:500]) or ex[:280]
+        excerpt = (primary[0].get("source_excerpt") or "").strip()
+        if len(excerpt) > 40:
+            return _first_sentence_or_line(excerpt[:500]) or excerpt[:280]
     return (
         "Think of the explanation above as the core picture—ask if you want a different angle "
         "or a walkthrough with numbers."
     )
 
 
-def _why_matters_block(plan: AnswerPlan, sq: StructuredQuery, primary: list[dict[str, Any]]) -> str:
+def _why_matters_block(plan: AnswerPlan, structured_query: StructuredQuery, primary: list[dict[str, Any]]) -> str:
     """Tutor-style closing—no lecture IDs, scope lists, or 'graph' jargon."""
     parts: list[str] = []
     if plan.include_related_concepts:
-        rel = ", ".join(plan.include_related_concepts[:6])
-        if rel:
+        related_names = ", ".join(plan.include_related_concepts[:6])
+        if related_names:
             parts.append(
-                f"You’ll keep running into related ideas such as {rel} as you move through "
+                f"You’ll keep running into related ideas such as {related_names} as you move through "
                 "models, data, and evaluation in the course."
             )
     if plan.comparison_axes and plan.answer_mode == "compare":
         parts.append(
             "Getting the contrast right matters when you interpret model behavior or compare architectures."
         )
-    if not parts and sq.concept_ids:
+    if not parts and structured_query.concept_ids:
         parts.append(
             "This topic connects to what you’re building toward in the rest of the syllabus—notation and vocabulary pay off later."
         )
@@ -144,46 +147,48 @@ def _build_explanation_bullets(
     if plan.answer_mode == "compare":
         # One heading per plan section; at most a few lines under each (no per-line
         # "First idea / In one line" scaffolding—that produced hundreds of repeated labels).
-        lines: list[str] = []
-        for sec in plan.sections:
-            if not sec.chunk_ids:
+        compare_bullets: list[str] = []
+        for section in plan.sections:
+            if not section.chunk_ids:
                 continue
-            heading = sec.heading
-            blob: list[str] = []
-            for c in chunks_by_ids(all_chunks, sec.chunk_ids):
-                for bl in _bullet_lines_from_chunk(c)[:4]:
-                    blob.append(bl.strip())
-                    if len(blob) >= 4:
+            heading = section.heading
+            excerpt_lines: list[str] = []
+            for lecture_chunk in chunks_by_ids(all_chunks, section.chunk_ids):
+                for bullet_line in _bullet_lines_from_chunk(lecture_chunk)[:4]:
+                    excerpt_lines.append(bullet_line.strip())
+                    if len(excerpt_lines) >= 4:
                         break
-                if len(blob) >= 4:
+                if len(excerpt_lines) >= 4:
                     break
-            blob = _dedupe_lines(blob, cap=4)
-            if not blob:
+            excerpt_lines = _dedupe_lines(excerpt_lines, cap=4)
+            if not excerpt_lines:
                 continue
-            lines.append(f"**{heading}:** {blob[0]}")
-            for extra in blob[1:]:
-                lines.append(extra)
+            compare_bullets.append(f"**{heading}:** {excerpt_lines[0]}")
+            for extra_line in excerpt_lines[1:]:
+                compare_bullets.append(extra_line)
         if plan.comparison_axes:
-            lines.append("**Contrast to keep in mind:** " + "; ".join(plan.comparison_axes[:4]))
-        return _dedupe_lines(lines, cap=22)
+            compare_bullets.append(
+                "**Contrast to keep in mind:** " + "; ".join(plan.comparison_axes[:4])
+            )
+        return _dedupe_lines(compare_bullets, cap=22)
 
-    expl: list[str] = []
+    explanation_bullets: list[str] = []
     if not primary:
         return ["Add more detail by asking a follow-up with a specific term from class."]
     first_lines = _bullet_lines_from_chunk(primary[0])
     if not first_lines:
         raw = (primary[0].get("clean_explanation") or primary[0].get("source_excerpt") or "").strip()
-        first_lines = [p.strip() for p in raw.split("\n") if p.strip()] if raw else []
+        first_lines = [raw_line.strip() for raw_line in raw.split("\n") if raw_line.strip()] if raw else []
     if first_lines:
-        expl.extend(first_lines[skip_first_chunk_lines:])
-    for c in primary[1:]:
-        expl.extend(_bullet_lines_from_chunk(c))
+        explanation_bullets.extend(first_lines[skip_first_chunk_lines:])
+    for lecture_chunk in primary[1:]:
+        explanation_bullets.extend(_bullet_lines_from_chunk(lecture_chunk))
     # Cap supporting material to reduce retrieval contamination (unrelated chunks).
-    for cid in plan.supporting_chunk_ids[:3]:
-        c = next((x for x in all_chunks if x.get("id") == cid), None)
-        if c:
-            expl.extend(_bullet_lines_from_chunk(c)[:2])
-    return _dedupe_lines(expl, cap=16)
+    for supporting_id in plan.supporting_chunk_ids[:3]:
+        supporting_chunk = next((x for x in all_chunks if x.get("id") == supporting_id), None)
+        if supporting_chunk:
+            explanation_bullets.extend(_bullet_lines_from_chunk(supporting_chunk)[:2])
+    return _dedupe_lines(explanation_bullets, cap=16)
 
 
 def _direct_answer_and_skip(
@@ -198,9 +203,9 @@ def _direct_answer_and_skip(
     if not first_lines:
         raw = (primary[0].get("clean_explanation") or primary[0].get("source_excerpt") or "").strip()
         if raw:
-            pseudo = [p.strip() for p in raw.split("\n") if p.strip()]
-            if pseudo:
-                return _compose_direct_answer_with_count(pseudo)
+            paragraph_lines = [raw_line.strip() for raw_line in raw.split("\n") if raw_line.strip()]
+            if paragraph_lines:
+                return _compose_direct_answer_with_count(paragraph_lines)
             return raw[:400], 0
         return "See the explanation below for how the notes develop this idea.", 0
     return _compose_direct_answer_with_count(first_lines)
@@ -209,12 +214,12 @@ def _direct_answer_and_skip(
 def generate_structured_answer(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
-    sq: StructuredQuery,
+    structured_query: StructuredQuery,
 ) -> str:
     """Build **Course Answer:** with the tutor four-section layout (aligned with OpenAI primary path)."""
-    rc = sq.response_constraints
-    if rc.allow_incorrect_statements:
-        safe = (
+    constraints = structured_query.response_constraints
+    if constraints.allow_incorrect_statements:
+        refusal_message = (
             "Course Answer:\n\n"
             "### Direct Answer\n"
             "I can’t mix deliberately false statements with true ones in a tutor response.\n\n"
@@ -226,17 +231,21 @@ def generate_structured_answer(
             "### Why it matters\n"
             "Clear, correct explanations are safer for learning than blended true/false prompts."
         )
-        return safe
+        return refusal_message
 
     if plan.answer_mode == "compare_multi" and plan.evidence_bundles:
-        bundles = list(plan.evidence_bundles.values())
-        return render_compare_multi_markdown(bundles, all_chunks, sq)
+        entity_bundles = list(plan.evidence_bundles.values())
+        return format_multi_entity_compare_markdown(
+            entity_bundles, all_chunks, structured_query, plan=plan
+        )
 
     if plan.answer_mode == "compare" and len(plan.evidence_bundles) >= 2:
-        keys = list(plan.evidence_bundles.keys())
-        bundle_a = plan.evidence_bundles[keys[0]]
-        bundle_b = plan.evidence_bundles[keys[1]]
-        return render_compare_two_markdown(plan, all_chunks, sq, bundle_a, bundle_b)
+        bundle_concept_ids = list(plan.evidence_bundles.keys())
+        left_bundle = plan.evidence_bundles[bundle_concept_ids[0]]
+        right_bundle = plan.evidence_bundles[bundle_concept_ids[1]]
+        return format_two_entity_compare_markdown(
+            plan, all_chunks, structured_query, left_bundle, right_bundle
+        )
 
     primary = _primary_chunks_ordered(plan, all_chunks)
     if not primary:
@@ -252,59 +261,75 @@ def generate_structured_answer(
             "Staying close to the course vocabulary keeps answers aligned with what you’re graded on."
         )
 
-    direct, skip_lines = _direct_answer_and_skip(plan, primary)
-    expl_bullets = _build_explanation_bullets(
-        plan, all_chunks, primary, skip_first_chunk_lines=skip_lines
+    direct_answer_text, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
+    explanation_bullets = _build_explanation_bullets(
+        plan, all_chunks, primary, skip_first_chunk_lines=lines_consumed_by_direct_answer
     )
-    example = _example_intuition_block(primary)
-    why = _why_matters_block(plan, sq, primary)
+    example_intuition_text = _example_intuition_block(primary)
+    why_it_matters_text = _why_matters_block(plan, structured_query, primary)
 
-    n = rc.exact_explanation_count
-    if n and n >= 2:
-        while len(expl_bullets) < n:
-            expl_bullets.append(
+    requested_distinct_explanations = constraints.exact_explanation_count
+    wants_numbered_explanation_subsections = (
+        requested_distinct_explanations is not None and requested_distinct_explanations >= 2
+    )
+    if wants_numbered_explanation_subsections:
+        while len(explanation_bullets) < requested_distinct_explanations:
+            explanation_bullets.append(
                 "Another angle on the same idea from the notes (distinct wording): see the preceding bullets."
             )
-        expl_bullets = expl_bullets[:n]
+        explanation_bullets = explanation_bullets[:requested_distinct_explanations]
 
-    lines: list[str] = [
+    course_answer_lines: list[str] = [
         "Course Answer:",
         "",
         "### Direct Answer",
         "",
-        direct,
+        direct_answer_text,
         "",
         "### Explanation",
         "",
     ]
-    if n and n >= 2:
-        for i in range(min(n, 12)):
-            chunk = expl_bullets[i] if i < len(expl_bullets) else expl_bullets[-1] if expl_bullets else ""
-            lines.append(f"#### Explanation {i + 1}")
-            lines.append("")
-            lines.append(chunk or "(See course text.)")
-            lines.append("")
+    max_numbered_explanation_sections = 12
+    if wants_numbered_explanation_subsections:
+        for section_index in range(
+            min(requested_distinct_explanations, max_numbered_explanation_sections)
+        ):
+            if section_index < len(explanation_bullets):
+                subsection_body = explanation_bullets[section_index]
+            elif explanation_bullets:
+                subsection_body = explanation_bullets[-1]
+            else:
+                subsection_body = ""
+            course_answer_lines.append(f"#### Explanation {section_index + 1}")
+            course_answer_lines.append("")
+            course_answer_lines.append(subsection_body or "(See course text.)")
+            course_answer_lines.append("")
     else:
-        for b in expl_bullets:
-            lines.append(f"- {b}")
-        if len(expl_bullets) == 0:
-            lines.append(
+        for bullet_text in explanation_bullets:
+            course_answer_lines.append(f"- {bullet_text}")
+        if len(explanation_bullets) == 0:
+            course_answer_lines.append(
                 "- The notes may pack the idea into a short block—say if you want it slower or with a diagram."
             )
 
-    if rc.repeat_explanation_times and rc.repeat_explanation_times >= 2:
-        block = "\n".join(f"- {b}" for b in expl_bullets) if expl_bullets else direct
-        lines.extend(
+    repeat_explanation_count = constraints.repeat_explanation_times
+    if repeat_explanation_count is not None and repeat_explanation_count >= 2:
+        repeated_explanation_markdown = (
+            "\n".join(f"- {bullet_text}" for bullet_text in explanation_bullets)
+            if explanation_bullets
+            else direct_answer_text
+        )
+        course_answer_lines.extend(
             [
                 "",
                 "### Repeated explanation (as requested)",
                 "",
-                block,
+                repeated_explanation_markdown,
             ]
         )
 
-    if rc.intuition_only:
-        lines.extend(
+    if constraints.intuition_only:
+        course_answer_lines.extend(
             [
                 "",
                 "### Example / Intuition",
@@ -313,32 +338,32 @@ def generate_structured_answer(
                 "",
                 "### Why it matters",
                 "",
-                why,
+                why_it_matters_text,
             ]
         )
-        return "\n".join(lines).rstrip()
+        return "\n".join(course_answer_lines).rstrip()
 
-    if rc.no_examples:
-        lines.extend(
+    if constraints.no_examples:
+        course_answer_lines.extend(
             [
                 "",
                 "### Why it matters",
                 "",
-                why,
+                why_it_matters_text,
             ]
         )
-        return "\n".join(lines).rstrip()
+        return "\n".join(course_answer_lines).rstrip()
 
-    lines.extend(
+    course_answer_lines.extend(
         [
             "",
             "### Example / Intuition",
             "",
-            example,
+            example_intuition_text,
             "",
             "### Why it matters",
             "",
-            why,
+            why_it_matters_text,
         ]
     )
-    return "\n".join(lines).rstrip()
+    return "\n".join(course_answer_lines).rstrip()

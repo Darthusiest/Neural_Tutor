@@ -34,6 +34,14 @@ class StructuredQuery:
     answer_style: str
     decomposition_template: list[str]
     response_constraints: ResponseConstraints = field(default_factory=ResponseConstraints)
+    # API mode routing (auto-detect + optional manual override); see :mod:`app.services.query_mode`.
+    detected_mode: str | None = None
+    effective_mode: str | None = None
+    mode_confidence: float | None = None
+    mode_signals: list[str] = field(default_factory=list)
+    mode_ambiguous: bool = False
+    mode_candidate_modes: list[str] | None = None
+    mode_was_overridden: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +54,16 @@ class StructuredQuery:
             "answer_style": self.answer_style,
             "decomposition_template": list(self.decomposition_template),
             "response_constraints": self.response_constraints.to_dict(),
+            "raw_query": self.intent.original_query,
+            "detected_mode": self.detected_mode,
+            "effective_mode": self.effective_mode,
+            "mode_confidence": self.mode_confidence,
+            "mode_signals": list(self.mode_signals),
+            "mode_ambiguous": self.mode_ambiguous,
+            "mode_candidate_modes": list(self.mode_candidate_modes)
+            if self.mode_candidate_modes
+            else None,
+            "mode_was_overridden": self.mode_was_overridden,
         }
 
 
@@ -305,8 +323,14 @@ def decompose_query(intent: QueryIntent, kb: ConceptKB, concepts: list[ConceptMe
     return subs
 
 
-def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> StructuredQuery:
+def build_structured_query(
+    intent: QueryIntent,
+    kb: ConceptKB | None = None,
+    *,
+    mode_routing: dict[str, Any] | None = None,
+) -> StructuredQuery:
     kb = kb or get_kb()
+    mr = mode_routing or {}
     concepts = _resolve_kb_concepts(intent, kb)
     if intent.compare_entities:
         for part in intent.compare_entities:
@@ -347,4 +371,11 @@ def build_structured_query(intent: QueryIntent, kb: ConceptKB | None = None) -> 
         answer_style=answer_style,
         decomposition_template=template,
         response_constraints=rc,
+        detected_mode=mr.get("detected_mode"),
+        effective_mode=mr.get("effective_mode"),
+        mode_confidence=mr.get("mode_confidence"),
+        mode_signals=list(mr.get("mode_signals") or []),
+        mode_ambiguous=bool(mr.get("mode_ambiguous")),
+        mode_candidate_modes=mr.get("mode_candidate_modes"),
+        mode_was_overridden=bool(mr.get("mode_was_overridden")),
     )
