@@ -1,7 +1,17 @@
 """Structured course answer text from an :class:`AnswerPlan` (rule-based by default).
 
-Uses the same four-section tutor layout as the OpenAI primary path:
-Direct Answer, Explanation, Example / Intuition, Why it matters.
+For chat-mode intents (``direct_definition``, ``multi_step_explanation``,
+``scoped_explanation``, ``simplified_reteach``, ``teaching_plus_check``) the
+default output is a natural tutor-tone narrative: opening sentence → optional
+contrast → concrete example → key-idea highlight → grounded why-it-matters.
+See :func:`render_tutor_style_answer`.
+
+Compare / compare_multi / lecture_summary / cross_lecture_synthesis paths and
+exotic response constraints (``no_examples``, ``intuition_only``,
+``exact_explanation_count``, ``repeat_explanation_times``,
+``allow_incorrect_statements``) keep the legacy four-section markdown layout
+(Direct Answer / Explanation / Example / Why it matters).
+
 Student-facing text only—no lecture IDs, keyword dumps, or retrieval jargon.
 """
 
@@ -137,6 +147,236 @@ def _why_matters_block(plan: AnswerPlan, structured_query: StructuredQuery, prim
     return " ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Tutor-style narrative renderer (chat-mode only)
+# ---------------------------------------------------------------------------
+
+# Modes that should flow as a tutor narrative rather than the legacy
+# four-section markdown layout. Compare / summary / synthesis paths are
+# intentionally excluded.
+_CHAT_NARRATIVE_MODES = frozenset(
+    {
+        "direct_definition",
+        "multi_step_explanation",
+        "scoped_explanation",
+        "simplified_reteach",
+        "teaching_plus_check",
+    }
+)
+
+_CONTRAST_CUE_PATTERN = re.compile(
+    r"\b(vs\.?|versus|instead|whereas|while|unlike|rather than|"
+    r"however|in contrast|differs|differ\sfrom|hardmax|hard-max)\b",
+    re.IGNORECASE,
+)
+
+# Captures bracketed numeric arrays like "[2, 5]" or "[0.12, 0.88]" and
+# inline numeric tuples like "0.12, 0.88" — used to lift numeric examples
+# onto their own line for readability.
+_NUMERIC_EXAMPLE_PATTERN = re.compile(
+    r"\[[\s\-+0-9.,]+\]|"
+    r"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?(?:\s*,\s*[-+]?\d+(?:\.\d+)?){1,}",
+)
+
+
+def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> str:
+    """Best human-readable concept name for grounding the closing sentence.
+
+    Topic strings in the corpus often carry a section suffix (e.g.
+    ``Softmax — Core Idea`` or ``Lecture 4: Backpropagation``). For tutor
+    closers we just want the bare concept name—strip lecture prefixes and any
+    trailing dash-delimited section qualifier.
+    """
+    if primary:
+        topic_value = (primary[0].get("topic") or "").strip()
+        if topic_value:
+            cleaned = re.sub(
+                r"^lecture\s+\d+\s*[:\-—]\s*", "", topic_value, flags=re.IGNORECASE
+            ).strip()
+            cleaned = re.split(r"\s+[—\-–:]\s+", cleaned, maxsplit=1)[0].strip()
+            if cleaned:
+                return cleaned
+    if plan.include_related_concepts:
+        return plan.include_related_concepts[0]
+    return ""
+
+
+def _natural_opening_sentence(direct_answer: str, concept_label: str) -> str:
+    text = (direct_answer or "").strip()
+    if not text:
+        if concept_label:
+            return f"Here is how the course frames {concept_label}."
+        return "Here is what the notes say about this topic."
+    text = re.sub(
+        r"^(direct answer|definition|answer)\s*[:\-—]\s*", "", text, flags=re.IGNORECASE
+    )
+    return text.strip()
+
+
+def _format_example_block(example_text: str) -> list[str]:
+    """Lines for a 'Think of it this way' example block, with numeric arrays lifted out."""
+    body = (example_text or "").strip()
+    if not body:
+        return []
+    intro = "Think of it this way:"
+    block: list[str] = [intro, ""]
+    numeric_match = _NUMERIC_EXAMPLE_PATTERN.search(body)
+    if numeric_match:
+        before = body[: numeric_match.start()].strip(" .,—-:")
+        match_text = numeric_match.group(0).strip()
+        after = body[numeric_match.end():].strip(" .,—-:")
+        if before:
+            sentence = before
+            if not sentence.endswith((".", ":", "?", "!")):
+                sentence = sentence + ":"
+            block.append(sentence)
+            block.append("")
+        block.append(match_text)
+        if after:
+            block.append("")
+            tail = after
+            if not tail.endswith((".", "?", "!")):
+                tail = tail + "."
+            block.append(tail)
+    else:
+        block.append(body)
+    return block
+
+
+def _contrast_lines_block(
+    explanation_lines: list[str], concept_label: str
+) -> list[str]:
+    """Optional contrast/clarification block when explanation contains contrast cues."""
+    candidates = [
+        _strip_bullet_prefix(line)
+        for line in explanation_lines
+        if _CONTRAST_CUE_PATTERN.search(line)
+    ]
+    candidates = [c for c in candidates if c]
+    if not candidates:
+        return []
+    block: list[str] = ["", candidates[0]]
+    for follow_up in candidates[1:]:
+        if follow_up == candidates[0]:
+            continue
+        if concept_label and concept_label.lower() in follow_up.lower():
+            block.extend(["", follow_up])
+            break
+    return block
+
+
+def _key_idea_sentence(
+    direct_answer: str, explanation_lines: list[str], concept_label: str
+) -> str:
+    """Single distilled sentence for the 'The key idea:' highlight."""
+    short_candidates: list[str] = []
+    for line in explanation_lines[:8]:
+        cleaned = _strip_bullet_prefix(line)
+        if cleaned and 12 <= len(cleaned) <= 160:
+            short_candidates.append(cleaned)
+    if concept_label:
+        for cleaned in short_candidates:
+            if concept_label.lower() in cleaned.lower():
+                return _first_sentence_or_line(cleaned, max_len=160) or cleaned
+    if short_candidates:
+        return _first_sentence_or_line(short_candidates[0], max_len=160) or short_candidates[0]
+    if direct_answer:
+        return _first_sentence_or_line(direct_answer, max_len=160) or direct_answer[:160]
+    if concept_label:
+        return f"{concept_label} is the anchor concept here."
+    return "Stay close to the course definition."
+
+
+def _grounded_why_it_matters(
+    plan: AnswerPlan, primary: list[dict[str, Any]], concept_label: str
+) -> str:
+    """Concept-tied closer; intentionally avoids the legacy generic templates.
+
+    Always begins with a causal cue ("That matters because") so validation
+    checks like ``must_answer_how_or_why`` keep passing for chat-style intents.
+    """
+    name = concept_label or "this idea"
+    related = plan.include_related_concepts[:3]
+    if related:
+        if len(related) == 1:
+            related_phrase = related[0]
+        elif len(related) == 2:
+            related_phrase = f"{related[0]} and {related[1]}"
+        else:
+            related_phrase = f"{related[0]}, {related[1]}, and {related[2]}"
+        return (
+            f"That matters because {name} keeps reappearing alongside {related_phrase} "
+            "as the course moves into models, training, and evaluation—"
+            "reading those connections quickly is how the rest gets easier."
+        )
+    if primary:
+        topic_value = (primary[0].get("topic") or "").strip()
+        if topic_value and topic_value.lower() != name.lower():
+            return (
+                f"That matters because {name} is what the notes lean on when they introduce "
+                f"{topic_value}, so a clean grasp here pays off when the next idea lands."
+            )
+    return (
+        f"That matters because clear intuition for {name} is what makes the next layer "
+        "of the course feel grounded instead of arbitrary."
+    )
+
+
+def render_tutor_style_answer(
+    plan: AnswerPlan, evidence: list[dict[str, Any]]
+) -> str:
+    """Tutor-tone narrative answer for chat-mode replies.
+
+    Replaces the legacy ``### Direct Answer / Explanation / Example / Why it matters``
+    layout with a flowing response:
+
+    1. Opening sentence (from ``direct_answer``, redundancy-trimmed)
+    2. Optional contrast / clarification (when explanation contains contrast cues)
+    3. Concrete example block (from ``example_lines``; numeric arrays get their own line)
+    4. ``The key idea:`` highlight (one short, concept-mentioning sentence)
+    5. Grounded ``That matters because`` closer (concept- and topic-tied, not generic)
+
+    Intentionally scoped to chat-mode answer modes—compare, compare_multi,
+    lecture_summary, and cross_lecture_synthesis remain on the legacy layout.
+    """
+    primary = _primary_chunks_ordered(plan, evidence)
+    if not primary:
+        return (
+            "Course Answer:\n\n"
+            "I couldn't tie that question to specific notes yet. "
+            "Try again with a class vocabulary term (e.g. softmax, attention, MFCC)—"
+            "a sharper prompt usually surfaces a concrete example."
+        )
+
+    direct_answer, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
+    explanation_lines = _build_explanation_bullets(
+        plan, evidence, primary, skip_first_chunk_lines=lines_consumed_by_direct_answer
+    )
+    example_lines = _example_intuition_block(primary)
+    concept_label = _primary_concept_label(plan, primary)
+
+    rendered_lines: list[str] = ["Course Answer:", ""]
+    rendered_lines.append(_natural_opening_sentence(direct_answer, concept_label))
+
+    contrast_block = _contrast_lines_block(explanation_lines, concept_label)
+    if contrast_block:
+        rendered_lines.extend(contrast_block)
+
+    if plan.include_example:
+        example_block = _format_example_block(example_lines)
+        if example_block:
+            rendered_lines.append("")
+            rendered_lines.extend(example_block)
+
+    key_idea = _key_idea_sentence(direct_answer, explanation_lines, concept_label)
+    rendered_lines.extend(["", "The key idea:", key_idea])
+
+    why_it_matters = _grounded_why_it_matters(plan, primary, concept_label)
+    rendered_lines.extend(["", why_it_matters])
+
+    return "\n".join(rendered_lines).rstrip()
+
+
 def _build_explanation_bullets(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
@@ -233,6 +473,16 @@ def generate_structured_answer(
         )
         return refusal_message
 
+    if plan.answer_mode == "lecture_summary":
+        from app.services.answers.summary_render import format_summary_markdown
+
+        return format_summary_markdown(plan, all_chunks, structured_query)
+
+    if plan.answer_mode == "teaching_plus_check":
+        from app.services.answers.quiz_render import format_quiz_markdown
+
+        return format_quiz_markdown(plan, all_chunks, structured_query)
+
     if plan.answer_mode == "compare_multi" and plan.evidence_bundles:
         entity_bundles = list(plan.evidence_bundles.values())
         return format_multi_entity_compare_markdown(
@@ -260,6 +510,19 @@ def generate_structured_answer(
             "### Why it matters\n"
             "Staying close to the course vocabulary keeps answers aligned with what you’re graded on."
         )
+
+    # Chat-mode intents flow as a tutor narrative when no exotic response
+    # constraints are in play. Compare / compare_multi already returned above;
+    # lecture_summary and cross_lecture_synthesis fall through to the legacy
+    # four-section markdown layout below.
+    has_exotic_constraint = (
+        constraints.no_examples
+        or constraints.intuition_only
+        or constraints.exact_explanation_count is not None
+        or constraints.repeat_explanation_times is not None
+    )
+    if plan.answer_mode in _CHAT_NARRATIVE_MODES and not has_exotic_constraint:
+        return render_tutor_style_answer(plan, all_chunks)
 
     direct_answer_text, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
     explanation_bullets = _build_explanation_bullets(

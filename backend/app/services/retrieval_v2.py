@@ -210,6 +210,16 @@ def _handle_lecture_specific(expanded_q: str, intent: QueryIntent, top_k: int) -
     return _wrap(base, base.chunks, intent)
 
 
+def _handle_quiz(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
+    """Quiz retrieval: lecture-scoped queries (e.g. "Test me on Lecture 11") delegate to
+    :func:`_handle_summary` so chunks come from the requested lecture; topic queries
+    (e.g. "Quiz me on MFCCs") fall back to definition-style retrieval.
+    """
+    if intent.lecture_numbers and len(intent.lecture_numbers) == 1:
+        return _handle_summary(expanded_q, intent, top_k)
+    return _handle_definition(expanded_q, intent, top_k)
+
+
 def _handle_general(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
     base = retrieve_chunks(expanded_q, top_k=top_k)
     supporting = _gather_supporting(base.chunks, intent)
@@ -233,7 +243,7 @@ _STRATEGY = {
     QueryType.SUMMARY:         _handle_summary,
     QueryType.SYNTHESIS:       _handle_synthesis,
     QueryType.LECTURE_SPECIFIC: _handle_lecture_specific,
-    QueryType.QUIZ:            _handle_definition,
+    QueryType.QUIZ:            _handle_quiz,
     QueryType.VAGUE_FOLLOWUP:  _handle_general,
     QueryType.GENERAL:         _handle_general,
 }

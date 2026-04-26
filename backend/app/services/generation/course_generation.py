@@ -26,8 +26,10 @@ def generate_course_answer(
     Returns ``(text, primary_model, primary_llm_usage)`` where ``primary_model`` is
     ``"openai"`` or ``"rule_based"``, and ``primary_llm_usage`` is OpenAI metadata (or empty).
     """
-    # Compare modes use deterministic, entity-isolated renderers (evidence bundles + tables).
-    if plan.answer_mode in ("compare", "compare_multi"):
+    # Compare / quiz / summary modes use deterministic, mode-specific renderers — never an LLM —
+    # so the per-mode shape (Quiz: + Answer Key, Summary: + Main idea/Key topics, compare table)
+    # cannot be overwritten by a free-form generation path.
+    if plan.answer_mode in ("compare", "compare_multi", "lecture_summary", "teaching_plus_check"):
         text = generate_structured_answer(plan, chunks, sq)
         return text.strip(), "rule_based", {}
 

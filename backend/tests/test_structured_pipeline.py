@@ -113,7 +113,8 @@ class TestValidation:
 
 
 class TestRuleBasedTutorFormat:
-    def test_generate_structured_answer_four_sections(self, corpus, app):
+    def test_chat_mode_uses_tutor_narrative_format(self, corpus, app):
+        """Chat-mode answers flow as a tutor narrative (no '###' section headings)."""
         with app.app_context():
             kb = get_kb(_KB)
             intent = analyze_query("What is softmax?")
@@ -123,9 +124,27 @@ class TestRuleBasedTutorFormat:
             r = retrieve_enhanced("What is softmax?", top_k=5)
             plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
             text = generate_structured_answer(plan, r.chunks, sq)
+            assert text.startswith("Course Answer:")
+            assert "### Direct Answer" not in text
+            assert "### Explanation" not in text
+            assert "### Example / Intuition" not in text
+            assert "### Why it matters" not in text
+            assert "The key idea:" in text
+            assert "That matters because" in text
+
+    def test_chat_mode_no_examples_keeps_legacy_layout(self, corpus, app):
+        """Exotic constraints (e.g. ``no_examples``) keep the legacy section layout."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax? Please don't use examples.")
+            sq = build_structured_query(intent, kb=kb)
+            sq.response_constraints.no_examples = True
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
             assert "### Direct Answer" in text
-            assert "### Explanation" in text
-            assert "### Example / Intuition" in text
             assert "### Why it matters" in text
 
     def test_compare_answer_no_per_line_scaffold_spam(self, corpus, app):

@@ -166,6 +166,31 @@ class TestCompare:
 # E. Summary queries — single-lecture recap (ranked, capped) from that lecture
 # ---------------------------------------------------------------------------
 
+class TestQuizRouting:
+    """``QueryType.QUIZ`` is dispatched via ``_handle_quiz`` (lecture-aware).
+
+    Topic queries fall back to definition-style retrieval; lecture-scoped queries
+    reuse ``_handle_summary`` so chunks come from the requested lecture.
+    """
+
+    def test_quiz_strategy_is_handle_quiz(self):
+        from app.services.query_understanding import QueryType
+        from app.services.retrieval_v2 import _handle_quiz, _STRATEGY
+
+        assert _STRATEGY[QueryType.QUIZ] is _handle_quiz
+
+    def test_quiz_lecture_scoped_pulls_only_that_lecture(self, corpus, app):
+        with app.app_context():
+            r = retrieve_enhanced("Test me on Lecture 10", top_k=10)
+            assert r.chunks
+            assert all(c["lecture_number"] == 10 for c in r.chunks)
+
+    def test_quiz_topic_scoped_returns_topic_chunks(self, corpus, app):
+        with app.app_context():
+            r = retrieve_enhanced("Quiz me on softmax", top_k=8)
+            assert r.chunks
+
+
 class TestSummary:
     def test_summary_lecture_10(self, corpus, app):
         with app.app_context():
