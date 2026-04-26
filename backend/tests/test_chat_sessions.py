@@ -6,7 +6,7 @@ import logging
 import time
 
 from app.extensions import db
-from app.models import ChatSession, Feedback, Message
+from app.models import ChatSession, Feedback, Message, RetrievalLog
 
 from tests.conftest import register_user
 
@@ -218,6 +218,96 @@ def test_chat_legacy_mode_only_forces_effective(client, app):
     body = r.get_json()
     assert body["mode"]["effective"] == "compare"
     assert body["mode"]["overridden"] is True
+
+
+def _latest_retrieval_log(app, sid: int) -> RetrievalLog | None:
+    """Newest :class:`RetrievalLog` row for a session, or ``None`` if no chat turn ran retrieval."""
+    with app.app_context():
+        return (
+            RetrievalLog.query.filter_by(session_id=sid)
+            .order_by(RetrievalLog.id.desc())
+            .first()
+        )
+
+
+def test_retrieval_log_persists_mode_fields_default(client, app):
+    """Auto-detected (no mode keys): RetrievalLog stores detected/effective/overridden=False/source=implicit."""
+    _login(client, "retr-mode-default@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={"session_id": sid, "message": "compare CNN and MLP"},
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+
+    log = _latest_retrieval_log(app, sid)
+    assert log is not None
+    assert log.mode_detected == body["mode"]["detected"]
+    assert log.mode_effective == body["mode"]["effective"]
+    assert log.mode_overridden is False
+    assert log.mode_request_source == "implicit"
+    assert isinstance(log.mode_confidence, float)
+
+
+def test_retrieval_log_persists_mode_fields_override(client, app):
+    """``mode_override`` populates overridden=True and request_source=override on the RetrievalLog."""
+    _login(client, "retr-mode-override@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "session_id": sid,
+            "message": "hello",
+            "mode_override": "compare",
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+
+    log = _latest_retrieval_log(app, sid)
+    assert log is not None
+    assert log.mode_effective == "compare"
+    assert log.mode_overridden is True
+    assert log.mode_request_source == "override"
+
+
+def test_retrieval_log_persists_mode_fields_legacy_key(client, app):
+    """Legacy ``mode`` only (no ``mode_override``) records request_source=legacy."""
+    _login(client, "retr-mode-legacy@test.dev")
+    sid = client.post(
+        "/api/sessions",
+        json={"title": "t"},
+        content_type="application/json",
+    ).get_json()["session"]["id"]
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "session_id": sid,
+            "message": "What is softmax?",
+            "mode": "summary",
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+
+    log = _latest_retrieval_log(app, sid)
+    assert log is not None
+    assert log.mode_effective == "summary"
+    assert log.mode_overridden is True
+    assert log.mode_request_source == "legacy"
 
 
 def test_chat_logs_legacy_key_and_structured_mode_routing(caplog, client, app):

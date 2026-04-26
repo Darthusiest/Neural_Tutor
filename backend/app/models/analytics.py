@@ -79,6 +79,16 @@ class RetrievalLog(db.Model):
     missing_comparison_side_flag = db.Column(db.Boolean, nullable=True)
     answer_plan_json = db.Column(db.Text, nullable=True)
 
+    # Mode routing (chat / quiz / compare / summary) — mirrors the `mode` block on assistant
+    # payload_json so wrong-routing can be debugged with plain SQL without JSON parsing.
+    mode_detected = db.Column(db.String(16), nullable=True)
+    mode_effective = db.Column(db.String(16), nullable=True)
+    mode_overridden = db.Column(db.Boolean, nullable=True)
+    mode_confidence = db.Column(db.Float, nullable=True)
+    mode_ambiguous = db.Column(db.Boolean, nullable=True)
+    mode_signals_json = db.Column(db.Text, nullable=True)
+    mode_request_source = db.Column(db.String(16), nullable=True)
+
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 
     session = db.relationship("ChatSession")

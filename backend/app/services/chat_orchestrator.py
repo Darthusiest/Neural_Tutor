@@ -402,6 +402,15 @@ def handle_chat_turn(
             else None
         ),
         answer_plan_json=json.dumps(pipeline_extra.get("answer_plan", {})) if pipeline_extra else None,
+        mode_detected=mode_meta.get("detected"),
+        mode_effective=mode_meta.get("effective"),
+        mode_overridden=mode_meta.get("overridden"),
+        mode_confidence=mode_meta.get("confidence"),
+        mode_ambiguous=mode_meta.get("ambiguous"),
+        mode_signals_json=(
+            json.dumps(mode_meta.get("signals")) if mode_meta.get("signals") else None
+        ),
+        mode_request_source=mode_request_source,
     )
     db.session.add(log)
     db.session.flush()

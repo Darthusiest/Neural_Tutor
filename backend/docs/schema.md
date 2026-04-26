@@ -123,6 +123,13 @@ One row per assistant turn that runs retrieval. Stores query features, aggregate
 | generic_answer_flag | Boolean nullable | Heuristic: thin / generic answer |
 | missing_comparison_side_flag | Boolean nullable | Compare validation: one side missing |
 | answer_plan_json | Text nullable | Serialized answer plan for debugging |
+| mode_detected | String(16) nullable | API mode the deterministic detector picked (`chat` / `quiz` / `compare` / `summary`); migration **006** |
+| mode_effective | String(16) nullable | API mode the turn actually ran with after override resolution; migration **006** |
+| mode_overridden | Boolean nullable | True when the client supplied `mode_override` (or legacy `mode`) and it changed the effective mode; migration **006** |
+| mode_confidence | Float nullable | Detector confidence in `[0,1]`; migration **006** |
+| mode_ambiguous | Boolean nullable | Detector saw two specialized families within the ambiguity gap; migration **006** |
+| mode_signals_json | Text nullable | JSON array of signal tags from [`query_mode.py`](../app/services/query_mode.py) (e.g. `phrase:quiz_me`, `keyword:vs`); migration **006** |
+| mode_request_source | String(16) nullable | How the client specified routing: `implicit` / `legacy` / `override`; migration **006** |
 | created_at | DateTime | server default now |
 
 ## retrieval_chunk_hits
