@@ -132,8 +132,10 @@ class TestRuleBasedTutorFormat:
             assert "The key idea:" in text
             assert "That matters because" in text
 
-    def test_chat_mode_no_examples_keeps_legacy_layout(self, corpus, app):
-        """Exotic constraints (e.g. ``no_examples``) keep the legacy section layout."""
+    def test_chat_mode_no_examples_uses_tutor_narrative_without_example_block(
+        self, corpus, app
+    ):
+        """Under ``no_examples`` chat-mode keeps the tutor narrative but drops the example."""
         with app.app_context():
             kb = get_kb(_KB)
             intent = analyze_query("What is softmax? Please don't use examples.")
@@ -144,8 +146,25 @@ class TestRuleBasedTutorFormat:
             r = retrieve_enhanced("What is softmax?", top_k=5)
             plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
             text = generate_structured_answer(plan, r.chunks, sq)
+            assert "### Direct Answer" not in text
+            assert "### Why it matters" not in text
+            assert "The key idea:" in text
+            assert "Think of it this way:" not in text
+
+    def test_chat_mode_repeat_explanation_keeps_legacy_layout(self, corpus, app):
+        """Structured-explanation constraints keep the legacy section layout."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("Explain softmax twice please.")
+            sq = build_structured_query(intent, kb=kb)
+            sq.response_constraints.repeat_explanation_times = 2
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
             assert "### Direct Answer" in text
-            assert "### Why it matters" in text
+            assert "### Repeated explanation (as requested)" in text
 
     def test_compare_answer_no_per_line_scaffold_spam(self, corpus, app):
         """Regression: compare mode must not repeat 'First idea' / 'In one line' on every bullet."""

@@ -17,6 +17,7 @@ Student-facing text only—no lecture IDs, keyword dumps, or retrieval jargon.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Any
 
@@ -178,6 +179,88 @@ _NUMERIC_EXAMPLE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])[-+]?\d+(?:\.\d+)?(?:\s*,\s*[-+]?\d+(?:\.\d+)?){1,}",
 )
 
+# Generic filler phrases that the legacy `_why_matters_block` (and similarly
+# bland prose) tends to emit. Lines containing any of these are dropped before
+# being used as opening / contrast / key-idea source material.
+_GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"you[’']ll keep running into", re.IGNORECASE),
+    re.compile(r"you will keep running into", re.IGNORECASE),
+    re.compile(r"this topic connects to", re.IGNORECASE),
+    re.compile(r"solid intuition here makes the next topics", re.IGNORECASE),
+    re.compile(r"notation and vocabulary pay off later", re.IGNORECASE),
+    re.compile(
+        r"think of the explanation above as the core picture", re.IGNORECASE
+    ),
+    re.compile(r"see the explanation below for how the notes develop", re.IGNORECASE),
+)
+
+# Splits a paragraph into sentences for sentence-level dedupe. Conservative
+# regex (no lookbehind on abbreviations) — close enough for tutor copy.
+_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[\(])")
+
+
+def _is_generic_filler(line: str) -> bool:
+    return any(pattern.search(line) for pattern in _GENERIC_FILLER_PATTERNS)
+
+
+def _normalize_for_dedupe(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower().rstrip(".!?:—-")
+
+
+def _clean_explanation_lines(
+    explanation_lines: list[str],
+    *,
+    direct_answer: str = "",
+) -> list[str]:
+    """Sentence-level cleanup applied before the renderer reads explanation lines.
+
+    Drops generic filler, deduplicates lines that are the same sentence as
+    the direct answer (after whitespace/punctuation normalization), and
+    deduplicates lines that repeat each other.
+    """
+    seen: set[str] = set()
+    direct_answer_keys: set[str] = set()
+    if direct_answer:
+        for sentence in _SENTENCE_SPLIT_PATTERN.split(direct_answer.strip()):
+            normalized = _normalize_for_dedupe(sentence)
+            if normalized:
+                direct_answer_keys.add(normalized)
+    cleaned: list[str] = []
+    for raw_line in explanation_lines:
+        line = _strip_bullet_prefix(raw_line)
+        if not line or _is_generic_filler(line):
+            continue
+        normalized = _normalize_for_dedupe(line)
+        if not normalized or normalized in seen or normalized in direct_answer_keys:
+            continue
+        seen.add(normalized)
+        cleaned.append(line)
+    return cleaned
+
+
+def _dedupe_paragraphs(paragraphs: list[str]) -> list[str]:
+    """Drop paragraphs that repeat earlier ones (same sentence after normalization)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for paragraph in paragraphs:
+        normalized = _normalize_for_dedupe(paragraph)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(paragraph)
+    return out
+
+
+def _truncate_to_first_sentences(text: str, max_sentences: int = 2) -> str:
+    """Keep at most ``max_sentences`` sentences—prevents dense text blocks."""
+    trimmed = text.strip()
+    if not trimmed:
+        return ""
+    sentences = [s for s in _SENTENCE_SPLIT_PATTERN.split(trimmed) if s.strip()]
+    if len(sentences) <= max_sentences:
+        return trimmed
+    return " ".join(sentences[:max_sentences]).strip()
+
 
 def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> str:
     """Best human-readable concept name for grounding the closing sentence.
@@ -202,6 +285,12 @@ def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> s
 
 
 def _natural_opening_sentence(direct_answer: str, concept_label: str) -> str:
+    """Tutor-tone opening paragraph (≤ 2 sentences) for the response.
+
+    Strips legacy section labels that sometimes leak in (`Direct Answer:`,
+    `Definition:`, `Answer:`) and trims long compositions back to the first two
+    sentences so the response opens with a short, readable paragraph.
+    """
     text = (direct_answer or "").strip()
     if not text:
         if concept_label:
@@ -210,7 +299,7 @@ def _natural_opening_sentence(direct_answer: str, concept_label: str) -> str:
     text = re.sub(
         r"^(direct answer|definition|answer)\s*[:\-—]\s*", "", text, flags=re.IGNORECASE
     )
-    return text.strip()
+    return _truncate_to_first_sentences(text, max_sentences=2)
 
 
 def _format_example_block(example_text: str) -> list[str]:
@@ -243,26 +332,28 @@ def _format_example_block(example_text: str) -> list[str]:
     return block
 
 
-def _contrast_lines_block(
+def _contrast_paragraphs(
     explanation_lines: list[str], concept_label: str
 ) -> list[str]:
-    """Optional contrast/clarification block when explanation contains contrast cues."""
-    candidates = [
-        _strip_bullet_prefix(line)
-        for line in explanation_lines
-        if _CONTRAST_CUE_PATTERN.search(line)
-    ]
-    candidates = [c for c in candidates if c]
+    """Up to two short contrast / clarification paragraphs (each ≤ 2 sentences)."""
+    candidates: list[str] = []
+    for line in explanation_lines:
+        if not _CONTRAST_CUE_PATTERN.search(line):
+            continue
+        clean = _strip_bullet_prefix(line)
+        if not clean:
+            continue
+        candidates.append(_truncate_to_first_sentences(clean, max_sentences=2))
     if not candidates:
         return []
-    block: list[str] = ["", candidates[0]]
+    paragraphs: list[str] = [candidates[0]]
     for follow_up in candidates[1:]:
-        if follow_up == candidates[0]:
+        if _normalize_for_dedupe(follow_up) == _normalize_for_dedupe(candidates[0]):
             continue
         if concept_label and concept_label.lower() in follow_up.lower():
-            block.extend(["", follow_up])
+            paragraphs.append(follow_up)
             break
-    return block
+    return paragraphs
 
 
 def _key_idea_sentence(
@@ -290,35 +381,35 @@ def _key_idea_sentence(
 def _grounded_why_it_matters(
     plan: AnswerPlan, primary: list[dict[str, Any]], concept_label: str
 ) -> str:
-    """Concept-tied closer; intentionally avoids the legacy generic templates.
+    """Short, concept-tied closer (1–2 sentences).
 
-    Always begins with a causal cue ("That matters because") so validation
-    checks like ``must_answer_how_or_why`` keep passing for chat-style intents.
+    Always begins with a causal cue (``"That matters because"``) so validators
+    like ``must_answer_how_or_why`` keep passing for chat-style intents.
+    Intentionally avoids the legacy generic phrasings (``"You'll keep running
+    into ..."`` / ``"This topic connects to ..."``) — :func:`_is_generic_filler`
+    would also strip those if they ever leaked in.
     """
     name = concept_label or "this idea"
-    related = plan.include_related_concepts[:3]
+    related = plan.include_related_concepts[:2]
     if related:
         if len(related) == 1:
             related_phrase = related[0]
-        elif len(related) == 2:
-            related_phrase = f"{related[0]} and {related[1]}"
         else:
-            related_phrase = f"{related[0]}, {related[1]}, and {related[2]}"
+            related_phrase = f"{related[0]} and {related[1]}"
         return (
-            f"That matters because {name} keeps reappearing alongside {related_phrase} "
-            "as the course moves into models, training, and evaluation—"
-            "reading those connections quickly is how the rest gets easier."
+            f"That matters because {name} keeps reappearing alongside {related_phrase}, "
+            "so a clean grasp here makes the next idea easier to read."
         )
     if primary:
         topic_value = (primary[0].get("topic") or "").strip()
         if topic_value and topic_value.lower() != name.lower():
             return (
                 f"That matters because {name} is what the notes lean on when they introduce "
-                f"{topic_value}, so a clean grasp here pays off when the next idea lands."
+                f"{topic_value}."
             )
     return (
-        f"That matters because clear intuition for {name} is what makes the next layer "
-        "of the course feel grounded instead of arbitrary."
+        f"That matters because clear intuition for {name} is what lets the next idea land "
+        "without feeling arbitrary."
     )
 
 
@@ -328,16 +419,35 @@ def render_tutor_style_answer(
     """Tutor-tone narrative answer for chat-mode replies.
 
     Replaces the legacy ``### Direct Answer / Explanation / Example / Why it matters``
-    layout with a flowing response:
+    section markdown with a flowing, teaching-style response. The only explicit
+    label kept in the output is ``"The key idea:"``.
 
-    1. Opening sentence (from ``direct_answer``, redundancy-trimmed)
-    2. Optional contrast / clarification (when explanation contains contrast cues)
-    3. Concrete example block (from ``example_lines``; numeric arrays get their own line)
-    4. ``The key idea:`` highlight (one short, concept-mentioning sentence)
-    5. Grounded ``That matters because`` closer (concept- and topic-tied, not generic)
+    Layout (each section is its own short paragraph, blank line between):
 
-    Intentionally scoped to chat-mode answer modes—compare, compare_multi,
-    lecture_summary, and cross_lecture_synthesis remain on the legacy layout.
+    1. **Opening** — the ``direct_answer`` from the pipeline, redundancy-trimmed
+       and capped at two sentences.
+    2. **Contrast / clarification (optional)** — up to two short paragraphs
+       lifted from explanation lines that contain contrast cues
+       (``vs``, ``instead``, ``unlike``, ``hardmax``, …).
+    3. **Concrete example (optional)** — the example block from
+       ``example_lines``; bracketed numeric arrays are lifted onto their own
+       line so the example reads visually.
+    4. **The key idea:** — one short, concept-mentioning sentence pulled from
+       the cleaned explanation lines.
+    5. **Closer** — short ``That matters because …`` sentence grounded in the
+       concept name and related-concept list (never the legacy generic copy).
+
+    Cleanup applied before rendering:
+    - generic filler phrases (``"You'll keep running into …"`` /
+      ``"This topic connects to …"`` / leftover scaffold lines) are stripped;
+    - sentences already used in the opening are removed from the explanation
+      pool so they cannot reappear in contrast / key-idea;
+    - the final answer is paragraph-deduped so no paragraph repeats earlier
+      content verbatim.
+
+    Intentionally scoped to chat-mode answer modes — compare, compare_multi,
+    lecture_summary, and cross_lecture_synthesis remain on the legacy layout
+    (they own deterministic per-mode renderers elsewhere).
     """
     primary = _primary_chunks_ordered(plan, evidence)
     if not primary:
@@ -348,31 +458,48 @@ def render_tutor_style_answer(
             "a sharper prompt usually surfaces a concrete example."
         )
 
-    direct_answer, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
-    explanation_lines = _build_explanation_bullets(
+    raw_direct_answer, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
+    raw_explanation_lines = _build_explanation_bullets(
         plan, evidence, primary, skip_first_chunk_lines=lines_consumed_by_direct_answer
     )
-    example_lines = _example_intuition_block(primary)
     concept_label = _primary_concept_label(plan, primary)
+    cleaned_explanation_lines = _clean_explanation_lines(
+        raw_explanation_lines, direct_answer=raw_direct_answer
+    )
+
+    paragraphs: list[str] = []
+    paragraphs.append(_natural_opening_sentence(raw_direct_answer, concept_label))
+
+    contrast = _contrast_paragraphs(cleaned_explanation_lines, concept_label)
+    paragraphs.extend(contrast)
+
+    example_block_lines: list[str] = []
+    if plan.include_example:
+        example_text = _example_intuition_block(primary)
+        example_block_lines = _format_example_block(example_text)
+
+    paragraphs = _dedupe_paragraphs([p for p in paragraphs if p])
 
     rendered_lines: list[str] = ["Course Answer:", ""]
-    rendered_lines.append(_natural_opening_sentence(direct_answer, concept_label))
+    for paragraph in paragraphs:
+        rendered_lines.append(paragraph)
+        rendered_lines.append("")
 
-    contrast_block = _contrast_lines_block(explanation_lines, concept_label)
-    if contrast_block:
-        rendered_lines.extend(contrast_block)
+    if example_block_lines:
+        rendered_lines.extend(example_block_lines)
+        rendered_lines.append("")
 
-    if plan.include_example:
-        example_block = _format_example_block(example_lines)
-        if example_block:
-            rendered_lines.append("")
-            rendered_lines.extend(example_block)
+    key_idea = _truncate_to_first_sentences(
+        _key_idea_sentence(raw_direct_answer, cleaned_explanation_lines, concept_label),
+        max_sentences=1,
+    )
+    rendered_lines.extend(["The key idea:", key_idea, ""])
 
-    key_idea = _key_idea_sentence(direct_answer, explanation_lines, concept_label)
-    rendered_lines.extend(["", "The key idea:", key_idea])
-
-    why_it_matters = _grounded_why_it_matters(plan, primary, concept_label)
-    rendered_lines.extend(["", why_it_matters])
+    why_it_matters = _truncate_to_first_sentences(
+        _grounded_why_it_matters(plan, primary, concept_label),
+        max_sentences=2,
+    )
+    rendered_lines.append(why_it_matters)
 
     return "\n".join(rendered_lines).rstrip()
 
@@ -511,18 +638,25 @@ def generate_structured_answer(
             "Staying close to the course vocabulary keeps answers aligned with what you’re graded on."
         )
 
-    # Chat-mode intents flow as a tutor narrative when no exotic response
-    # constraints are in play. Compare / compare_multi already returned above;
-    # lecture_summary and cross_lecture_synthesis fall through to the legacy
-    # four-section markdown layout below.
-    has_exotic_constraint = (
-        constraints.no_examples
-        or constraints.intuition_only
-        or constraints.exact_explanation_count is not None
+    # Chat-mode intents flow as a tutor narrative. Compare / compare_multi
+    # already returned above; lecture_summary and cross_lecture_synthesis fall
+    # through to the legacy four-section markdown layout below.
+    #
+    # The narrow exception is the structured-explanation constraints
+    # (``exact_explanation_count`` / ``repeat_explanation_times``), which
+    # explicitly request the numbered-subsection / repeated-block layout —
+    # those keep the legacy markdown so the dedicated copy still applies.
+    keeps_legacy_structured_layout = (
+        constraints.exact_explanation_count is not None
         or constraints.repeat_explanation_times is not None
     )
-    if plan.answer_mode in _CHAT_NARRATIVE_MODES and not has_exotic_constraint:
-        return render_tutor_style_answer(plan, all_chunks)
+    if plan.answer_mode in _CHAT_NARRATIVE_MODES and not keeps_legacy_structured_layout:
+        # Honor ``no_examples`` / ``intuition_only`` by suppressing the example
+        # block at the call site, without mutating the planner's plan instance.
+        plan_for_render = plan
+        if constraints.no_examples or constraints.intuition_only:
+            plan_for_render = dataclasses.replace(plan, include_example=False)
+        return render_tutor_style_answer(plan_for_render, all_chunks)
 
     direct_answer_text, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
     explanation_bullets = _build_explanation_bullets(
