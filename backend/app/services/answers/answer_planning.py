@@ -8,6 +8,7 @@ from typing import Any
 
 from flask import has_app_context
 
+from app.services.answers.concept_constraints import ConceptConstraints
 from app.services.answers.entity_retrieval import (
     ConceptEvidenceBundle,
     ConceptEvidenceBundleV2,
@@ -69,6 +70,12 @@ class AnswerPlan:
     # forward; V1 still appears in older test fixtures and external callers.
     # Both expose ``concept_id`` / ``label`` / ``chunk_ids`` / ``gap_flags``.
     evidence_bundles: dict[str, EvidenceBundleLike] = field(default_factory=dict)
+    # Deterministic, target-grounded opening sentence selected by
+    # :func:`direct_answer.select_direct_answer`. ``None`` for summary / quiz /
+    # synthesis paths (where the renderer doesn't open with a single
+    # definition sentence). When set, the chat / definition renderers prefer
+    # this string over the legacy "first bullet of the first chunk" heuristic.
+    direct_answer: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +91,7 @@ class AnswerPlan:
             "lecture_scope": list(self.lecture_scope),
             "section_specs": [s.to_dict() for s in self.section_specs],
             "evidence_bundles": {k: v.to_dict() for k, v in self.evidence_bundles.items()},
+            "direct_answer": self.direct_answer,
         }
 
 
@@ -246,7 +254,21 @@ def build_answer_plan(
     chunks: list[dict[str, Any]],
     supporting: list[dict[str, Any]],
     kb: ConceptKB | None = None,
+    *,
+    constraints: ConceptConstraints | None = None,
 ) -> AnswerPlan:
+    """Build the :class:`AnswerPlan` for a structured query.
+
+    ``constraints`` is the optional :class:`ConceptConstraints` produced by
+    :func:`build_concept_constraints` upstream. When provided, the planner
+    forwards it to :func:`select_direct_answer` so the deterministic opening
+    sentence is grounded in the same purity signal that retrieval rerank
+    used. Callers that don't have the structured query plumbing yet (e.g.
+    legacy tests) can keep calling ``build_answer_plan`` with positional
+    args.
+    """
+    from app.services.answers.direct_answer import select_direct_answer
+
     kb = kb or get_kb()
     mode = sq.answer_intent
     labels = ANSWER_PLAN_SECTION_LABELS.get(
@@ -308,6 +330,9 @@ def build_answer_plan(
                     primary_union.append(i)
         if not primary_union:
             primary_union = primary_ids[:6]
+        direct_answer_text = select_direct_answer(
+            sq, chunks=chunks, bundles=list(bundles), constraints=constraints, kb=kb
+        )
         return AnswerPlan(
             answer_mode=mode,
             sections=sections or [
@@ -323,6 +348,7 @@ def build_answer_plan(
             lecture_scope=list(sq.lecture_scope),
             section_specs=section_specs,
             evidence_bundles=evidence_bundles,
+            direct_answer=direct_answer_text,
         )
 
     # --- Two-way compare with isolated evidence pools ---
@@ -403,6 +429,13 @@ def build_answer_plan(
             if i not in seen_m:
                 seen_m.add(i)
                 merged_primary.append(i)
+        direct_answer_text = select_direct_answer(
+            sq,
+            chunks=chunks,
+            bundles=[bundle_a, bundle_b],
+            constraints=constraints,
+            kb=kb,
+        )
         return AnswerPlan(
             answer_mode=mode,
             sections=sections,
@@ -416,6 +449,7 @@ def build_answer_plan(
             lecture_scope=list(sq.lecture_scope),
             section_specs=section_specs,
             evidence_bundles=evidence_bundles,
+            direct_answer=direct_answer_text,
         )
 
     sections = []
@@ -458,6 +492,32 @@ def build_answer_plan(
             AnswerSection(heading="Course material", chunk_ids=primary_ids[:3], content_hint="definition")
         ]
 
+    # Build a target-scoped chunk pool for direct-answer ranking. We re-rank
+    # by entity score so the candidate sentences are pulled from the chunks
+    # the planner actually grounds the answer in (not arbitrary retrieval
+    # order). Falls back to the planner's primary list if entity scoring is
+    # disabled.
+    direct_answer_pool: list[dict[str, Any]] = list(chunks)
+    if cids and chunks:
+        primary_cid = cids[0]
+        peer_cids = cids[1:]
+        scored_pool: list[tuple[float, int, dict[str, Any]]] = []
+        for idx, c in enumerate(chunks):
+            score, _ = score_chunk_for_entity(
+                c, primary_cid, kb, peer_concept_ids=peer_cids
+            )
+            scored_pool.append((score, idx, c))
+        scored_pool.sort(key=lambda t: (-t[0], t[1]))
+        direct_answer_pool = [c for _s, _i, c in scored_pool]
+
+    direct_answer_text = select_direct_answer(
+        sq,
+        chunks=direct_answer_pool,
+        bundles=None,
+        constraints=constraints,
+        kb=kb,
+    )
+
     return AnswerPlan(
         answer_mode=mode,
         sections=sections,
@@ -471,6 +531,7 @@ def build_answer_plan(
         lecture_scope=list(sq.lecture_scope),
         section_specs=section_specs,
         evidence_bundles=evidence_bundles,
+        direct_answer=direct_answer_text,
     )
 
 

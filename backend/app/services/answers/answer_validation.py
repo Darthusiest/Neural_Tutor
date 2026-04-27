@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.answers.answer_planning import AnswerPlan
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
+
+if TYPE_CHECKING:
+    from app.services.answers.concept_constraints import ConceptConstraints
 
 
 CRITICAL_CHECK_NAMES = frozenset(
@@ -237,12 +240,87 @@ def _must_answer_how_or_why(answer: str) -> bool:
 def _must_respect_lecture_scope(answer: str, plan: AnswerPlan, chunks_lectures: list[int]) -> bool:
     if not plan.lecture_scope:
         return True
-    if not chunks_lectures:
-        return True
     for ln in chunks_lectures:
         if ln in plan.lecture_scope:
             return True
     return True
+
+
+def _must_be_concept_pure(answer: str, constraints: "ConceptConstraints") -> bool:
+    """Soft-warn when the answer drifts away from the target concept's vocabulary.
+
+    Hard fail (returns ``False``) only for full topic drift — a forbidden
+    term appears in the answer and *no* target alias does. When both appear,
+    the line is ambiguous (e.g. CNN answer touches transformers in passing);
+    we treat that as borderline-pass via the dedicated ``ambiguous_concept_bleed``
+    flag rather than blocking the whole answer.
+
+    Always returns ``True`` for relational queries — *Compare A and B* and
+    *How does X relate to Y?* legitimately require both sides' vocabulary.
+    """
+    if constraints.is_relational:
+        return True
+    if not constraints.forbidden_terms:
+        return True
+    al = answer.lower()
+    forbidden_hit = any(t in al for t in constraints.forbidden_terms if len(t) > 2)
+    if not forbidden_hit:
+        return True
+    target_hit = any(t in al for t in constraints.target_aliases if len(t) > 2)
+    if target_hit:
+        return True
+    return False
+
+
+def _has_ambiguous_concept_bleed(answer: str, constraints: "ConceptConstraints") -> bool:
+    """``True`` when both forbidden + target terms appear (soft warn surface)."""
+    if constraints.is_relational or not constraints.forbidden_terms:
+        return False
+    al = answer.lower()
+    forbidden_hit = any(t in al for t in constraints.forbidden_terms if len(t) > 2)
+    target_hit = any(t in al for t in constraints.target_aliases if len(t) > 2)
+    return forbidden_hit and target_hit
+
+
+def _direct_answer_text(plan: AnswerPlan) -> str:
+    return (plan.direct_answer or "").strip()
+
+
+def _must_direct_answer_mention_target_concept(
+    plan: AnswerPlan, sq: StructuredQuery, kb: ConceptKB
+) -> bool:
+    """Soft-warn when the direct answer doesn't ground in the target concept(s).
+
+    Skipped entirely when ``plan.direct_answer`` is ``None`` (summary / quiz /
+    synthesis paths). For chat / definition the check fails when the direct
+    answer mentions zero target aliases. For compare it fails when it
+    doesn't mention both compared entities.
+    """
+    text = _direct_answer_text(plan)
+    if not text:
+        return True
+    al = text.lower()
+    mode = sq.answer_intent
+    if mode == "compare":
+        if sq.intent.compare_entities and len(sq.intent.compare_entities) >= 2:
+            a, b = sq.intent.compare_entities[0], sq.intent.compare_entities[1]
+        elif sq.intent.compare_concepts:
+            a, b = sq.intent.compare_concepts
+        elif len(sq.concept_ids) >= 2:
+            ma = kb.get_concept_by_id(sq.concept_ids[0])
+            mb = kb.get_concept_by_id(sq.concept_ids[1])
+            a = ma.name if ma else sq.concept_ids[0]
+            b = mb.name if mb else sq.concept_ids[1]
+        else:
+            return True
+        return _mentions_term(al, a) and _mentions_term(al, b)
+    if not sq.concept_ids:
+        return True
+    primary_meta = kb.get_concept_by_id(sq.concept_ids[0])
+    if not primary_meta:
+        return True
+    aliases = [primary_meta.name, *primary_meta.aliases[:6]]
+    return any(_mentions_term(al, t) for t in aliases)
 
 
 def validate_answer(
@@ -252,6 +330,7 @@ def validate_answer(
     *,
     primary_chunk_lecture_numbers: list[int] | None = None,
     kb: ConceptKB | None = None,
+    constraints: "ConceptConstraints | None" = None,
 ) -> ValidationResult:
     kb = kb or get_kb()
     checks_run: list[str] = []
@@ -293,6 +372,23 @@ def validate_answer(
 
     run("must_respect_lecture_scope", _must_respect_lecture_scope(answer, plan, plns))
 
+    ambiguous_bleed = False
+    if constraints is not None and ai in (
+        "direct_definition",
+        "multi_step_explanation",
+        "scoped_explanation",
+        "simplified_reteach",
+        "teaching_plus_check",
+    ):
+        run("must_be_concept_pure", _must_be_concept_pure(answer, constraints))
+        ambiguous_bleed = _has_ambiguous_concept_bleed(answer, constraints)
+
+    if plan.direct_answer:
+        run(
+            "must_direct_answer_mention_target_concept",
+            _must_direct_answer_mention_target_concept(plan, sq, kb),
+        )
+
     generic = len(answer) < 120 and not sq.concept_ids
     missing_side = False
     if ai == "compare":
@@ -311,6 +407,7 @@ def validate_answer(
             "generic_answer": generic,
             "missing_comparison_side": missing_side,
             "out_of_scope": False,
+            "ambiguous_concept_bleed": ambiguous_bleed,
         },
         severity=severity,
     )

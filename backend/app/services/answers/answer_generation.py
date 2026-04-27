@@ -576,7 +576,34 @@ def _build_explanation_bullets(
 def _direct_answer_and_skip(
     plan: AnswerPlan, primary: list[dict[str, Any]]
 ) -> tuple[str, int]:
-    """Direct answer text and number of first-chunk lines consumed (non-compare)."""
+    """Direct answer text and number of first-chunk lines consumed (non-compare).
+
+    When the planner produced a deterministic ``plan.direct_answer`` (via
+    :func:`direct_answer.select_direct_answer`), prefer it. The skip count is
+    derived by checking how many leading bullet lines of the first chunk
+    appear as substrings of the direct answer (case-insensitive, normalized
+    whitespace) so the explanation bullets don't repeat the opening sentence.
+    """
+    plan_direct_answer = (plan.direct_answer or "").strip()
+    if plan_direct_answer:
+        skip = 0
+        if primary:
+            first_lines = _bullet_lines_from_chunk(primary[0])
+            answer_norm = re.sub(r"\s+", " ", plan_direct_answer.lower()).strip()
+            for line in first_lines:
+                line_norm = re.sub(
+                    r"\s+", " ", _strip_bullet_prefix(line).lower()
+                ).strip()
+                if not line_norm:
+                    continue
+                if line_norm in answer_norm or (
+                    len(line_norm) > 20 and line_norm[:80] in answer_norm
+                ):
+                    skip += 1
+                else:
+                    break
+        return plan_direct_answer, skip
+
     if plan.answer_mode == "compare" and plan.comparison_axes:
         return "; ".join(plan.comparison_axes[:3]), 0
     if not primary:

@@ -10,6 +10,11 @@ from flask import current_app
 from app.services.answers.answer_generation import generate_structured_answer
 from app.services.answers.answer_planning import AnswerPlan, build_answer_plan
 from app.services.answers.answer_validation import ValidationResult, validate_answer
+from app.services.answers.concept_constraints import (
+    ConceptConstraints,
+    apply_concept_constraints,
+    build_concept_constraints,
+)
 from app.services.generation.course_generation import generate_course_answer
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import StructuredQuery, build_structured_query
@@ -105,15 +110,28 @@ def run_reasoning_pipeline(
             primary_llm_usage={},
         )
 
-    plan = build_answer_plan(sq, enhanced.chunks, enhanced.supporting_chunks, kb=kb)
+    constraints = build_concept_constraints(sq, kb)
+    constrained_chunks = apply_concept_constraints(enhanced.chunks, constraints)
+    plan = build_answer_plan(
+        sq, constrained_chunks, enhanced.supporting_chunks, kb=kb, constraints=constraints
+    )
 
     course_answer, primary_model, primary_llm_usage = generate_course_answer(
-        plan, enhanced.chunks, sq
+        plan, constrained_chunks, sq
     )
     used_llm = primary_model == "openai"
 
-    pl_lectures = [c.get("lecture_number") for c in enhanced.chunks if c.get("lecture_number") is not None]
-    validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
+    pl_lectures = [
+        c.get("lecture_number") for c in constrained_chunks if c.get("lecture_number") is not None
+    ]
+    validation = validate_answer(
+        course_answer,
+        sq,
+        plan,
+        primary_chunk_lecture_numbers=pl_lectures,
+        kb=kb,
+        constraints=constraints,
+    )
 
     if bool(current_app.config.get("PIPELINE_RETRIEVAL_RETRY_ENABLED", True)) and validation.severity == "fail":
         extra = int(current_app.config.get("PIPELINE_RETRY_TOP_K_EXTRA", 6))
@@ -126,23 +144,48 @@ def run_reasoning_pipeline(
             sq = build_structured_query(
                 intent, kb=kb, mode_routing=enhanced.mode_routing or {}
             )
-            plan = build_answer_plan(sq, enhanced.chunks, enhanced.supporting_chunks, kb=kb)
+            constraints = build_concept_constraints(sq, kb)
+            constrained_chunks = apply_concept_constraints(enhanced.chunks, constraints)
+            plan = build_answer_plan(
+                sq,
+                constrained_chunks,
+                enhanced.supporting_chunks,
+                kb=kb,
+                constraints=constraints,
+            )
             course_answer, primary_model, primary_llm_usage = generate_course_answer(
-                plan, enhanced.chunks, sq
+                plan, constrained_chunks, sq
             )
             used_llm = primary_model == "openai"
             pl_lectures = [
-                c.get("lecture_number") for c in enhanced.chunks if c.get("lecture_number") is not None
+                c.get("lecture_number")
+                for c in constrained_chunks
+                if c.get("lecture_number") is not None
             ]
-            validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
+            validation = validate_answer(
+                course_answer,
+                sq,
+                plan,
+                primary_chunk_lecture_numbers=pl_lectures,
+                kb=kb,
+                constraints=constraints,
+            )
 
     if used_llm and validation.severity == "fail":
-        course_answer = generate_structured_answer(plan, enhanced.chunks, sq)
+        course_answer = generate_structured_answer(plan, constrained_chunks, sq)
         primary_model = "rule_based"
         used_llm = False
         primary_llm_usage = {}
-        validation = validate_answer(course_answer, sq, plan, primary_chunk_lecture_numbers=pl_lectures, kb=kb)
+        validation = validate_answer(
+            course_answer,
+            sq,
+            plan,
+            primary_chunk_lecture_numbers=pl_lectures,
+            kb=kb,
+            constraints=constraints,
+        )
 
+    enhanced.chunks = constrained_chunks
     enhanced.structured_query = sq
     enhanced.answer_plan = plan
     enhanced.validation_result = validation

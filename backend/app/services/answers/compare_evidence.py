@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.answers.entity_retrieval import (
     forbidden_terms_for_concept,
     generic_nn_filler_score,
 )
 from app.services.knowledge.concept_kb import ConceptKB
+
+if TYPE_CHECKING:
+    from app.services.answers.concept_constraints import ConceptConstraints
 
 
 def _term_hits(text_normalized: str, phrase: str) -> float:
@@ -126,16 +129,29 @@ def scoped_lines_from_chunks(
     forbidden_override: list[str] | None = None,
     *,
     max_lines: int = 8,
+    constraints: "ConceptConstraints | None" = None,
 ) -> tuple[list[str], bool]:
-    """Return (lines, provisional) — provisional True if tier-3 raw fallback used."""
-    if forbidden_override is None:
-        forbidden = forbidden_terms_for_concept(concept_id, peer_concept_ids, kb)
-    elif forbidden_override:
-        forbidden = list(forbidden_override)
+    """Return (lines, provisional) — provisional True if tier-3 raw fallback used.
+
+    When ``constraints`` is provided, the entity-term and forbidden-term sets
+    are taken from ``constraints.target_aliases`` / ``constraints.forbidden_terms``
+    instead of the per-concept KB lookup. This is the seam used by chat /
+    direct-answer renderers that need the same purity gate the validator
+    will run later.
+    """
+    if constraints is not None and constraints.target_aliases:
+        forbidden = list(constraints.forbidden_terms)
+        entity_terms = list(constraints.target_aliases)
+        peer_terms = list(constraints.forbidden_terms)
     else:
-        forbidden = forbidden_terms_for_concept(concept_id, peer_concept_ids, kb)
-    peer_terms = peer_highlight_terms(peer_concept_ids, kb)
-    entity_terms = entity_terms_for_concept(concept_id, kb)
+        if forbidden_override is None:
+            forbidden = forbidden_terms_for_concept(concept_id, peer_concept_ids, kb)
+        elif forbidden_override:
+            forbidden = list(forbidden_override)
+        else:
+            forbidden = forbidden_terms_for_concept(concept_id, peer_concept_ids, kb)
+        peer_terms = peer_highlight_terms(peer_concept_ids, kb)
+        entity_terms = entity_terms_for_concept(concept_id, kb)
     units = chunks_to_raw_units(chunks)
 
     tier1 = _collect_tier(units, forbidden=forbidden, peer_terms=peer_terms, entity_terms=entity_terms, filter_peer=True)
