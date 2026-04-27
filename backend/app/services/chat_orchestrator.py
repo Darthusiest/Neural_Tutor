@@ -20,16 +20,26 @@ from app.models import (
     RetrievalLog,
 )
 from app.services.answers.answer_planning import build_answer_plan
+from app.services.answers.clarification import (
+    clarification_for_mode,
+    is_underspecified_for_mode,
+)
 from app.services.generation.boost_triggers import should_use_gemini_boost
 from app.services.generation.gemini_boost import generate_gemini_boosted_explanation
 from app.services.generation.llm import generate_boosted_explanation as generate_openai_boost_fallback
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import build_structured_query
+from app.services.query_mode import (
+    apply_effective_api_mode,
+    detect_query_mode,
+    resolve_effective_mode,
+)
 from app.services.query_understanding import analyze_query
 from app.services.conversational_responses import classify_no_match_query, varied_no_chunk_course_answer
 from app.services.reasoning_pipeline import PipelineResult, pipeline_diagnostics_dict, run_reasoning_pipeline
 from app.services.retrieval_v2 import EnhancedRetrievalResult
 from app.services.retrieval import (
+    RetrievalDiagnostics,
     format_course_answer,
     tokenize_query_terms,
 )
@@ -144,6 +154,70 @@ def _plan_and_sq_for_gemini_boost(text: str, r: EnhancedRetrievalResult):
     return plan, sq
 
 
+def _build_underspecified_retrieval_result(
+    text: str, mode_norm: str
+) -> tuple[EnhancedRetrievalResult | None, str | None]:
+    """Pre-retrieval mode + structured-query analysis used by the underspecified branch.
+
+    Returns ``(synthetic_result, clarification_text)`` when the query is
+    underspecified for its routed mode, or ``(None, None)`` when retrieval
+    should run normally. The cheap mode-detection runs first; the more
+    expensive ``analyze_query`` + ``build_structured_query`` only fires
+    when the routed mode is one of compare/quiz/summary.
+    """
+    detection = detect_query_mode(text)
+    effective, was_overridden = resolve_effective_mode(mode_norm, detection)
+    if effective not in ("compare", "quiz", "summary"):
+        return None, None
+    kb = get_kb()
+    base_intent = analyze_query(text)
+    intent = apply_effective_api_mode(base_intent, text, effective)
+    mode_routing: dict[str, Any] = {
+        "detected_mode": detection.mode,
+        "effective_mode": effective,
+        "mode_confidence": detection.confidence,
+        "mode_signals": detection.signals,
+        "mode_ambiguous": detection.ambiguous,
+        "mode_candidate_modes": detection.candidate_modes,
+        "mode_was_overridden": was_overridden,
+    }
+    sq = build_structured_query(intent, kb=kb, mode_routing=mode_routing)
+    if not is_underspecified_for_mode(text, sq, effective):
+        return None, None
+    clarification = clarification_for_mode(text, sq, effective)
+    return _empty_retrieval_result(intent, mode_routing), clarification
+
+
+def _empty_retrieval_result(
+    intent: Any, mode_routing: dict[str, Any]
+) -> EnhancedRetrievalResult:
+    """Minimal :class:`EnhancedRetrievalResult` for the underspecified bypass path.
+
+    Carries no chunks but populates the fields the orchestrator/log path
+    actually reads (``query_intent`` / ``mode_routing`` / ``confidence``).
+    """
+    diag = RetrievalDiagnostics(
+        query_tokens=list(intent.query_tokens),
+        lecture_numbers_detected=list(intent.lecture_numbers),
+        retrieval_backend="underspecified_bypass",
+        top_k_requested=0,
+        num_chunks_scored=0,
+        num_chunks_hit=0,
+        top_score=0.0,
+        second_score=0.0,
+        score_margin=0.0,
+        query_coverage=0.0,
+    )
+    return EnhancedRetrievalResult(
+        chunks=[],
+        confidence=0.0,
+        detected_topic=None,
+        diagnostics=diag,
+        query_intent=intent,
+        mode_routing=mode_routing,
+    )
+
+
 def handle_chat_turn(
     session: ChatSession,
     text: str,
@@ -179,7 +253,22 @@ def handle_chat_turn(
     no_match_kind: str | None = None
     top_k = int(current_app.config.get("CHAT_RETRIEVAL_TOP_K", 5))
 
-    if structured_on:
+    # Pre-retrieval underspecified check (Task 8). When a query routes to a
+    # specialized mode (compare/quiz/summary) with no usable signal, skip
+    # retrieval + pipeline entirely and emit a mode-aware clarification.
+    underspecified_r, underspecified_answer = _build_underspecified_retrieval_result(
+        text, mode_norm
+    )
+
+    if underspecified_r is not None and underspecified_answer is not None:
+        r = underspecified_r
+        course_answer = underspecified_answer
+        logger.info(
+            "chat_turn underspecified_bypass mode=%s detected=%s",
+            r.mode_routing.get("effective_mode") if r.mode_routing else None,
+            r.mode_routing.get("detected_mode") if r.mode_routing else None,
+        )
+    elif structured_on:
         pr = run_reasoning_pipeline(text, top_k=top_k, user_mode=mode_norm)
         r = pr.enhanced_result
         pipeline_extra = pipeline_diagnostics_dict(pr)

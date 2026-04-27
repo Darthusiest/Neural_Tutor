@@ -1,0 +1,140 @@
+{
+  "name": "l487_eval_suite",
+  "version": "1",
+  "description": "Static rule-based pipeline eval. Requires `flask import-lectures` with the course JSON so retrieval has chunk coverage. Categories tag cases for dashboard aggregation.",
+  "cases": [
+    {
+      "id": "md_softmax_001",
+      "category": "mode_detection",
+      "query": "What is softmax?",
+      "expected_mode": "chat",
+      "must_include": ["softmax"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": ["Quiz:"],
+      "error_tags": ["mode", "definition"]
+    },
+    {
+      "id": "def_softmax_001",
+      "category": "definitions",
+      "query": "Explain the softmax function in the course",
+      "expected_mode": "chat",
+      "must_include": ["softmax", "probabilit"],
+      "must_not_include": ["mfcc"],
+      "expected_sections": [],
+      "forbidden_sections": ["Answer Key:"],
+      "error_tags": ["definition", "retrieval_purity"]
+    },
+    {
+      "id": "cmp_cnn_mlp_001",
+      "category": "compare",
+      "query": "Compare CNN and MLP",
+      "expected_mode": "compare",
+      "must_include": ["CNN", "MLP"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["compare", "both_entities"]
+    },
+    {
+      "id": "sum_lec_001",
+      "category": "summary",
+      "query": "Summarize lecture 10",
+      "expected_mode": "summary",
+      "must_include": ["Summary:"],
+      "must_not_include": ["Course Answer:"],
+      "expected_sections": [],
+      "forbidden_sections": ["### Direct Answer"],
+      "error_tags": ["summary", "lecture_scoped"]
+    },
+    {
+      "id": "quiz_softmax_001",
+      "category": "quiz",
+      "query": "Quiz me on softmax",
+      "expected_mode": "quiz",
+      "must_include": ["Quiz:"],
+      "must_not_include": ["### Direct Answer", "Course Answer:"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["quiz", "format"]
+    },
+    {
+      "id": "purity_mfcc_001",
+      "category": "retrieval_purity",
+      "query": "What is MFCC?",
+      "expected_mode": "chat",
+      "must_include": ["MFCC"],
+      "must_not_include": ["softmax classifier", "formant"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["retrieval_purity", "contamination"]
+    },
+    {
+      "id": "da_softmax_001",
+      "category": "direct_answer_accuracy",
+      "query": "Define softmax in one sentence for this course",
+      "expected_mode": "chat",
+      "must_include": ["softmax", "probabilit"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": ["Quiz:"],
+      "error_tags": ["direct_answer", "chat"]
+    },
+    {
+      "id": "syn_bias_var_001",
+      "category": "synthesis",
+      "query": "How do bias and variance relate to overfitting in this class?",
+      "expected_mode": "chat",
+      "must_include": ["bias", "variance"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": ["Quiz:"],
+      "error_tags": ["synthesis", "concepts"]
+    },
+    {
+      "id": "clar_compare_001",
+      "category": "clarification",
+      "query": "Compare these",
+      "expected_mode": "compare",
+      "must_include": ["two", "compare"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["clarification", "underspecified"],
+      "note": "Exercises orchestrator underspecified path: handle_chat_turn skips retrieval and uses clarification_for_mode (compare template) when concepts are missing."
+    },
+    {
+      "id": "adv_nonsense_001",
+      "category": "adversarial",
+      "query": "asdfasdf loremipsum notacoursewordzzz",
+      "expected_mode": "chat",
+      "must_include": [],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["adversarial", "nonsense", "off_topic"]
+    },
+    {
+      "id": "md_quiz_001",
+      "category": "mode_detection",
+      "query": "Test me on lecture 10",
+      "expected_mode": "quiz",
+      "must_include": ["Quiz:"],
+      "must_not_include": ["Course Answer:"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["mode", "quiz", "lecture_scoped"]
+    },
+    {
+      "id": "def_dp_001",
+      "category": "definitions",
+      "query": "What is dynamic programming in this context?",
+      "expected_mode": "chat",
+      "must_include": ["dynamic programming"],
+      "must_not_include": ["MFCC"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["definition", "dp"]
+    }
+  ]
+}

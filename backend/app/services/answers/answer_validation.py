@@ -21,8 +21,38 @@ CRITICAL_CHECK_NAMES = frozenset(
         "must_not_leak_forbidden_terms",
         "must_not_have_examples_when_blocked",
         "must_not_have_technical_when_intuition_only",
+        # Task 7 hardened checks
+        "must_match_quiz_contract",
+        "must_match_summary_contract",
+        "must_match_compare_contract",
+        "must_have_distinct_compare_evidence",
+        "must_have_each_side_evidence_or_note",
+        "must_direct_answer_match_target",
+        "must_not_have_section_duplication",
     }
 )
+
+
+# Maps a critical-check name onto one of four named repair paths consumed by
+# the reasoning pipeline + analytics. The pipeline currently branches only on
+# ``fall_back_to_clarification``; the others surface in logs / diagnostics
+# for operators and a future repair loop.
+_REPAIR_PATHS_BY_CHECK: dict[str, str] = {
+    "must_match_quiz_contract": "fall_back_to_clarification",
+    "must_match_summary_contract": "fall_back_to_clarification",
+    "must_match_compare_contract": "rebuild_evidence_bundles",
+    "must_have_distinct_compare_evidence": "rebuild_evidence_bundles",
+    "must_have_each_side_evidence_or_note": "render_limitation_message",
+    "must_direct_answer_match_target": "retry_retrieval_with_stricter_constraints",
+    "must_not_have_section_duplication": "rebuild_evidence_bundles",
+    "must_not_leak_forbidden_terms": "retry_retrieval_with_stricter_constraints",
+    # Existing critical names (kept for completeness in diagnostics)
+    "must_be_course_grounded": "retry_retrieval_with_stricter_constraints",
+    "must_cover_both_sides": "rebuild_evidence_bundles",
+    "must_not_have_examples_when_blocked": "render_limitation_message",
+    "must_not_have_technical_when_intuition_only": "render_limitation_message",
+    "must_be_concept_pure": "retry_retrieval_with_stricter_constraints",
+}
 
 
 def compute_validation_severity(checks_failed: list[str]) -> str:
@@ -34,6 +64,14 @@ def compute_validation_severity(checks_failed: list[str]) -> str:
     return "weak"
 
 
+def _select_repair_path(checks_failed: list[str]) -> str | None:
+    """Return the first repair path triggered by a critical failure, or ``None``."""
+    for name in checks_failed:
+        if name in CRITICAL_CHECK_NAMES and name in _REPAIR_PATHS_BY_CHECK:
+            return _REPAIR_PATHS_BY_CHECK[name]
+    return None
+
+
 @dataclass
 class ValidationResult:
     passed: bool
@@ -42,6 +80,11 @@ class ValidationResult:
     checks_failed: list[str]
     flags: dict[str, bool] = field(default_factory=dict)
     severity: str = "pass"
+    # Suggested recovery path when ``severity == "fail"``. One of:
+    # ``retry_retrieval_with_stricter_constraints`` |
+    # ``rebuild_evidence_bundles`` | ``render_limitation_message`` |
+    # ``fall_back_to_clarification``. ``None`` for soft / passing results.
+    repair_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +94,7 @@ class ValidationResult:
             "checks_passed": list(self.checks_passed),
             "checks_failed": list(self.checks_failed),
             "flags": dict(self.flags),
+            "repair_path": self.repair_path,
         }
 
 
@@ -61,6 +105,46 @@ _CONTRAST_CUES = re.compile(
 _CAUSAL_CUES = re.compile(
     r"\b(because|so that|therefore|thus|by |in order to|why )\b",
     re.IGNORECASE,
+)
+
+
+# Section / heading markers that belong to the four-block Course Answer
+# layout and must NOT appear inside quiz / summary output.
+_QUIZ_FORBIDDEN_HEADINGS: tuple[str, ...] = (
+    "### Direct Answer",
+    "### Explanation",
+    "### Example / Intuition",
+    "### Why it matters",
+    "Course Answer:",
+)
+_SUMMARY_FORBIDDEN_HEADINGS: tuple[str, ...] = (
+    "### Direct Answer",
+    "### Explanation",
+    "Course Answer:",
+)
+
+
+# Filler patterns the renderer is supposed to suppress. Mirrors
+# ``answer_generation._GENERIC_FILLER_PATTERNS`` but kept inline here so the
+# validator doesn't import the renderer module.
+_GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"you[\u2019']ll keep running into", re.IGNORECASE),
+    re.compile(r"you will keep running into", re.IGNORECASE),
+    re.compile(r"this topic connects to", re.IGNORECASE),
+    re.compile(r"solid intuition here makes the next topics", re.IGNORECASE),
+    re.compile(r"notation and vocabulary pay off later", re.IGNORECASE),
+)
+
+
+# Phrases the compare renderer emits when one bundle has thin / no evidence.
+# Used by ``must_have_each_side_evidence_or_note`` to confirm the renderer
+# already surfaced the gap before we hard-fail.
+_COMPARE_LIMITATION_PHRASES: tuple[str, ...] = (
+    "limited direct material",
+    "evidence support is thin",
+    "evidence notes",
+    "no scoped line in retrieved notes",
+    "limited evidence in retrieved chunks",
 )
 
 
@@ -286,6 +370,222 @@ def _direct_answer_text(plan: AnswerPlan) -> str:
     return (plan.direct_answer or "").strip()
 
 
+def _compare_entity_labels(sq: StructuredQuery, kb: ConceptKB) -> list[str]:
+    """Best-effort list of compared entity labels for compare / compare_multi.
+
+    Pulls from ``intent.compare_entities`` first (preserves original
+    casing), then falls back to ``intent.compare_concepts`` and KB lookups
+    by ``concept_ids``. Empty list when nothing nameable is available.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str | None) -> None:
+        if not raw:
+            return
+        clean = str(raw).strip()
+        if not clean:
+            return
+        key = clean.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(clean)
+
+    for ent in sq.intent.compare_entities or []:
+        _add(ent)
+    if sq.intent.compare_concepts:
+        for ent in sq.intent.compare_concepts:
+            _add(ent)
+    for cid in sq.concept_ids or []:
+        meta = kb.get_concept_by_id(cid)
+        if meta:
+            _add(meta.name)
+        else:
+            _add(cid)
+    return out
+
+
+def _must_match_quiz_contract(answer: str, plan: AnswerPlan) -> bool:
+    """Quiz output must use quiz layout (no Course Answer headings).
+
+    Skipped when ``plan.answer_mode != "teaching_plus_check"``. The header
+    check is lenient — early empty-evidence fallback messages also start
+    with ``Quiz:`` (the renderer emits the header even when no questions
+    were built), so we only require the absence of Course-Answer scaffolding.
+    """
+    if plan.answer_mode != "teaching_plus_check":
+        return True
+    body = (answer or "").strip()
+    if not body:
+        return True
+    for marker in _QUIZ_FORBIDDEN_HEADINGS:
+        if marker in body:
+            return False
+    return True
+
+
+def _must_match_summary_contract(answer: str, plan: AnswerPlan) -> bool:
+    """Summary output must use summary layout (no Course Answer scaffolding)."""
+    if plan.answer_mode != "lecture_summary":
+        return True
+    body = (answer or "").strip()
+    if not body:
+        return True
+    for marker in _SUMMARY_FORBIDDEN_HEADINGS:
+        if marker in body:
+            return False
+    return True
+
+
+def _must_match_compare_contract(answer: str, sq: StructuredQuery, kb: ConceptKB) -> bool:
+    """Compare answers must mention every compared entity label.
+
+    Promotes the existing soft ``must_cover_both_sides`` rule into a
+    critical contract for compare / compare_multi. ``compare_multi``
+    requires hits on at least 2 of the named entities (matches the
+    existing ``must_cover_compare_multi`` behaviour) so a missing fourth
+    entity is a soft warn rather than a hard fail.
+    """
+    if sq.answer_intent not in ("compare", "compare_multi"):
+        return True
+    labels = _compare_entity_labels(sq, kb)
+    if len(labels) < 2:
+        # Nothing nameable to enforce — let upstream contract handle it.
+        return True
+    al = (answer or "").lower()
+    if sq.answer_intent == "compare":
+        return _mentions_term(al, labels[0]) and _mentions_term(al, labels[1])
+    hits = sum(1 for label in labels if _mentions_term(al, label))
+    return hits >= 2
+
+
+def _normalize_line_for_dup(line: str) -> str:
+    return re.sub(r"\s+", " ", (line or "")).strip().lower()
+
+
+def _must_have_distinct_compare_evidence(plan: AnswerPlan, sq: StructuredQuery) -> bool:
+    """Two-way compare bundles must not share their leading core lines verbatim.
+
+    Checks the first three core lines of each side after whitespace + case
+    normalization. Identical sets indicate the V2 builder didn't separate
+    Concept A from Concept B (a common symptom of retrieval contamination
+    or a bundle assembly bug).
+    """
+    if sq.answer_intent != "compare":
+        return True
+    bundles = list(plan.evidence_bundles.values())
+    if len(bundles) < 2:
+        return True
+    bundle_a, bundle_b = bundles[0], bundles[1]
+    lines_a = list(getattr(bundle_a, "core_lines", []) or [])
+    lines_b = list(getattr(bundle_b, "core_lines", []) or [])
+    if not lines_a or not lines_b:
+        # Empty side handled by ``must_have_each_side_evidence_or_note``.
+        return True
+    norm_a = {_normalize_line_for_dup(line) for line in lines_a[:3] if line}
+    norm_b = {_normalize_line_for_dup(line) for line in lines_b[:3] if line}
+    if not norm_a or not norm_b:
+        return True
+    return norm_a != norm_b
+
+
+def _must_have_each_side_evidence_or_note(
+    answer: str, plan: AnswerPlan, sq: StructuredQuery
+) -> bool:
+    """Either both compare bundles carry core lines, or the answer flags the gap.
+
+    The compare renderer already inserts ``Limited direct material …`` and
+    ``Evidence notes`` blocks when a bundle is empty. This validator just
+    enforces that the renderer actually surfaced the gap when one occurred.
+    """
+    if sq.answer_intent != "compare":
+        return True
+    bundles = list(plan.evidence_bundles.values())
+    if len(bundles) < 2:
+        return True
+    bundle_a, bundle_b = bundles[0], bundles[1]
+    lines_a = list(getattr(bundle_a, "core_lines", []) or [])
+    lines_b = list(getattr(bundle_b, "core_lines", []) or [])
+    if lines_a and lines_b:
+        return True
+    al = (answer or "").lower()
+    return any(phrase in al for phrase in _COMPARE_LIMITATION_PHRASES)
+
+
+def _bullet_lines_in_answer(answer: str) -> list[str]:
+    """Bullet rows (``- ``, ``* ``, ``\u2022 ``) that look like content lines."""
+    out: list[str] = []
+    for raw in (answer or "").split("\n"):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("- ", "* ", "\u2022 ")):
+            content = stripped[2:].strip()
+            # Skip ultra-short bullets (e.g. "- A)") that aren't real content.
+            if len(content) >= 6:
+                out.append(content)
+    return out
+
+
+def _heading_lines_in_answer(answer: str) -> list[str]:
+    out: list[str] = []
+    for raw in (answer or "").split("\n"):
+        stripped = raw.strip()
+        if stripped.startswith("### "):
+            out.append(stripped)
+    return out
+
+
+def _must_not_have_section_duplication(answer: str) -> bool:
+    """No identical ``###`` heading lines and no identical content bullets.
+
+    Repeated headings indicate the renderer accidentally emitted the same
+    section twice; repeated bullet lines indicate the explanation collator
+    didn't dedupe (regression for the legacy compare scaffold).
+    """
+    body = (answer or "").strip()
+    if not body:
+        return True
+    headings = _heading_lines_in_answer(body)
+    seen_h: set[str] = set()
+    for h in headings:
+        key = _normalize_line_for_dup(h)
+        if not key:
+            continue
+        if key in seen_h:
+            return False
+        seen_h.add(key)
+    bullets = _bullet_lines_in_answer(body)
+    seen_b: set[str] = set()
+    for line in bullets:
+        key = _normalize_line_for_dup(line)
+        if not key:
+            continue
+        if key in seen_b:
+            return False
+        seen_b.add(key)
+    return True
+
+
+def _has_generic_filler(answer: str, plan: AnswerPlan) -> bool:
+    """Soft signal: legacy filler phrasing in the closer / why-it-matters block.
+
+    Flips the new ``flags["generic_filler"]`` warn surface; never appears
+    in ``checks_failed``. We only flag when the planner *also* lacks
+    related-concept context — the renderer's grounded-closer path needs
+    related concepts to avoid the legacy generic copy. Empty
+    ``include_related_concepts`` AND a filler hit means the generic copy
+    leaked through.
+    """
+    if plan.include_related_concepts:
+        return False
+    body = (answer or "")
+    if not body:
+        return False
+    return any(p.search(body) for p in _GENERIC_FILLER_PATTERNS)
+
+
 def _must_direct_answer_mention_target_concept(
     plan: AnswerPlan, sq: StructuredQuery, kb: ConceptKB
 ) -> bool:
@@ -372,6 +672,24 @@ def validate_answer(
 
     run("must_respect_lecture_scope", _must_respect_lecture_scope(answer, plan, plns))
 
+    # ------------------------------------------------------------------
+    # Task 7 hardened contracts
+    # ------------------------------------------------------------------
+    run("must_match_quiz_contract", _must_match_quiz_contract(answer, plan))
+    run("must_match_summary_contract", _must_match_summary_contract(answer, plan))
+    if ai in ("compare", "compare_multi"):
+        run("must_match_compare_contract", _must_match_compare_contract(answer, sq, kb))
+    if ai == "compare":
+        run(
+            "must_have_distinct_compare_evidence",
+            _must_have_distinct_compare_evidence(plan, sq),
+        )
+        run(
+            "must_have_each_side_evidence_or_note",
+            _must_have_each_side_evidence_or_note(answer, plan, sq),
+        )
+    run("must_not_have_section_duplication", _must_not_have_section_duplication(answer))
+
     ambiguous_bleed = False
     if constraints is not None and ai in (
         "direct_definition",
@@ -384,10 +702,13 @@ def validate_answer(
         ambiguous_bleed = _has_ambiguous_concept_bleed(answer, constraints)
 
     if plan.direct_answer:
-        run(
-            "must_direct_answer_mention_target_concept",
-            _must_direct_answer_mention_target_concept(plan, sq, kb),
-        )
+        soft_ok = _must_direct_answer_mention_target_concept(plan, sq, kb)
+        run("must_direct_answer_mention_target_concept", soft_ok)
+        # Promote to a critical contract for direct_definition /
+        # multi_step_explanation only — these modes own a clearly target-
+        # bound direct answer. Other intents keep the legacy soft warn.
+        if ai in ("direct_definition", "multi_step_explanation"):
+            run("must_direct_answer_match_target", soft_ok)
 
     generic = len(answer) < 120 and not sq.concept_ids
     missing_side = False
@@ -396,8 +717,11 @@ def validate_answer(
     elif ai == "compare_multi":
         missing_side = not _must_cover_compare_multi(answer, sq)
 
+    generic_filler = _has_generic_filler(answer, plan)
+
     ok = len(failed) == 0
     severity = compute_validation_severity(failed)
+    repair_path = _select_repair_path(failed) if severity == "fail" else None
     return ValidationResult(
         passed=ok,
         checks_run=checks_run,
@@ -408,6 +732,8 @@ def validate_answer(
             "missing_comparison_side": missing_side,
             "out_of_scope": False,
             "ambiguous_concept_bleed": ambiguous_bleed,
+            "generic_filler": generic_filler,
         },
         severity=severity,
+        repair_path=repair_path,
     )

@@ -230,6 +230,11 @@ def forgot_password():
         body = {
             "message": "If an account exists for this email, a reset link has been sent.",
         }
+        if not user:
+            # Same JSON as success — do not log the submitted address (enumeration).
+            current_app.logger.info(
+                "forgot_password: no user row for that email; no reset email will be sent"
+            )
         if user:
             raw = secrets.token_urlsafe(32)
             PasswordResetToken.query.filter(
@@ -250,6 +255,12 @@ def forgot_password():
                 security_log("forgot_db_error", email=email)
             else:
                 email_result = send_password_reset_email(user.email, raw)
+                current_app.logger.info(
+                    "forgot_password: resend result=%s user_id=%s (sent=mail dispatched, "
+                    "skipped=missing RESEND_* or base URL, failed=Resend error — see log above)",
+                    email_result.name,
+                    user.id,
+                )
                 log_security_event("password_reset_requested", user_id=user.id, user_email=email)
                 if email_result == ResetEmailResult.FAILED:
                     security_log("forgot_email_failed", email=email)

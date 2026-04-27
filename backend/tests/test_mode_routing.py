@@ -89,6 +89,34 @@ def _seed_route_chunks(app) -> None:
                     sample_questions="[]",
                     sample_answer=None,
                 ),
+                LectureChunk(
+                    chunk_key="route-cnn-1",
+                    lecture_number=15,
+                    topic="CNN — Core Idea",
+                    keywords=json.dumps(["cnn", "convolution", "kernel"]),
+                    source_excerpt=(
+                        "A CNN slides convolutional kernels across the input to extract spatial features."
+                    ),
+                    clean_explanation=(
+                        "A CNN slides convolutional kernels across the input to extract spatial features."
+                    ),
+                    sample_questions=json.dumps(["What does a CNN do?"]),
+                    sample_answer="Extract spatial features with shared kernels.",
+                ),
+                LectureChunk(
+                    chunk_key="route-mlp-1",
+                    lecture_number=15,
+                    topic="MLP — Core Idea",
+                    keywords=json.dumps(["mlp", "feedforward", "fully connected"]),
+                    source_excerpt=(
+                        "An MLP is a fully connected feedforward network of dense layers."
+                    ),
+                    clean_explanation=(
+                        "An MLP is a fully connected feedforward network of dense layers."
+                    ),
+                    sample_questions=json.dumps(["What is an MLP?"]),
+                    sample_answer="A fully connected feedforward network.",
+                ),
             ]
         )
         db.session.commit()
@@ -196,3 +224,27 @@ def test_compare_mode_uses_compare_renderer(client, app):
         or "in one line:" in answer
         or "### Compared architectures" in answer
     ), f"compare output missing compare-renderer markers: {answer[:400]}"
+
+
+def test_compare_cnn_and_mlp_mentions_both_entities(client, app):
+    """Regression for the ``must_match_compare_contract`` validator pass case.
+
+    A real ``Compare CNN and MLP`` query must surface both entity labels in
+    the rendered answer — that's the contract the new mode-contract
+    validator enforces. Locks the orchestrator + compare renderer down to
+    that behavior so future edits don't drop one of the two entities.
+    """
+    _login(client, "route-cnn-mlp@test.dev")
+    _seed_route_chunks(app)
+    sid = _open_chat_session(client)
+    body = _post_chat(
+        client,
+        sid,
+        "Compare CNN and MLP",
+        mode_override="compare",
+    )
+
+    assert body["mode"]["effective"] == "compare"
+    answer = body["answer"]
+    assert "CNN" in answer, f"compare output missing 'CNN': {answer[:400]}"
+    assert "MLP" in answer, f"compare output missing 'MLP': {answer[:400]}"

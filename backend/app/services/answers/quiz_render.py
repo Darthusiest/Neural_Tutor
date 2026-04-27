@@ -238,11 +238,18 @@ def format_quiz_markdown(
     header = _quiz_header(structured_query, evidence)
 
     if not evidence:
+        # Lazy import to avoid a circular import at module load time.
+        from app.services.answers.clarification import clarification_for_mode
+
+        clarify = clarification_for_mode(
+            structured_query.intent.original_query or "",
+            structured_query,
+            "quiz",
+        )
         return (
             f"{header}\n\n"
             "I couldn't pull enough course material to build a quiz on that.\n\n"
-            "Try a more specific term from the syllabus (e.g. softmax, MFCC, attention) "
-            "or a lecture number."
+            f"{clarify}"
         )
 
     rng = random.Random(structured_query.intent.original_query or header)

@@ -200,11 +200,17 @@ def _format_lecture_summary(
 ) -> str:
     ordered = _ordered_lecture_chunks(plan, all_chunks, lecture_number)
     if not ordered:
+        from app.services.answers.clarification import clarification_for_mode
+
+        clarify = clarification_for_mode(
+            structured_query.intent.original_query or "",
+            structured_query,
+            "summary",
+        )
         return (
             f"Summary: Lecture {lecture_number}\n\n"
             "I couldn't pull sections for that lecture from the notes.\n\n"
-            "Try a more specific question (e.g. a concept name from that lecture) or "
-            "double-check the lecture number."
+            f"{clarify}"
         )
 
     main_idea_source = (
@@ -350,10 +356,17 @@ def _format_topic_summary(
     topic_label, topic_terms = _topic_term_set(structured_query, kb)
     scoped = _topic_scoped_chunks(primary, topic_terms)
     if not scoped:
+        from app.services.answers.clarification import clarification_for_mode
+
+        clarify = clarification_for_mode(
+            structured_query.intent.original_query or "",
+            structured_query,
+            "summary",
+        )
         return (
             f"Summary: {topic_label}\n\n"
-            "I couldn't pull course material for that topic. Try a keyword from the "
-            "syllabus or name a specific concept."
+            "I couldn't pull course material for that topic.\n\n"
+            f"{clarify}"
         )
 
     main_idea_source = (

@@ -236,3 +236,44 @@ Heuristic outcome for the **previous** assistant message when the user sends a f
 | embedding_blob | BLOB nullable | float32 little-endian vector (`flask embed-chunks`) |
 
 Seed JSON may use `source_text` or `content`; the loader maps both to `source_excerpt` (see [`lecture_loader.py`](../app/services/lectures/lecture_loader.py)).
+
+## evaluation_runs
+
+One row per batch run of a static eval suite (e.g. `flask run-eval`). Aggregates for time-series and regression. ORM: [`EvaluationRun`](../app/models/evaluation.py).
+
+| Column | Type | Notes |
+|--------|------|--------|
+| id | Integer PK | |
+| run_name | String(256) | e.g. CI label or `default` |
+| git_commit | String(64) nullable, indexed | `git rev-parse HEAD` when available |
+| branch_name | String(256) nullable | |
+| created_at | DateTime, indexed | server default now |
+| dataset_name | String(256), indexed | e.g. `l487_eval_suite` from JSON `name` + version |
+| total_cases | Integer | |
+| passed_cases | Integer | |
+| failed_cases | Integer | |
+| overall_score | Float nullable | mean case score 0..1 |
+| notes_json | Text nullable | free-form JSON (CLI metadata) |
+
+## evaluation_case_results
+
+Per test case in a run. ORM: [`EvaluationCaseResult`](../app/models/evaluation.py). Unique on `(evaluation_run_id, test_id)`.
+
+| Column | Type | Notes |
+|--------|------|--------|
+| id | Integer PK | |
+| evaluation_run_id | FK → evaluation_runs.id CASCADE | |
+| test_id | String(256) | matches suite `id` |
+| query_text | Text | user query string (not `query` — reserved on ORM) |
+| expected_mode | String(32) nullable | |
+| detected_mode | String(32) nullable | from mode routing |
+| effective_mode | String(32) nullable | |
+| expected_behavior_json | Text nullable | suite constraints (`must_include`, `expected_mode`, `category`, `error_tags`, etc.); `flask run-eval` persists the suite case fields except `id`, `query`, and `note` |
+| actual_response | Text nullable | `course_answer` from pipeline |
+| pass_bool | Boolean | |
+| score | Float nullable | 0..1 |
+| error_categories_json | Text nullable | JSON list of canonical failure tags (failed cases only; passes store `[]`). Vocabulary: `mode_misclassification`, `mode_routing_failure`, `retrieval_leakage`, `forbidden_topic_leakage`, `missing_required_concept`, `wrong_direct_answer`, `compare_entity_collapse`, `compare_asymmetry`, `summary_generic`, `summary_wrong_scope`, `quiz_not_rendered`, `clarification_missing`, `duplicated_content`, `scaffold_leakage`, `generic_filler`, `validation_missed_error` — see `ERROR_CATEGORY_TAGS` in [`eval_run.py`](../app/services/eval_run.py). |
+| validation_failures_json | Text nullable | `ValidationResult` dict or subset |
+| retrieval_chunk_ids_json | Text nullable | JSON list of chunk ids |
+| latency_ms | Integer nullable | |
+| created_at | DateTime | server default now |

@@ -135,6 +135,32 @@ def _shared_lines_from_bundles(
     return out
 
 
+def _compare_clarification_fallback(
+    structured_query: StructuredQuery,
+    left_bundle: ConceptEvidenceBundle | ConceptEvidenceBundleV2,
+    right_bundle: ConceptEvidenceBundle | ConceptEvidenceBundleV2,
+) -> str:
+    """Renderer-level fallback for the residual zero-chunk compare case.
+
+    Used when retrieval returned chunks but neither bundle carries usable
+    chunk ids or core lines. Emits the same mode-aware clarification copy
+    as the orchestrator pre-check so users see consistent wording, with a
+    one-line preface naming the two requested entities.
+    """
+    from app.services.answers.clarification import clarification_for_mode
+
+    clarify = clarification_for_mode(
+        structured_query.intent.original_query or "",
+        structured_query,
+        "compare",
+    )
+    return (
+        f"Compare: {left_bundle.label} vs {right_bundle.label}\n\n"
+        "I couldn't pull enough course material to compare those two side-by-side.\n\n"
+        f"{clarify}"
+    )
+
+
 def format_two_entity_compare_markdown(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
@@ -158,11 +184,20 @@ def format_two_entity_compare_markdown(
        :attr:`ConceptEvidenceBundleV2.shared_lines` clearing
        :data:`COMPARE_SHARED_MIN_SUPPORT`).
     """
-    _ = structured_query  # reserved for future constraint-aware formatting
     kb = kb or get_kb()
     chunks_by_id = {c.get("id"): c for c in all_chunks if c.get("id") is not None}
     left_chunks = [chunks_by_id[i] for i in left_bundle.chunk_ids if i in chunks_by_id]
     right_chunks = [chunks_by_id[i] for i in right_bundle.chunk_ids if i in chunks_by_id]
+
+    # Residual zero-chunk compare case: retrieval returned chunks but neither
+    # bundle carries scope-able evidence. Emit a clarification rather than
+    # the empty Course Answer scaffold.
+    left_core = list(getattr(left_bundle, "core_lines", []) or [])
+    right_core = list(getattr(right_bundle, "core_lines", []) or [])
+    if not left_chunks and not right_chunks and not left_core and not right_core:
+        return _compare_clarification_fallback(
+            structured_query, left_bundle, right_bundle
+        )
 
     forbidden_for_left = _resolve_forbidden_terms_for_entity(
         plan, "side_a", left_bundle.concept_id, right_bundle.concept_id, kb

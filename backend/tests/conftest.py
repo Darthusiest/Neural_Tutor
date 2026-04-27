@@ -5,6 +5,7 @@ import pytest
 from app import create_app
 from app.config import TestConfig
 from app.extensions import db
+from app.models import EvaluationCaseResult, EvaluationRun  # noqa: F401 - tables for create_all
 
 
 @pytest.fixture

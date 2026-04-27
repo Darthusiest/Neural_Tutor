@@ -10,6 +10,7 @@ from flask import current_app
 from app.services.answers.answer_generation import generate_structured_answer
 from app.services.answers.answer_planning import AnswerPlan, build_answer_plan
 from app.services.answers.answer_validation import ValidationResult, validate_answer
+from app.services.answers.clarification import clarification_for_mode
 from app.services.answers.concept_constraints import (
     ConceptConstraints,
     apply_concept_constraints,
@@ -173,6 +174,31 @@ def run_reasoning_pipeline(
 
     if used_llm and validation.severity == "fail":
         course_answer = generate_structured_answer(plan, constrained_chunks, sq)
+        primary_model = "rule_based"
+        used_llm = False
+        primary_llm_usage = {}
+        validation = validate_answer(
+            course_answer,
+            sq,
+            plan,
+            primary_chunk_lecture_numbers=pl_lectures,
+            kb=kb,
+            constraints=constraints,
+        )
+
+    # Task 7 — single repair-path branch: when the failing answer can't be
+    # rescued by retrieval retry (mode-contract violations are the canonical
+    # case), short-circuit to a mode-aware clarification rather than ship a
+    # broken answer. Other repair paths surface in ``validation.repair_path``
+    # for diagnostics but the pipeline doesn't act on them yet.
+    if (
+        validation.severity == "fail"
+        and validation.repair_path == "fall_back_to_clarification"
+    ):
+        effective_mode = sq.effective_mode or (mode_routing or {}).get(
+            "effective_mode"
+        ) or "chat"
+        course_answer = clarification_for_mode(query, sq, effective_mode)
         primary_model = "rule_based"
         used_llm = False
         primary_llm_usage = {}
