@@ -10,7 +10,8 @@ export function ChatPage({ user }) {
   const [sessions, setSessions] = useState([])
   const [messages, setMessages] = useState([])
   const [boostEnabled, setBoostEnabled] = useState(false)
-  const [mode, setMode] = useState('auto')
+  const [overrideEnabled, setOverrideEnabled] = useState(false)
+  const [overrideMode, setOverrideMode] = useState('chat')
   const [lastModeRouting, setLastModeRouting] = useState(null)
   const [sending, setSending] = useState(false)
 
@@ -69,7 +70,7 @@ export function ChatPage({ user }) {
       method: 'POST',
       body: JSON.stringify({
         title: 'Study session',
-        mode,
+        mode: 'auto',
       }),
     })
     const sid = created.session.id
@@ -113,7 +114,7 @@ export function ChatPage({ user }) {
         method: 'POST',
         body: JSON.stringify({
           title: (text.slice(0, 48) || 'New chat').trim(),
-          mode,
+          mode: 'auto',
         }),
       })
       sid = created.session.id
@@ -132,10 +133,8 @@ export function ChatPage({ user }) {
         message: text,
         boost_toggle: boostEnabled,
       }
-      if (mode === 'auto') {
-        // Server detects from message; omit mode keys (optional contract).
-      } else {
-        chatPayload.mode_override = mode
+      if (overrideEnabled) {
+        chatPayload.mode_override = overrideMode
       }
       const data = await apiFetch('/api/chat', {
         method: 'POST',
@@ -171,8 +170,10 @@ export function ChatPage({ user }) {
         onBoostChange={setBoostEnabled}
         onSend={handleSend}
         sending={sending}
-        mode={mode}
-        onModeChange={setMode}
+        overrideEnabled={overrideEnabled}
+        onOverrideEnabledChange={setOverrideEnabled}
+        overrideMode={overrideMode}
+        onOverrideModeChange={setOverrideMode}
         lastModeRouting={lastModeRouting}
         ensureSession={ensureSession}
         onRefreshAfterStudy={refreshAfterStudy}

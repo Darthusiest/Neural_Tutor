@@ -151,6 +151,107 @@ class TestRuleBasedTutorFormat:
             assert "The key idea:" in text
             assert "Think of it this way:" not in text
 
+    def test_chat_mode_drops_legacy_section_labels(self, corpus, app):
+        """Output must not contain any of the legacy section labels (Task 8)."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("How does backpropagation work?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
+            for forbidden in (
+                "### Direct Answer",
+                "### Explanation",
+                "### Example / Intuition",
+                "### Why it matters",
+                "Direct Answer",
+                "Example / Intuition",
+                "Why it matters",
+            ):
+                assert forbidden not in text, f"chat output unexpectedly contains '{forbidden}'"
+            # The only explicit label kept in chat output is "The key idea:".
+            assert "The key idea:" in text
+
+    def test_chat_mode_natural_paragraph_flow(self, corpus, app):
+        """Chat output reads as short paragraphs, not bullet spam or dense blocks (Task 4 + 8)."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("How does backpropagation work?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
+            # No bullet markers in chat-mode tutor output.
+            content_lines = [ln for ln in text.split("\n") if ln.strip() and ln.strip() != "Course Answer:"]
+            for line in content_lines:
+                assert not line.lstrip().startswith(("- ", "* ", "• ")), (
+                    f"chat output unexpectedly contains a bullet: {line!r}"
+                )
+            # Paragraphs are visually separated: at least one blank line in the body.
+            assert "\n\n" in text
+            # Closer flows with causal language so it doesn't read like a data dump.
+            assert "That matters because" in text
+
+    def test_chat_mode_softmax_example_and_no_repeated_lines(self, corpus, app):
+        """Softmax-specific: bracketed example, probability framing, key idea, no duplicates (Task 8)."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
+            assert "The key idea:" in text
+            # Probability framing (Softmax → probabilities) — case-insensitive.
+            lowered = text.lower()
+            assert "probabilit" in lowered, (
+                "softmax answer must mention probabilities to ground the explanation"
+            )
+            # Bracketed numeric example like "[2,5]" or "[2, 5]" should appear when
+            # the corpus carries it. The fixture corpus does, so this is locked in.
+            assert "[2," in text, "expected a bracketed numeric example like [2,5]"
+            # No repeated content lines (paragraph dedupe + sentence dedupe in renderer).
+            normalized = [
+                " ".join(ln.lower().split()).rstrip(".!?:—-")
+                for ln in text.split("\n")
+                if ln.strip()
+            ]
+            assert len(normalized) == len(set(normalized)), (
+                "tutor output should not repeat any non-empty line verbatim"
+            )
+
+    def test_chat_mode_skips_example_block_when_no_concrete_example(self, corpus, app):
+        """Task 6: when no good example exists the example block is skipped, not forced."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is softmax?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced("What is softmax?", top_k=5)
+            # Strip example data off every chunk so _example_intuition_block falls back.
+            stripped = []
+            for chunk in r.chunks:
+                copy = dict(chunk)
+                copy["sample_answer"] = ""
+                copy["sample_questions"] = ""
+                copy["source_excerpt"] = ""
+                stripped.append(copy)
+            plan = build_answer_plan(sq, stripped, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, stripped, sq)
+            assert "Think of it this way:" not in text, (
+                "renderer should not force an example block when no concrete example is available"
+            )
+            assert "Think of the explanation above as the core picture" not in text
+            assert "The key idea:" in text
+
     def test_chat_mode_repeat_explanation_keeps_legacy_layout(self, corpus, app):
         """Structured-explanation constraints keep the legacy section layout."""
         with app.app_context():

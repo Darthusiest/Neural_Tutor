@@ -10,6 +10,27 @@ The output is **distinct from** the standard four-block Course Answer
 ``### Why it matters``). Summary mode uses its own headings so the test
 ``summary query uses summary renderer`` and the broader rule "summary mode
 must use a dedicated summary renderer" can be enforced structurally.
+
+Lecture-scoped layout (``Summary: Lecture N``):
+
+- **Main idea** — single-sentence lecture overview drawn from the strongest
+  retrieved chunk.
+- **Key topics** — up to 6 deduped section heading prefixes (one bullet each).
+- **How the topics connect** — concept-family or related-lecture sentence.
+- **Study focus** — 1–2 bullets pointing at what to re-read / restate.
+
+Topic-scoped layout (``Summary: <topic>``):
+
+- **Core idea** — first sentence of the strongest topic-filtered chunk.
+- **Key points** — up to 4 ``- **<head>:** <sentence>`` bullets from distinct
+  topic heads, only from chunks that mention the target topic or one of its
+  KB aliases.
+- **Study focus** — single restate-without-slides bullet.
+
+Topic scope filters chunks down to those that mention the target topic (or
+one of its KB aliases) somewhere in ``topic`` / ``keywords`` /
+``clean_explanation``, so unrelated nearby concepts (e.g. formants surfacing
+under a "Recap of MFCCs" query) are dropped before rendering.
 """
 
 from __future__ import annotations
@@ -18,6 +39,7 @@ import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.domain_knowledge import (
     get_concept_family_for_lecture,
     get_related_lectures,
@@ -81,6 +103,24 @@ def _topic_label(structured_query: StructuredQuery, fallback_chunks: list[dict[s
 # Lecture-scoped summary
 # ---------------------------------------------------------------------------
 
+def _lecture_chunk_sort_key(chunk: dict[str, Any]) -> tuple[int, int]:
+    """Stable order for lecture-filtered chunks.
+
+    Prefers an explicit ordering field on the chunk dict (``chunk_order`` /
+    ``position`` / ``order``) when present so future schema additions feed
+    through naturally; otherwise falls back to ``id`` ascending. The
+    ``LectureChunk`` ORM does not currently carry an order column, so the
+    metadata branch is forward-compatible only.
+    """
+    for key in ("chunk_order", "position", "order"):
+        raw = chunk.get(key)
+        if isinstance(raw, int):
+            return (0, raw)
+        if isinstance(raw, str) and raw.isdigit():
+            return (0, int(raw))
+    return (1, int(chunk.get("id") or 0))
+
+
 def _ordered_lecture_chunks(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
@@ -88,8 +128,10 @@ def _ordered_lecture_chunks(
 ) -> list[dict[str, Any]]:
     """Lecture-filtered chunks, plan-primary-first then any remaining lecture chunks.
 
-    Order is preserved by ``id`` to mirror lecture order; primary chunks come first
-    so that the renderer's "Main idea" anchor stays close to what retrieval ranked top.
+    Order is preserved by ``chunk_order`` / ``position`` / ``order`` metadata
+    when available, falling back to ``id`` ascending. Primary chunks come
+    first so that the renderer's "Main idea" anchor stays close to what
+    retrieval ranked top.
     """
     in_lecture = [
         c for c in all_chunks
@@ -102,7 +144,7 @@ def _ordered_lecture_chunks(
     primary_in_lecture = [c for c in chunks_by_ids(in_lecture, primary_ids) if c.get("id") is not None]
     remainder = sorted(
         (c for c in in_lecture if c.get("id") not in primary_set),
-        key=lambda c: c.get("id") or 0,
+        key=_lecture_chunk_sort_key,
     )
     return primary_in_lecture + remainder
 
@@ -132,7 +174,7 @@ def _connect_sentence(lecture_number: int, key_topics: list[str]) -> str:
 
 
 def _study_focus_lines(key_topics: list[str]) -> list[str]:
-    """Concept-specific study suggestions (2 bullets, no boilerplate filler)."""
+    """Concept-specific study suggestions (1–2 bullets, no boilerplate filler)."""
     out: list[str] = []
     if key_topics:
         out.append(f"Re-read the section on **{key_topics[0]}** before the next lecture.")
@@ -147,7 +189,7 @@ def _study_focus_lines(key_topics: list[str]) -> list[str]:
         )
     if not out:
         out.append("Pick one heading above and try to teach it back from memory.")
-    return out
+    return out[:2]
 
 
 def _format_lecture_summary(
@@ -215,32 +257,115 @@ def _format_lecture_summary(
 # Topic-scoped summary
 # ---------------------------------------------------------------------------
 
+def _topic_term_set(structured_query: StructuredQuery, kb: ConceptKB) -> tuple[str, list[str]]:
+    """Return ``(label, terms)`` for the topic — KB aliases when available, else label tokens.
+
+    ``label`` is the canonical display string (used in ``Summary: <label>``).
+    ``terms`` is a lowercased list used to match chunks; the returned terms
+    always include the label itself (lowercased) so that a chunk whose ``topic``
+    contains the user-typed string still passes the filter when KB lookup
+    fails (e.g. user typed an unindexed surface form).
+    """
+    intent = structured_query.intent
+    label = ""
+    terms: list[str] = []
+    if intent.detected_concepts:
+        label = str(intent.detected_concepts[0]).strip()
+    elif intent.original_query:
+        label = intent.original_query.strip()[:60]
+
+    seen: set[str] = set()
+
+    def _add(term: str | None) -> None:
+        if not term:
+            return
+        clean = term.strip().lower()
+        if not clean or len(clean) < 2 or clean in seen:
+            return
+        seen.add(clean)
+        terms.append(clean)
+
+    _add(label)
+    # KB lookup by detected concept (handles canonical names / aliases).
+    if intent.detected_concepts:
+        meta = kb.get_concept(intent.detected_concepts[0])
+        if meta:
+            label = meta.name or label
+            _add(meta.name)
+            for alias in meta.aliases[:12]:
+                _add(alias)
+    # Fall back to any concept_ids the structured query already resolved.
+    for cid in structured_query.concept_ids[:2]:
+        meta = kb.get_concept_by_id(cid)
+        if meta:
+            if not label:
+                label = meta.name
+            _add(meta.name)
+            for alias in meta.aliases[:12]:
+                _add(alias)
+
+    if not label:
+        label = "course topic"
+    return label, terms
+
+
+def _chunk_blob_for_topic_filter(chunk: dict[str, Any]) -> str:
+    parts = [
+        str(chunk.get("topic", "")),
+        str(chunk.get("keywords", "")),
+        str(chunk.get("clean_explanation", "")),
+    ]
+    return " ".join(parts).lower()
+
+
+def _term_appears(term: str, blob: str) -> bool:
+    if len(term) < 2:
+        return False
+    if " " in term:
+        return term in blob
+    return re.search(r"\b" + re.escape(term) + r"\b", blob) is not None
+
+
+def _topic_scoped_chunks(
+    primary: list[dict[str, Any]], topic_terms: list[str]
+) -> list[dict[str, Any]]:
+    """Keep only chunks whose searchable blob contains at least one topic term."""
+    if not topic_terms:
+        return list(primary)
+    out: list[dict[str, Any]] = []
+    for chunk in primary:
+        blob = _chunk_blob_for_topic_filter(chunk)
+        if any(_term_appears(t, blob) for t in topic_terms):
+            out.append(chunk)
+    return out
+
+
 def _format_topic_summary(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
     structured_query: StructuredQuery,
+    kb: ConceptKB,
 ) -> str:
-    primary = chunks_by_ids(all_chunks, list(plan.primary_chunk_ids or [])) or list(all_chunks)[:6]
-    if not primary:
-        topic = _topic_label(structured_query, [])
+    primary = chunks_by_ids(all_chunks, list(plan.primary_chunk_ids or [])) or list(all_chunks)[:8]
+    topic_label, topic_terms = _topic_term_set(structured_query, kb)
+    scoped = _topic_scoped_chunks(primary, topic_terms)
+    if not scoped:
         return (
-            f"Summary: {topic}\n\n"
+            f"Summary: {topic_label}\n\n"
             "I couldn't pull course material for that topic. Try a keyword from the "
             "syllabus or name a specific concept."
         )
 
-    topic_label = _topic_label(structured_query, primary)
-
     main_idea_source = (
-        primary[0].get("clean_explanation") or primary[0].get("source_excerpt") or ""
+        scoped[0].get("clean_explanation") or scoped[0].get("source_excerpt") or ""
     )
-    main_idea = _first_sentence(main_idea_source) or _topic_head(primary[0].get("topic"))
-    if not main_idea:
-        main_idea = f"{topic_label} appears across the listed sections of the course notes."
+    core_idea = _first_sentence(main_idea_source) or _topic_head(scoped[0].get("topic"))
+    if not core_idea:
+        core_idea = f"{topic_label} appears across the listed sections of the course notes."
 
     key_points: list[str] = []
     seen_heads: set[str] = set()
-    for chunk in primary:
+    for chunk in scoped:
         head = _topic_head(chunk.get("topic"))
         head_key = head.lower()
         if not head or head_key in seen_heads:
@@ -259,9 +384,9 @@ def _format_topic_summary(
     parts: list[str] = [
         f"Summary: {topic_label}",
         "",
-        "### Main idea",
+        "### Core idea",
         "",
-        main_idea,
+        core_idea,
         "",
         "### Key points",
         "",
@@ -294,15 +419,18 @@ def format_summary_markdown(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
     structured_query: StructuredQuery,
+    kb: ConceptKB | None = None,
 ) -> str:
     """Return summary markdown driven by lecture vs topic scope.
 
     Lecture scope: ``len(intent.lecture_numbers) == 1`` -> lecture-scoped layout
     (Main idea / Key topics / How the topics connect / Study focus).
 
-    Topic scope: otherwise -> compact topic recap (Main idea / Key points / Study focus).
+    Topic scope: otherwise -> compact topic recap (Core idea / Key points /
+    Study focus). Chunks are filtered to those mentioning the target topic
+    or one of its KB aliases, so unrelated retrievals don't pollute the recap.
     """
     lecture_numbers = list(structured_query.intent.lecture_numbers or [])
     if len(lecture_numbers) == 1:
         return _format_lecture_summary(plan, all_chunks, structured_query, lecture_numbers[0])
-    return _format_topic_summary(plan, all_chunks, structured_query)
+    return _format_topic_summary(plan, all_chunks, structured_query, kb or get_kb())

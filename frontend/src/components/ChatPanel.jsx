@@ -2,14 +2,22 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api/client'
 import { MarkdownContent } from './MarkdownContent'
 
+function formatModeLabel(m) {
+  if (!m) return ''
+  const s = String(m)
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 export function ChatPanel({
   messages,
   boostEnabled,
   onBoostChange,
   onSend,
   sending,
-  mode,
-  onModeChange,
+  overrideEnabled,
+  onOverrideEnabledChange,
+  overrideMode,
+  onOverrideModeChange,
   lastModeRouting,
   ensureSession,
   onRefreshAfterStudy,
@@ -26,6 +34,12 @@ export function ChatPanel({
   const [summaryTopic, setSummaryTopic] = useState('')
   const [studyBusy, setStudyBusy] = useState(false)
 
+  const detected =
+    lastModeRouting?.detected ?? lastModeRouting?.detected_mode ?? null
+  const effective =
+    lastModeRouting?.effective ?? lastModeRouting?.effective_mode ?? null
+  const ambiguous = lastModeRouting?.ambiguous ?? lastModeRouting?.mode_ambiguous
+
   useEffect(() => {
     const id = requestAnimationFrame(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -35,7 +49,6 @@ export function ChatPanel({
 
   function handleSubmit(e) {
     e.preventDefault()
-    if (mode !== 'chat' && mode !== 'auto') return
     const fd = new FormData(e.target)
     const text = (fd.get('message') || '').trim()
     if (!text) return
@@ -140,33 +153,48 @@ export function ChatPanel({
     }
   }
 
+  const showBoost = !overrideEnabled || overrideMode === 'chat'
+
   return (
     <section className="chat-panel">
       <div className="chat-toolbar">
-        <label>
-          Mode{' '}
-          <select
-            value={mode}
-            onChange={(e) => onModeChange(e.target.value)}
+        <label className="mode-override-toggle">
+          <input
+            type="checkbox"
+            checked={overrideEnabled}
+            onChange={(e) => onOverrideEnabledChange(e.target.checked)}
             disabled={sending || studyBusy}
-          >
-            <option value="auto">Auto (detect)</option>
-            <option value="chat">Chat</option>
-            <option value="quiz">Quiz</option>
-            <option value="compare">Compare</option>
-            <option value="summary">Summary</option>
-          </select>
+          />
+          Override detected mode
         </label>
-        {mode === 'auto' &&
-        (lastModeRouting?.effective ?? lastModeRouting?.effective_mode) ? (
-          <span className="muted mode-detected-hint" title="Last reply routing from the server">
-            → {lastModeRouting.effective ?? lastModeRouting.effective_mode}
-            {(lastModeRouting.ambiguous ?? lastModeRouting.mode_ambiguous)
-              ? ' (ambiguous)'
-              : ''}
+        {overrideEnabled ? (
+          <label>
+            Mode{' '}
+            <select
+              value={overrideMode}
+              onChange={(e) => onOverrideModeChange(e.target.value)}
+              disabled={sending || studyBusy}
+            >
+              <option value="chat">Chat</option>
+              <option value="quiz">Quiz</option>
+              <option value="compare">Compare</option>
+              <option value="summary">Summary</option>
+            </select>
+          </label>
+        ) : null}
+        {!overrideEnabled && effective ? (
+          <span
+            className="muted mode-detected-hint"
+            title="Routing from your last assistant reply"
+          >
+            Detected mode: {formatModeLabel(detected || effective)}
+            {detected && effective && detected !== effective
+              ? ` · Effective: ${formatModeLabel(effective)}`
+              : null}
+            {ambiguous ? ' (ambiguous)' : ''}
           </span>
         ) : null}
-        {mode === 'chat' || mode === 'auto' ? (
+        {showBoost ? (
           <label className="boost-toggle">
             <input
               type="checkbox"
@@ -178,7 +206,8 @@ export function ChatPanel({
         ) : null}
       </div>
 
-      {mode === 'quiz' ? (
+      <details className="study-tools">
+        <summary>Study tools (dedicated quiz, compare, summary)</summary>
         <div className="study-panel">
           <p className="muted">
             One question at a time. After you answer, you&apos;ll see the course-grounded
@@ -231,9 +260,7 @@ export function ChatPanel({
             </div>
           ) : null}
         </div>
-      ) : null}
 
-      {mode === 'compare' ? (
         <form className="study-panel compare-form" onSubmit={submitCompare}>
           <p className="muted">Compare two course concepts. Retrieval uses lecture chunks first.</p>
           <input
@@ -260,9 +287,7 @@ export function ChatPanel({
             Compare
           </button>
         </form>
-      ) : null}
 
-      {mode === 'summary' ? (
         <form className="study-panel" onSubmit={submitSummary}>
           <p className="muted">Summaries are built only from retrieved lecture sections.</p>
           <label>
@@ -302,14 +327,14 @@ export function ChatPanel({
             Get summary
           </button>
         </form>
-      ) : null}
+      </details>
 
       <div className="messages">
         {messages.length === 0 ? (
           <p className="muted">
-            {mode === 'chat' || mode === 'auto'
-              ? 'Ask a question about LING 487 course material.'
-              : 'Use the controls above, or switch to Auto or Chat for free-form questions.'}
+            Ask a question about LING 487 course material. By default the server picks the best mode
+            from your message; turn on &quot;Override detected mode&quot; to force Chat, Quiz,
+            Compare, or Summary for the main composer.
           </p>
         ) : (
           messages.map((m) => <MessageBlock key={m.id} m={m} />)
@@ -317,14 +342,12 @@ export function ChatPanel({
         <div ref={messagesEndRef} className="messages-end" aria-hidden="true" />
       </div>
 
-      {mode === 'chat' || mode === 'auto' ? (
-        <form className="composer" onSubmit={handleSubmit}>
-          <input name="message" placeholder="Message…" autoComplete="off" />
-          <button type="submit" disabled={sending}>
-            Send
-          </button>
-        </form>
-      ) : null}
+      <form className="composer" onSubmit={handleSubmit}>
+        <input name="message" placeholder="Message…" autoComplete="off" />
+        <button type="submit" disabled={sending}>
+          Send
+        </button>
+      </form>
     </section>
   )
 }

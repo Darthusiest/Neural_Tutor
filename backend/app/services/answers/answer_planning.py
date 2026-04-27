@@ -10,8 +10,10 @@ from flask import has_app_context
 
 from app.services.answers.entity_retrieval import (
     ConceptEvidenceBundle,
-    build_bundles_for_compare,
-    build_bundles_multi,
+    ConceptEvidenceBundleV2,
+    EvidenceBundleLike,
+    build_bundles_for_compare_v2,
+    build_bundles_multi_v2,
     score_chunk_for_entity,
 )
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
@@ -63,7 +65,10 @@ class AnswerPlan:
     comparison_axes: list[str]
     lecture_scope: list[int]
     section_specs: list[SectionSpec] = field(default_factory=list)
-    evidence_bundles: dict[str, ConceptEvidenceBundle] = field(default_factory=dict)
+    # Either V1 (legacy) or V2 bundles. V2 is canonical for compare mode going
+    # forward; V1 still appears in older test fixtures and external callers.
+    # Both expose ``concept_id`` / ``label`` / ``chunk_ids`` / ``gap_flags``.
+    evidence_bundles: dict[str, EvidenceBundleLike] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,11 +287,11 @@ def build_answer_plan(
                     related_names.append(rc_meta.name)
 
     section_specs: list[SectionSpec] = []
-    evidence_bundles: dict[str, ConceptEvidenceBundle] = {}
+    evidence_bundles: dict[str, EvidenceBundleLike] = {}
 
     # --- Multi-entity compare (3+) ---
     if mode == "compare_multi" and len(sq.concept_ids) >= 2:
-        bundles = build_bundles_multi(chunks, sq.concept_ids[:8], kb, top_per_entity=3)
+        bundles = build_bundles_multi_v2(chunks, sq.concept_ids[:8], kb, top_per_entity=3)
         for b in bundles:
             evidence_bundles[b.concept_id] = b
         sections: list[AnswerSection] = []
@@ -323,7 +328,7 @@ def build_answer_plan(
     # --- Two-way compare with isolated evidence pools ---
     if mode == "compare" and len(sq.concept_ids) >= 2:
         ca_id, cb_id = sq.concept_ids[0], sq.concept_ids[1]
-        bundle_a, bundle_b = build_bundles_for_compare(chunks, ca_id, cb_id, kb)
+        bundle_a, bundle_b = build_bundles_for_compare_v2(chunks, ca_id, cb_id, kb)
         evidence_bundles[ca_id] = bundle_a
         evidence_bundles[cb_id] = bundle_b
 

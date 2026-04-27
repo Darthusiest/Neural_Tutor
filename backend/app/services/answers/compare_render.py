@@ -5,7 +5,12 @@ Two entry points:
 - ``format_multi_entity_compare_markdown`` — three or more concepts; uses a table plus notes.
 
 Both use per-entity chunk pools and :mod:`compare_evidence` so lines are scoped and
-cross-topic leakage is reduced before text is shown to the student.
+cross-topic leakage is reduced before text is shown to the student. When the
+caller passes a V2 bundle (``ConceptEvidenceBundleV2``) the renderer reads
+``core_lines`` / ``shared_lines`` directly off the bundle instead of
+recomputing scoping. ``shared_lines`` (lines that scored well for both
+entities in the two-way compare) drive the optional ``### What they share``
+section.
 """
 
 from __future__ import annotations
@@ -19,9 +24,20 @@ from app.services.answers.compare_evidence import (
     scoped_lines_from_chunks,
     shorten_for_compare_cell,
 )
-from app.services.answers.entity_retrieval import ConceptEvidenceBundle, forbidden_terms_for_concept
+from app.services.answers.entity_retrieval import (
+    ConceptEvidenceBundle,
+    ConceptEvidenceBundleV2,
+    EvidenceBundleLike,
+    forbidden_terms_for_concept,
+)
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
+
+
+# Minimum support score the *weaker* bundle must reach before the rendered
+# output emits "### What they share". Keeps the section out when one side is
+# almost entirely lacking direct evidence (the shared note would be confusing).
+COMPARE_SHARED_MIN_SUPPORT = 0.25
 
 
 def _lookup_forbidden_terms_from_plan(
@@ -54,12 +70,77 @@ def _resolve_forbidden_terms_for_entity(
     return forbidden_terms_for_concept(entity_concept_id, [other_entity_concept_id], kb)
 
 
+def _scoped_lines_for_bundle(
+    bundle: EvidenceBundleLike,
+    *,
+    bundle_chunks: list[dict[str, Any]],
+    peer_concept_ids: list[str],
+    forbidden_override: list[str] | None,
+    kb: ConceptKB,
+    max_lines: int = 8,
+) -> tuple[list[str], bool]:
+    """Read ``core_lines`` from a V2 bundle, or fall back to recomputing for legacy bundles.
+
+    V2 bundles already carry the entity-pure ``core_lines`` produced by
+    :func:`build_bundles_for_compare_v2`, so the renderer doesn't need to
+    rerun the scoping pipeline. Legacy bundles (``ConceptEvidenceBundle``)
+    don't carry pre-extracted lines, so we still call
+    :func:`scoped_lines_from_chunks` for them.
+
+    Returns ``(lines, used_provisional_fallback)`` matching the existing
+    contract from :func:`scoped_lines_from_chunks`. V2 bundles never report
+    "provisional fallback" — line classification was deterministic.
+    """
+    if isinstance(bundle, ConceptEvidenceBundleV2) and bundle.core_lines:
+        return list(bundle.core_lines)[:max_lines], False
+    return scoped_lines_from_chunks(
+        bundle_chunks,
+        bundle.concept_id,
+        peer_concept_ids,
+        kb,
+        forbidden_override,
+        max_lines=max_lines,
+    )
+
+
+def _shared_lines_from_bundles(
+    left_bundle: EvidenceBundleLike,
+    right_bundle: EvidenceBundleLike,
+    *,
+    min_support: float = COMPARE_SHARED_MIN_SUPPORT,
+    max_lines: int = 5,
+) -> list[str]:
+    """Pull ``shared_lines`` off the V2 bundles when both sides clear ``min_support``.
+
+    Returns ``[]`` for legacy bundles (no shared bucket) or when either side
+    falls below the support threshold — that prevents a confident-sounding
+    shared section when one side has almost no on-topic evidence to back it.
+    """
+    if not isinstance(left_bundle, ConceptEvidenceBundleV2):
+        return []
+    if not isinstance(right_bundle, ConceptEvidenceBundleV2):
+        return []
+    if left_bundle.support_score < min_support or right_bundle.support_score < min_support:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in [*left_bundle.shared_lines, *right_bundle.shared_lines]:
+        key = line.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(line.strip())
+        if len(out) >= max_lines:
+            break
+    return out
+
+
 def format_two_entity_compare_markdown(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
     structured_query: StructuredQuery,
-    left_bundle: ConceptEvidenceBundle,
-    right_bundle: ConceptEvidenceBundle,
+    left_bundle: ConceptEvidenceBundle | ConceptEvidenceBundleV2,
+    right_bundle: ConceptEvidenceBundle | ConceptEvidenceBundleV2,
     kb: ConceptKB | None = None,
 ) -> str:
     """Build markdown for a two-way compare: direct lines, per-side bullets, axis contrast, closing.
@@ -68,10 +149,14 @@ def format_two_entity_compare_markdown(
     by ``plan`` (comparison axes, section specs) and the two evidence bundles.
 
     Steps:
-    1. Resolve chunks for each bundle, then extract **scoped lines** (forbidden + peer filtering).
+    1. Pull ``core_lines`` directly off each V2 bundle (or recompute scoped
+       lines for legacy bundles via :func:`scoped_lines_from_chunks`).
     2. **Direct answer** — first scoped line per side (with provisional note if extraction fell back).
     3. **Explanation** — extra bullets per side, only from that side's chunks.
     4. **Contrast** — for each KB axis, pair a short line from the left pool with one from the right.
+    5. **What they share** — shared bullets (only when both bundles carry
+       :attr:`ConceptEvidenceBundleV2.shared_lines` clearing
+       :data:`COMPARE_SHARED_MIN_SUPPORT`).
     """
     _ = structured_query  # reserved for future constraint-aware formatting
     kb = kb or get_kb()
@@ -86,22 +171,22 @@ def format_two_entity_compare_markdown(
         plan, "side_b", right_bundle.concept_id, left_bundle.concept_id, kb
     )
 
-    left_lines, left_is_provisional = scoped_lines_from_chunks(
-        left_chunks,
-        left_bundle.concept_id,
-        [right_bundle.concept_id],
-        kb,
-        forbidden_for_left,
-        max_lines=8,
+    left_lines, left_is_provisional = _scoped_lines_for_bundle(
+        left_bundle,
+        bundle_chunks=left_chunks,
+        peer_concept_ids=[right_bundle.concept_id],
+        forbidden_override=forbidden_for_left,
+        kb=kb,
     )
-    right_lines, right_is_provisional = scoped_lines_from_chunks(
-        right_chunks,
-        right_bundle.concept_id,
-        [left_bundle.concept_id],
-        kb,
-        forbidden_for_right,
-        max_lines=8,
+    right_lines, right_is_provisional = _scoped_lines_for_bundle(
+        right_bundle,
+        bundle_chunks=right_chunks,
+        peer_concept_ids=[left_bundle.concept_id],
+        forbidden_override=forbidden_for_right,
+        kb=kb,
     )
+
+    shared_lines = _shared_lines_from_bundles(left_bundle, right_bundle)
 
     left_summary_line = (
         shorten_for_compare_cell(left_lines[0], max_len=380)
@@ -199,13 +284,17 @@ def format_two_entity_compare_markdown(
             "or choose an architecture for speech or language tasks in this course.",
         ]
     )
+    if shared_lines:
+        markdown_parts.extend(["", "### What they share", ""])
+        for line in shared_lines:
+            markdown_parts.append(f"- {shorten_for_compare_cell(line, max_len=240)}")
     if evidence_gaps_block:
         markdown_parts.extend(["", "### Evidence notes", "", evidence_gaps_block])
     return "\n".join(markdown_parts).rstrip()
 
 
 def format_multi_entity_compare_markdown(
-    entity_bundles: list[ConceptEvidenceBundle],
+    entity_bundles: list[ConceptEvidenceBundle | ConceptEvidenceBundleV2],
     all_chunks: list[dict[str, Any]],
     structured_query: StructuredQuery,
     plan: AnswerPlan | None = None,
@@ -215,6 +304,9 @@ def format_multi_entity_compare_markdown(
 
     Each table row uses only that entity's retrieved chunks, passed through the same scoping
     pipeline as two-entity compare, so cells are not filled from a shared contaminated pool.
+    Accepts a mix of V1 (legacy) and V2 bundles — V2 ``core_lines`` are
+    consumed directly; V1 bundles trigger :func:`scoped_lines_from_chunks`
+    just like the previous behaviour.
     """
     _ = structured_query
     kb = kb or get_kb()
@@ -232,12 +324,12 @@ def format_multi_entity_compare_markdown(
     for bundle in entity_bundles:
         peer_concept_ids = [cid for cid in concept_ids_in_query if cid != bundle.concept_id]
         bundle_chunks = [chunks_by_id[i] for i in bundle.chunk_ids if i in chunks_by_id]
-        lines, used_provisional_fallback = scoped_lines_from_chunks(
-            bundle_chunks,
-            bundle.concept_id,
-            peer_concept_ids,
-            kb,
-            None,
+        lines, used_provisional_fallback = _scoped_lines_for_bundle(
+            bundle,
+            bundle_chunks=bundle_chunks,
+            peer_concept_ids=peer_concept_ids,
+            forbidden_override=None,
+            kb=kb,
             max_lines=10,
         )
         scoped_lines_by_concept[bundle.concept_id] = (lines, used_provisional_fallback)

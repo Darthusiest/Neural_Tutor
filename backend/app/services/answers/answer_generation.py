@@ -100,6 +100,15 @@ def _primary_chunks_ordered(plan: AnswerPlan, all_chunks: list[dict[str, Any]]) 
     return list(all_chunks)[:8]
 
 
+# Sentinel for the legacy "Think of the explanation above as the core
+# picture…" placeholder — used by the tutor renderer to detect the
+# no-good-example case and skip the example block (Task 6 fallback rule).
+_EXAMPLE_INTUITION_PLACEHOLDER = (
+    "Think of the explanation above as the core picture—ask if you want a different angle "
+    "or a walkthrough with numbers."
+)
+
+
 def _example_intuition_block(primary: list[dict[str, Any]]) -> str:
     for chunk in primary[:3]:
         sample_answer = (chunk.get("sample_answer") or "").strip()
@@ -117,10 +126,15 @@ def _example_intuition_block(primary: list[dict[str, Any]]) -> str:
         excerpt = (primary[0].get("source_excerpt") or "").strip()
         if len(excerpt) > 40:
             return _first_sentence_or_line(excerpt[:500]) or excerpt[:280]
-    return (
-        "Think of the explanation above as the core picture—ask if you want a different angle "
-        "or a walkthrough with numbers."
-    )
+    return _EXAMPLE_INTUITION_PLACEHOLDER
+
+
+def _has_concrete_example(example_text: str) -> bool:
+    """``True`` when ``example_text`` is real content (not the no-example placeholder)."""
+    body = (example_text or "").strip()
+    if not body:
+        return False
+    return body != _EXAMPLE_INTUITION_PLACEHOLDER.strip()
 
 
 def _why_matters_block(plan: AnswerPlan, structured_query: StructuredQuery, primary: list[dict[str, Any]]) -> str:
@@ -476,7 +490,8 @@ def render_tutor_style_answer(
     example_block_lines: list[str] = []
     if plan.include_example:
         example_text = _example_intuition_block(primary)
-        example_block_lines = _format_example_block(example_text)
+        if _has_concrete_example(example_text):
+            example_block_lines = _format_example_block(example_text)
 
     paragraphs = _dedupe_paragraphs([p for p in paragraphs if p])
 

@@ -355,7 +355,38 @@ code {
 
 .mode-detected-hint {
   font-size: 0.82rem;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.mode-override-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
   white-space: nowrap;
+}
+
+.study-tools {
+  margin: 0 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.study-tools summary {
+  cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  font-weight: 500;
+  list-style-position: outside;
+}
+
+.study-tools[open] summary {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.study-tools .study-panel {
+  margin: 0.5rem 0.75rem 0.75rem;
 }
 
 .boost-toggle {

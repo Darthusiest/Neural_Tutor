@@ -18,3 +18,5 @@ htmlcov/
 .DS_Store
 *.log
 instance/
+Agent/
+agent.md
