@@ -15,6 +15,101 @@ from app.services.knowledge.structured_query import StructuredQuery
 
 logger = logging.getLogger(__name__)
 
+_GEMINI_BOOST_CONSTRAINED_PREAMBLE = (
+    "You are improving clarity ONLY.\n\n"
+    "Rules:\n"
+    "- Do NOT introduce any new concepts.\n"
+    "- ONLY use ideas present in allowed_evidence_lines.\n"
+    "- If draft contains forbidden concepts, REMOVE them.\n"
+    "- Do NOT mention forbidden_terms.\n"
+    "- Do NOT expand beyond the topic.\n"
+    "- Keep explanation concise and tutor-like.\n\n"
+    "Goal: rewrite for clarity, not add content.\n"
+    "Start with the exact line:\n\nBoosted Explanation:\n\n"
+)
+
+
+def generate_gemini_constrained_boost(
+    *,
+    user_question: str,
+    target_concept: str,
+    allowed_evidence_lines: list[str],
+    forbidden_terms: list[str],
+    draft_answer: str,
+    mode: str,
+) -> tuple[str | None, dict[str, Any]]:
+    """Constrained boost for deferred endpoint (2s default timeout)."""
+    api_key = current_app.config.get("GEMINI_API_KEY") or current_app.config.get("GOOGLE_API_KEY")
+    if not api_key:
+        return None, {}
+
+    model = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
+    timeout = int(current_app.config.get("BOOST_TIMEOUT_SEC", 2))
+    g_temp = float(current_app.config.get("GEMINI_TEMPERATURE_BOOST", 0.4))
+    g_max_tokens = int(current_app.config.get("GEMINI_MAX_OUTPUT_TOKENS", 2048))
+
+    lines = [ln[:400] for ln in (allowed_evidence_lines or [])[:5]]
+    payload = {
+        "target_concept": target_concept,
+        "allowed_evidence_lines": lines,
+        "forbidden_terms": list(forbidden_terms or [])[:40],
+        "draft_answer": (draft_answer or "")[:8000],
+        "mode": mode or "chat",
+    }
+    user_text = (
+        f"{_GEMINI_BOOST_CONSTRAINED_PREAMBLE}\n\nSTUDENT_QUESTION:\n{user_question[:4000]}\n\n"
+        f"BOOST_INPUT_JSON:\n{json.dumps(payload, ensure_ascii=False)[:50_000]}"
+    )
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        f"?key={api_key}"
+    )
+    body = json.dumps(
+        {
+            "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+            "generationConfig": {"temperature": g_temp, "maxOutputTokens": g_max_tokens},
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        logger.warning("Gemini HTTP error: %s %s", e.code, e.read()[:500])
+        return None, {"error": f"http_{e.code}", "provider": "gemini"}
+    except OSError as e:
+        logger.warning("Gemini request failed: %s", e)
+        return None, {"error": str(e), "provider": "gemini"}
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, {"error": "invalid_json", "provider": "gemini"}
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0].get("text")
+    except (KeyError, IndexError, TypeError):
+        return None, {"error": "no_text", "provider": "gemini"}
+
+    if not text or not str(text).strip():
+        return None, {"provider": "gemini", "model": model}
+
+    meta: dict[str, Any] = {"provider": "gemini", "model": model}
+    um = data.get("usageMetadata")
+    if isinstance(um, dict):
+        meta["usage"] = um
+
+    out = str(text).strip()
+    if not out.lower().startswith("boosted explanation"):
+        out = "Boosted Explanation:\n\n" + out
+    return out, meta
+
 
 def generate_gemini_boosted_explanation(
     user_question: str,
@@ -34,7 +129,7 @@ def generate_gemini_boosted_explanation(
         return None, {}
 
     model = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
-    timeout = int(current_app.config.get("GEMINI_TIMEOUT_SEC", "60"))
+    timeout = int(current_app.config.get("GEMINI_TIMEOUT_SEC", 60))
     g_temp = float(current_app.config.get("GEMINI_TEMPERATURE_BOOST", 0.4))
     g_max_tokens = int(current_app.config.get("GEMINI_MAX_OUTPUT_TOKENS", 2048))
 

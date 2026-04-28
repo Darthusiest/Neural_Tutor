@@ -6,6 +6,7 @@
     {
       "id": "md_softmax_001",
       "category": "mode_detection",
+      "critical": true,
       "query": "What is softmax?",
       "expected_mode": "chat",
       "must_include": ["softmax"],

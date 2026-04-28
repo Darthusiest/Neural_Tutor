@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from flask import g, has_request_context
+
 from app.config import Config
 from app.services.knowledge.domain_knowledge import (
     CONCEPT_FAMILIES,
@@ -267,6 +269,16 @@ def retrieve_enhanced(
     if backend not in ("keyword",):
         return _fallback_to_base(query, top_k, backend, user_mode=user_mode)
 
+    cache_key: tuple[str, str, int, str] | None = None
+    if has_request_context():
+        qn = " ".join((query or "").strip().split())
+        cache_key = (qn, (user_mode or "auto").strip().lower(), int(top_k), str(backend))
+        if not hasattr(g, "_retrieval_enhanced_cache"):
+            g._retrieval_enhanced_cache = {}
+        cached = g._retrieval_enhanced_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     detection = detect_query_mode(query)
     base_intent = analyze_query(query)
     effective, was_overridden = resolve_effective_mode(user_mode, detection)
@@ -295,6 +307,8 @@ def retrieve_enhanced(
 
     out = handler(intent.expanded_query, intent, top_k)
     out.mode_routing = mode_routing
+    if has_request_context() and cache_key is not None:
+        g._retrieval_enhanced_cache[cache_key] = out
     return out
 
 

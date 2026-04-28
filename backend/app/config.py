@@ -40,6 +40,43 @@ def _merge_weight_dict(default: dict[str, float], env_json: str | None) -> dict[
     return out
 
 
+def _resolve_frontend_origins(raw: str | None) -> list[str]:
+    """
+    CORS allowed origins for ``/api/*``.
+
+    Accepts a comma-separated ``FRONTEND_ORIGIN`` list. In non-production, also adds the
+    ``localhost`` ↔ ``127.0.0.1`` variant so dev works whether the SPA is opened as
+    ``http://localhost:5173`` or ``http://127.0.0.1:5173`` (especially when
+    ``VITE_API_BASE_URL`` points at Flask instead of the Vite proxy).
+    """
+    s = (raw or "http://127.0.0.1:5173").strip()
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if not parts:
+        parts = ["http://127.0.0.1:5173"]
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    prod_like = (
+        os.getenv("FLASK_ENV", "").lower() == "production"
+        or os.getenv("PRODUCTION_LIKE", "0") == "1"
+    )
+    if not prod_like and os.getenv("FRONTEND_ORIGIN_DEV_ALIASES", "1") != "0":
+        for o in list(out):
+            if "127.0.0.1" in o:
+                alt = o.replace("127.0.0.1", "localhost", 1)
+            elif "localhost" in o:
+                alt = o.replace("localhost", "127.0.0.1", 1)
+            else:
+                continue
+            if alt not in seen:
+                seen.add(alt)
+                out.append(alt)
+    return out
+
+
 class Config:
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _DEFAULT_SQLITE
@@ -49,11 +86,17 @@ class Config:
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
 
-    FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
+    _FRONTEND_ORIGIN_ENV = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
+    FRONTEND_ORIGINS = _resolve_frontend_origins(_FRONTEND_ORIGIN_ENV)
+    FRONTEND_ORIGIN = FRONTEND_ORIGINS[0] if FRONTEND_ORIGINS else "http://127.0.0.1:5173"
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     OPENAI_TIMEOUT_SEC = int(os.getenv("OPENAI_TIMEOUT_SEC", "60"))
+    # Primary Course Answer OpenAI call (separate from general OPENAI_TIMEOUT_SEC).
+    PRIMARY_LLM_TIMEOUT_SEC = int(os.getenv("PRIMARY_LLM_TIMEOUT_SEC", "8"))
+    # Deferred Boosted Explanation HTTP timeout per provider attempt (must allow real RTT + generation).
+    BOOST_TIMEOUT_SEC = int(os.getenv("BOOST_TIMEOUT_SEC", "25"))
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
     RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "")
 
@@ -145,6 +188,10 @@ class Config:
     ENTITY_EVIDENCE_SCORING_ENABLED = os.getenv("ENTITY_EVIDENCE_SCORING_ENABLED", "1") == "1"
     # Extra retrieval pass when validation hard-fails (wider top_k).
     PIPELINE_RETRIEVAL_RETRY_ENABLED = os.getenv("PIPELINE_RETRIEVAL_RETRY_ENABLED", "1") == "1"
+    # Skip retrieval retry if the pipeline has already spent this many seconds (wall clock).
+    PIPELINE_RETRY_WALL_CLOCK_BUDGET_SEC = float(
+        os.getenv("PIPELINE_RETRY_WALL_CLOCK_BUDGET_SEC", "3.5")
+    )
     # Pass section specs + constraints into primary LLM user prompt (when LLM path is used).
     SECTION_CONTRACTS_ENABLED = os.getenv("SECTION_CONTRACTS_ENABLED", "1") == "1"
     # Primary Course Answer: OpenAI when key present. PRIMARY_COURSE_ANSWER_OPENAI wins; else LLM_ANSWER_GENERATION.
@@ -154,9 +201,32 @@ class Config:
     PRIMARY_COURSE_ANSWER_OPENAI = _primary_llm == "1"
     LLM_ANSWER_GENERATION = PRIMARY_COURSE_ANSWER_OPENAI  # backward-compatible alias
 
-    # Secondary boost: Gemini only by default (see generate_boosted_explanation in gemini_boost).
-    # Set OPENAI_BOOST_FALLBACK=1 to call OpenAI for Boosted Explanation when Gemini is missing or fails.
-    OPENAI_BOOST_FALLBACK = os.getenv("OPENAI_BOOST_FALLBACK", "0") == "1"
+    # Secondary Boosted Explanation provider chain.
+    # ``BOOST_PRIMARY_PROVIDER`` runs first (when its key is configured); ``BOOST_FALLBACK_PROVIDER``
+    # runs only if the primary returns no text. Allowed values: ``openai``, ``gemini``, ``none``.
+    # Default: OpenAI primary, Gemini fallback. Legacy ``OPENAI_BOOST_FALLBACK=1`` is honored only
+    # when the new variables are unset (then provider chain becomes gemini → openai).
+    _legacy_openai_fallback = os.getenv("OPENAI_BOOST_FALLBACK") == "1"
+    _boost_primary_env = os.getenv("BOOST_PRIMARY_PROVIDER")
+    _boost_fallback_env = os.getenv("BOOST_FALLBACK_PROVIDER")
+
+    if _boost_primary_env is None and _legacy_openai_fallback and _boost_fallback_env is None:
+        BOOST_PRIMARY_PROVIDER = "gemini"
+        BOOST_FALLBACK_PROVIDER = "openai"
+    else:
+        BOOST_PRIMARY_PROVIDER = (_boost_primary_env or "openai").strip().lower()
+        BOOST_FALLBACK_PROVIDER = (_boost_fallback_env or "gemini").strip().lower()
+
+    if BOOST_PRIMARY_PROVIDER not in ("openai", "gemini", "none"):
+        BOOST_PRIMARY_PROVIDER = "openai"
+    if BOOST_FALLBACK_PROVIDER not in ("openai", "gemini", "none"):
+        BOOST_FALLBACK_PROVIDER = "gemini"
+
+    # Backward-compatible alias (orchestrator still reads this for the legacy code path).
+    OPENAI_BOOST_FALLBACK = (
+        BOOST_PRIMARY_PROVIDER == "openai" or BOOST_FALLBACK_PROVIDER == "openai"
+    )
+
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
@@ -178,6 +248,8 @@ class TestConfig(Config):
     GEMINI_API_KEY = ""
     GOOGLE_API_KEY = ""
     OPENAI_BOOST_FALLBACK = False
+    BOOST_PRIMARY_PROVIDER = "openai"
+    BOOST_FALLBACK_PROVIDER = "gemini"
     EMBEDDING_RETRIEVAL_ENABLED = False
     RETRIEVAL_HYBRID_ENABLED = False
     STRUCTURED_STUDY_PIPELINE_ENABLED = False

@@ -18,6 +18,8 @@ class ResponseConstraints:
     repeat_explanation_times: int | None = None
     allow_incorrect_statements: bool = False
     pipeline_summary_requested: bool = False
+    # User-requested topics to omit (e.g. "do not mention transformers").
+    forbidden_topics: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +31,7 @@ class ResponseConstraints:
             "repeat_explanation_times": self.repeat_explanation_times,
             "allow_incorrect_statements": self.allow_incorrect_statements,
             "pipeline_summary_requested": self.pipeline_summary_requested,
+            "forbidden_topics": list(self.forbidden_topics),
         }
 
 
@@ -59,6 +62,59 @@ _INCORRECT_STMT_RE = re.compile(
 )
 _PIPELINE_RE = re.compile(r"\b(?:mfcc\s+)?pipeline\b|\bpipeline\s+of\b", re.IGNORECASE)
 
+# User exclusions: "do not mention X", "without mentioning X", etc.
+_DO_NOT_MENTION_RE = re.compile(
+    r"(?:\bdo\s+not\s+mention\b|\bdon'?t\s+mention\b)\s+(.+?)(?:\.|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_WITHOUT_MENTIONING_RE = re.compile(
+    r"\bwithout\s+mentioning\s+(.+?)(?:\.|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXCLUDE_TOPICS_RE = re.compile(
+    r"\bexclude\s+(.+?)(?:\.|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_NO_MENTION_NEURAL_NETS_RE = re.compile(
+    r"\bdo\s+not\s+mention\s+(?:neural\s+networks?|nns?)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_topic_clause(clause: str) -> list[str]:
+    """Split a clause like 'transformers or residuals' into topic strings."""
+    clause = (clause or "").strip()
+    if not clause:
+        return []
+    parts = re.split(r"\s*(?:,|\bor\b|\band\b)\s*", clause, flags=re.IGNORECASE)
+    out: list[str] = []
+    for p in parts:
+        t = p.strip().rstrip(".,;:")
+        if t and len(t) >= 2:
+            out.append(t)
+    return out
+
+
+def _collect_forbidden_topics(query: str) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def add_many(phrases: list[str]) -> None:
+        for ph in phrases:
+            key = ph.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                ordered.append(ph.strip())
+
+    for rx in (_DO_NOT_MENTION_RE, _WITHOUT_MENTIONING_RE, _EXCLUDE_TOPICS_RE):
+        for m in rx.finditer(query):
+            add_many(_split_topic_clause(m.group(1)))
+
+    if _NO_MENTION_NEURAL_NETS_RE.search(query):
+        add_many(["neural networks", "neural network"])
+
+    return ordered
+
 
 def parse_response_constraints(query: str) -> ResponseConstraints:
     """Extract constraints from free text (best-effort, deterministic)."""
@@ -85,4 +141,5 @@ def parse_response_constraints(query: str) -> ResponseConstraints:
         rc.allow_incorrect_statements = True
     if _PIPELINE_RE.search(query):
         rc.pipeline_summary_requested = True
+    rc.forbidden_topics = _collect_forbidden_topics(query)
     return rc

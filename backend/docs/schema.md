@@ -84,7 +84,7 @@ Append-only **security event** log (no secrets). ORM: [`SecurityLogEntry`](../ap
 | session_id | FK → chat_sessions.id, indexed | |
 | role | String(32) | user / assistant / system |
 | content_text | Text nullable | user plain text |
-| payload_json | Text nullable | Assistant metadata JSON. Typical keys: `course_answer`, `confidence`, optional `query_type` (retrieval v2), optional `boosted_explanation`, optional `structured_pipeline`, optional `pipeline_diagnostics` (includes `answer_intent`, `validation` with `severity` pass/weak/fail, `primary_model` `openai`\|`rule_based`\|`none`, `query_complexity`, `answer_plan`, etc.), optional `primary_model`, `validation_severity`, `boost_provider` (`gemini`\|`openai` when a boost ran), `boost_reason` (e.g. `user_toggle`, `validation_weak`, `low_confidence`, `complex_query`, `mode`, `none`), `query_complexity` (`simple`\|`complex`), optional `no_match_kind` (`greeting`\|`short_ack`\|`off_topic` when no chunks matched; see [`conversational_responses.py`](../app/services/conversational_responses.py) for classification + rotating **Course Answer** text; boost is not applied when there are no chunks) |
+| payload_json | Text nullable | Assistant metadata JSON. Typical keys: `course_answer`, `confidence`, optional `query_type` (retrieval v2), optional `boosted_explanation`, optional `structured_pipeline`, optional `pipeline_diagnostics` (includes `answer_intent`, `validation` with `severity` pass/weak/fail, `primary_model` `openai`\|`rule_based`\|`none`, `query_complexity`, `answer_plan`, etc.), optional `primary_model`, `validation_severity`, `boost_provider` (`gemini`\|`openai` when a boost ran), `boost_reason` (`user_toggle` when the client opted in, otherwise `boost_disabled`; legacy reason codes — `validation_weak`, `validation_fail`, `low_confidence`, `complex_query`, `user_requested_clarity`, `mode`, `none` — may still appear on rows persisted before the strict opt-in change), `query_complexity` (`simple`\|`complex`), optional `no_match_kind` (`greeting`\|`short_ack`\|`off_topic` when no chunks matched; see [`conversational_responses.py`](../app/services/conversational_responses.py) for classification + rotating **Course Answer** text; boost is not applied when there are no chunks) |
 | created_at | DateTime | |
 
 ## retrieval_logs
@@ -167,7 +167,7 @@ One row per assistant message: course answer, optional boost, and generation met
 | course_answer | Text | |
 | boosted_explanation | Text nullable | |
 | boost_used | Boolean nullable | |
-| boost_reason | String(64) nullable | Short code (e.g. `user_toggle`, `validation_fail`, `low_confidence`, `complex_query`, `mode`); aligns with chat gating in [`boost_triggers.py`](../app/services/generation/boost_triggers.py) |
+| boost_reason | String(64) nullable | Short code from [`boost_triggers.py`](../app/services/generation/boost_triggers.py) — `user_toggle` when boost ran (client opted in via `boost_toggle=True`) or `boost_disabled` when the toggle was off (boost is **strictly opt-in**, see README "Boost gating"). Legacy values from earlier auto-trigger heuristics (`validation_fail`, `validation_weak`, `low_confidence`, `complex_query`, `user_requested_clarity`, `mode`) may still appear on historical rows. |
 | boost_auto_triggered | Boolean nullable | |
 | boost_toggle_user_selected | Boolean nullable | |
 | model_name | String(128) nullable | |

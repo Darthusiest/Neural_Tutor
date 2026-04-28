@@ -100,6 +100,8 @@ class ConceptConstraints:
     forbidden_terms: set[str]
     target_lectures: list[int] = field(default_factory=list)
     is_relational: bool = False
+    # Subset of ``forbidden_terms`` from user phrasing ("do not mention X"); hard-drop on body too.
+    user_forbidden_terms: set[str] = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,7 +111,21 @@ class ConceptConstraints:
             "forbidden_terms": sorted(self.forbidden_terms),
             "target_lectures": list(self.target_lectures),
             "is_relational": self.is_relational,
+            "user_forbidden_terms": sorted(self.user_forbidden_terms),
         }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ConceptConstraints:
+        """Restore from :meth:`to_dict` (e.g. deferred boost payload)."""
+        return cls(
+            target_concepts=list(d.get("target_concepts") or []),
+            target_aliases=set(d.get("target_aliases") or []),
+            allowed_terms=set(d.get("allowed_terms") or d.get("target_aliases") or []),
+            forbidden_terms=set(d.get("forbidden_terms") or []),
+            target_lectures=list(d.get("target_lectures") or []),
+            is_relational=bool(d.get("is_relational")),
+            user_forbidden_terms=set(d.get("user_forbidden_terms") or []),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +161,30 @@ def _aliases_for_concept(concept_id: str, kb: ConceptKB) -> list[str]:
     return out
 
 
+def _expand_user_forbidden_topics(
+    topics: list[str],
+    kb: ConceptKB,
+    target_aliases: set[str],
+) -> set[str]:
+    """Lower-case forbidden strings from user text, expanded via KB aliases."""
+    out: set[str] = set()
+    for raw in topics or []:
+        phrase = (raw or "").strip()
+        if not phrase:
+            continue
+        meta = kb.get_concept(phrase)
+        if meta:
+            for term in _aliases_for_concept(meta.id, kb):
+                t = term.strip().lower()
+                if t and t not in target_aliases:
+                    out.add(t)
+        else:
+            t = phrase.strip().lower()
+            if t and t not in target_aliases:
+                out.add(t)
+    return out
+
+
 def build_concept_constraints(sq: StructuredQuery, kb: ConceptKB | None = None) -> ConceptConstraints:
     """Derive a :class:`ConceptConstraints` from a structured query.
 
@@ -173,6 +213,13 @@ def build_concept_constraints(sq: StructuredQuery, kb: ConceptKB | None = None) 
             if t and t not in target_aliases:
                 forbidden.add(t)
 
+    user_forbidden = _expand_user_forbidden_topics(
+        getattr(sq.response_constraints, "forbidden_topics", None) or [],
+        kb,
+        target_aliases,
+    )
+    forbidden.update(user_forbidden)
+
     is_relational = (
         sq.intent.query_type in {QueryType.COMPARE, QueryType.SYNTHESIS}
         or sq.answer_intent in {"compare", "compare_multi", "cross_lecture_synthesis"}
@@ -186,6 +233,7 @@ def build_concept_constraints(sq: StructuredQuery, kb: ConceptKB | None = None) 
         forbidden_terms=forbidden,
         target_lectures=list(sq.lecture_scope or []),
         is_relational=is_relational,
+        user_forbidden_terms=set(user_forbidden),
     )
 
 
@@ -219,6 +267,69 @@ def _body_blob(chunk: dict[str, Any]) -> str:
         str(chunk.get("source_excerpt", "")),
     ]
     return " ".join(parts).lower()
+
+
+def _chunk_blob_for_hard_filter(chunk: dict[str, Any]) -> str:
+    """Topic + keywords + body for strict pre-filtering."""
+    return f"{_topic_blob(chunk)} {_body_blob(chunk)}"
+
+
+def _hard_filter_chunks_for_purity(
+    chunks: list[dict[str, Any]],
+    constraints: ConceptConstraints,
+) -> list[dict[str, Any]]:
+    """Drop chunks with forbidden terms or without any target alias (non-relational only)."""
+    if constraints.is_relational or not chunks:
+        return list(chunks)
+    out: list[dict[str, Any]] = []
+    for chunk in chunks:
+        blob = _chunk_blob_for_hard_filter(chunk)
+        topic_only = _topic_blob(chunk)
+        body_only = _body_blob(chunk)
+        if constraints.forbidden_terms:
+            drop_forbidden = False
+            for term in constraints.forbidden_terms:
+                if term in constraints.user_forbidden_terms:
+                    if _term_hits(topic_only, term) > 0 or _term_hits(body_only, term) > 0:
+                        drop_forbidden = True
+                        break
+                elif _term_hits(body_only, term) > 0:
+                    # KB peer terms: topic lines often name paired concepts (e.g. CNN + residuals).
+                    drop_forbidden = True
+                    break
+            if drop_forbidden:
+                continue
+        if constraints.target_aliases:
+            if not any(_term_hits(blob, term) > 0 for term in constraints.target_aliases):
+                continue
+        out.append(chunk)
+    return out
+
+
+def _hard_drop_forbidden_chunks_only(
+    chunks: list[dict[str, Any]],
+    constraints: ConceptConstraints,
+) -> list[dict[str, Any]]:
+    """Non-relational: drop only explicit forbidden-term chunks (keep pool if strict filter emptied)."""
+    if constraints.is_relational or not constraints.forbidden_terms or not chunks:
+        return list(chunks)
+    out: list[dict[str, Any]] = []
+    for chunk in chunks:
+        topic_only = _topic_blob(chunk)
+        body_only = _body_blob(chunk)
+        drop = False
+        for term in constraints.forbidden_terms:
+            if term in constraints.user_forbidden_terms:
+                if _term_hits(topic_only, term) > 0 or _term_hits(body_only, term) > 0:
+                    drop = True
+                    break
+            elif _term_hits(body_only, term) > 0:
+                drop = True
+                break
+        if drop:
+            continue
+        out.append(chunk)
+    return out
 
 
 def score_chunk_against_constraints(
@@ -279,7 +390,20 @@ def apply_concept_constraints(
 
     Anything else stays in the pool, just demoted.
     """
-    if not chunks or not constraints.target_concepts:
+    if not chunks:
+        return []
+    if not constraints.target_concepts and not constraints.forbidden_terms:
+        return list(chunks)
+
+    original = list(chunks)
+    chunks = _hard_filter_chunks_for_purity(chunks, constraints)
+    if not chunks and not constraints.is_relational:
+        chunks = _hard_drop_forbidden_chunks_only(original, constraints)
+    if not chunks:
+        chunks = original
+
+    # User-only forbidden terms (no KB target): forbidden pre-filter is enough.
+    if not constraints.target_concepts:
         return list(chunks)
 
     scored: list[tuple[float, int, dict[str, Any], int, int]] = []
@@ -387,3 +511,43 @@ _DEFINITION_CUE_RE = re.compile(
 def has_definition_cue(line: str) -> bool:
     """Lightweight signal that ``line`` looks like a definition statement."""
     return bool(_DEFINITION_CUE_RE.search(line or ""))
+
+
+def collect_allowed_evidence_lines(
+    chunks: list[dict[str, Any]],
+    constraints: ConceptConstraints | None,
+    *,
+    max_lines: int = 5,
+    max_line_len: int = 400,
+) -> list[str]:
+    """Up to ``max_lines`` prose lines from chunks that pass concept purity (for constrained boost)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        if len(out) >= max_lines:
+            break
+        for field in ("clean_explanation", "source_excerpt"):
+            raw = chunk.get(field)
+            if not raw:
+                continue
+            for ln in str(raw).split("\n"):
+                line = ln.strip()
+                if len(line) < 20:
+                    continue
+                if constraints is not None and not is_line_concept_pure(line, constraints):
+                    continue
+                if constraints is not None and line_has_forbidden(line, constraints):
+                    continue
+                if constraints is not None and constraints.target_aliases and not constraints.is_relational:
+                    if not line_has_target(line, constraints):
+                        continue
+                key = line.lower()[:200]
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(line[:max_line_len])
+                if len(out) >= max_lines:
+                    break
+        if len(out) >= max_lines:
+            break
+    return out

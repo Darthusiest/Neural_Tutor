@@ -7,7 +7,7 @@ From `backend/`, create **`.env`** (not committed; copy from your team’s templ
 | Variable | Purpose |
 |----------|---------|
 | `FLASK_SECRET_KEY` | Session + Flask-WTF CSRF signing (use a long random string) |
-| `FRONTEND_ORIGIN` | Must match the SPA origin (default `http://127.0.0.1:5173`) |
+| `FRONTEND_ORIGIN` | SPA origin(s) for CORS on `/api/*` (comma-separated). Default `http://127.0.0.1:5173`. In dev, the app also allows the `localhost` ↔ `127.0.0.1` twin automatically unless `FRONTEND_ORIGIN_DEV_ALIASES=0`. |
 | `PASSWORD_RESET_BASE_URL` | Page that reads `?token=` (default `http://127.0.0.1:5173/reset-password`) |
 
 For real reset emails:

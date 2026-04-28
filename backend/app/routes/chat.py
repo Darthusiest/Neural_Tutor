@@ -14,6 +14,7 @@ from app.models import (
     ResponseVariant,
     RetrievalLog,
 )
+from app.services.boost_deferred import run_constrained_boost_for_message
 from app.services.chat_orchestrator import handle_chat_turn
 from app.utils.security import parse_request_json
 
@@ -224,6 +225,8 @@ def list_messages(sid: int):
             item["boosted_explanation"] = (rv.boosted_explanation if rv else None) or payload.get(
                 "boosted_explanation"
             )
+            item["boost_status"] = payload.get("boost_status")
+            item["boost_skip_reason"] = payload.get("boost_skip_reason")
             item["payload_json"] = m.payload_json
             if payload.get("study"):
                 item["study"] = payload["study"]
@@ -284,6 +287,22 @@ def chat():
         current_app.logger.exception("chat commit failed")
         return jsonify({"error": "failed to save chat turn"}), 500
 
+    return jsonify(out)
+
+
+@bp.route("/chat/boost/<int:message_id>", methods=["POST"])
+@login_required
+@limiter.limit("90 per minute")
+def chat_boost(message_id: int):
+    """Lazy-compute constrained Boosted Explanation for an assistant message (see README)."""
+    m = db.session.get(Message, message_id)
+    if not m:
+        return jsonify({"error": "not found"}), 404
+    out = run_constrained_boost_for_message(m, user_id=current_user.id)
+    if out.get("error") == "forbidden":
+        return jsonify({"error": "forbidden"}), 403
+    if out.get("error") == "not_assistant_message":
+        return jsonify({"error": out["error"]}), 400
     return jsonify(out)
 
 

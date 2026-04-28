@@ -1,12 +1,14 @@
 """Structured course answer text from an :class:`AnswerPlan` (rule-based by default).
 
-For chat-mode intents (``direct_definition``, ``multi_step_explanation``,
-``scoped_explanation``, ``simplified_reteach``, ``teaching_plus_check``) the
-default output is a natural tutor-tone narrative: opening sentence → optional
-contrast → concrete example → key-idea highlight → grounded why-it-matters.
-See :func:`render_tutor_style_answer`.
+For chat-shaped intents (``direct_definition``, ``multi_step_explanation``,
+``scoped_explanation``, ``simplified_reteach``, ``cross_lecture_synthesis``, …)
+the default output is a natural tutor-tone narrative composed by
+:func:`concept_answer_composer.compose_concept_answer`: role-classified evidence
+→ opening sentence → explanation paragraph → optional numeric/example lift →
+``The key idea:`` → ``That matters because …``. Legacy helper :func:`render_tutor_style_answer`
+remains for reference but is no longer the primary path.
 
-Compare / compare_multi / lecture_summary / cross_lecture_synthesis paths and
+Compare / compare_multi / lecture_summary / quiz paths and
 exotic response constraints (``no_examples``, ``intuition_only``,
 ``exact_explanation_count``, ``repeat_explanation_times``,
 ``allow_incorrect_statements``) keep the legacy four-section markdown layout
@@ -21,11 +23,13 @@ import dataclasses
 import re
 from typing import Any
 
+from app.services.answers.concept_constraints import ConceptConstraints, build_concept_constraints
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
 from app.services.answers.compare_render import (
     format_multi_entity_compare_markdown,
     format_two_entity_compare_markdown,
 )
+from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
 from app.services.retrieval import _sample_questions_as_text
 
@@ -137,27 +141,104 @@ def _has_concrete_example(example_text: str) -> bool:
     return body != _EXAMPLE_INTUITION_PLACEHOLDER.strip()
 
 
+def _user_forbidden_set(sq: StructuredQuery | None) -> set[str]:
+    if sq is None or not sq.response_constraints.forbidden_topics:
+        return set()
+    return {
+        t.strip().lower()
+        for t in sq.response_constraints.forbidden_topics
+        if t and str(t).strip()
+    }
+
+
+def _line_contains_user_forbidden(line: str, forb: set[str]) -> bool:
+    if not line or not forb:
+        return False
+    low = line.lower()
+    for f in forb:
+        if not f:
+            continue
+        if f in low:
+            return True
+        if len(f) > 3 and f.endswith("s") and f[:-1] in low:
+            return True
+        if len(f) > 3 and not f.endswith("s") and (f + "s") in low:
+            return True
+    return False
+
+
+def _drop_lines_matching_forbidden(lines: list[str], forb: set[str]) -> list[str]:
+    if not forb:
+        return list(lines)
+    return [ln for ln in lines if not _line_contains_user_forbidden(ln, forb)]
+
+
+def _evidence_text_blob(primary: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for c in primary:
+        for k in ("topic", "keywords", "clean_explanation", "source_excerpt"):
+            parts.append(str(c.get(k) or ""))
+    return " ".join(parts).lower()
+
+
+def _related_concepts_in_evidence(
+    plan: AnswerPlan,
+    primary: list[dict[str, Any]],
+    kb: ConceptKB,
+    *,
+    user_forbidden: set[str] | None = None,
+) -> list[str]:
+    """At most one KB ``related`` name that actually appears in primary chunk text."""
+    blob = _evidence_text_blob(primary)
+    uf = {x.strip().lower() for x in (user_forbidden or set()) if x and str(x).strip()}
+    out: list[str] = []
+    for name in plan.include_related_concepts or []:
+        raw = (name or "").strip()
+        if not raw:
+            continue
+        nl = raw.lower()
+        if any(f and f in nl for f in uf):
+            continue
+        meta = kb.get_concept(raw)
+        if meta:
+            terms = [meta.name.lower()] + [a.lower() for a in meta.aliases]
+            if any(t and t in blob for t in terms):
+                out.append(raw)
+        elif raw.lower() in blob:
+            out.append(raw)
+        if out:
+            break
+    return out[:1]
+
+
 def _why_matters_block(plan: AnswerPlan, structured_query: StructuredQuery, primary: list[dict[str, Any]]) -> str:
     """Tutor-style closing—no lecture IDs, scope lists, or 'graph' jargon."""
+    kb = get_kb()
+    uf = {
+        t.strip().lower()
+        for t in (structured_query.response_constraints.forbidden_topics or [])
+        if t and str(t).strip()
+    }
     parts: list[str] = []
-    if plan.include_related_concepts:
-        related_names = ", ".join(plan.include_related_concepts[:6])
-        if related_names:
-            parts.append(
-                f"You’ll keep running into related ideas such as {related_names} as you move through "
-                "models, data, and evaluation in the course."
-            )
+    related_ev = _related_concepts_in_evidence(plan, primary, kb, user_forbidden=uf)
+    if related_ev:
+        parts.append(
+            f"You’ll see how this connects to {related_ev[0]} in the materials you already have for this topic."
+        )
     if plan.comparison_axes and plan.answer_mode == "compare":
         parts.append(
             "Getting the contrast right matters when you interpret model behavior or compare architectures."
         )
     if not parts and structured_query.concept_ids:
+        cid = structured_query.concept_ids[0]
+        meta = kb.get_concept_by_id(cid)
+        label = (meta.name if meta else cid) or "this idea"
         parts.append(
-            "This topic connects to what you’re building toward in the rest of the syllabus—notation and vocabulary pay off later."
+            f"Understanding {label} clearly helps you follow the rest of the topics in this course."
         )
     if not parts:
         parts.append(
-            "Solid intuition here makes the next topics—layers, objectives, and decisions—much easier to follow."
+            "Clear intuition for this topic makes the next ideas in the course easier to follow."
         )
     return " ".join(parts)
 
@@ -167,8 +248,7 @@ def _why_matters_block(plan: AnswerPlan, structured_query: StructuredQuery, prim
 # ---------------------------------------------------------------------------
 
 # Modes that should flow as a tutor narrative rather than the legacy
-# four-section markdown layout. Compare / summary / synthesis paths are
-# intentionally excluded.
+# four-section markdown layout (compare / quiz / lecture_summary short-circuit earlier).
 _CHAT_NARRATIVE_MODES = frozenset(
     {
         "direct_definition",
@@ -176,6 +256,7 @@ _CHAT_NARRATIVE_MODES = frozenset(
         "scoped_explanation",
         "simplified_reteach",
         "teaching_plus_check",
+        "cross_lecture_synthesis",
     }
 )
 
@@ -276,7 +357,11 @@ def _truncate_to_first_sentences(text: str, max_sentences: int = 2) -> str:
     return " ".join(sentences[:max_sentences]).strip()
 
 
-def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> str:
+def _primary_concept_label(
+    plan: AnswerPlan,
+    primary: list[dict[str, Any]],
+    structured_query: StructuredQuery | None = None,
+) -> str:
     """Best human-readable concept name for grounding the closing sentence.
 
     Topic strings in the corpus often carry a section suffix (e.g.
@@ -284,6 +369,18 @@ def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> s
     closers we just want the bare concept name—strip lecture prefixes and any
     trailing dash-delimited section qualifier.
     """
+    uf = set()
+    if structured_query and structured_query.response_constraints.forbidden_topics:
+        uf = {
+            t.strip().lower()
+            for t in structured_query.response_constraints.forbidden_topics
+            if t and str(t).strip()
+        }
+    if structured_query and structured_query.concept_ids and uf:
+        kb = get_kb()
+        meta = kb.get_concept_by_id(structured_query.concept_ids[0])
+        if meta and (meta.name or "").strip():
+            return (meta.name or "").strip()
     if primary:
         topic_value = (primary[0].get("topic") or "").strip()
         if topic_value:
@@ -292,7 +389,9 @@ def _primary_concept_label(plan: AnswerPlan, primary: list[dict[str, Any]]) -> s
             ).strip()
             cleaned = re.split(r"\s+[—\-–:]\s+", cleaned, maxsplit=1)[0].strip()
             if cleaned:
-                return cleaned
+                cl = cleaned.lower()
+                if not any(f and f in cl for f in uf):
+                    return cleaned
     if plan.include_related_concepts:
         return plan.include_related_concepts[0]
     return ""
@@ -393,7 +492,11 @@ def _key_idea_sentence(
 
 
 def _grounded_why_it_matters(
-    plan: AnswerPlan, primary: list[dict[str, Any]], concept_label: str
+    plan: AnswerPlan,
+    primary: list[dict[str, Any]],
+    concept_label: str,
+    *,
+    user_forbidden: set[str] | None = None,
 ) -> str:
     """Short, concept-tied closer (1–2 sentences).
 
@@ -404,12 +507,16 @@ def _grounded_why_it_matters(
     would also strip those if they ever leaked in.
     """
     name = concept_label or "this idea"
-    related = plan.include_related_concepts[:2]
-    if related:
-        if len(related) == 1:
-            related_phrase = related[0]
-        else:
-            related_phrase = f"{related[0]} and {related[1]}"
+    nl_name = name.lower()
+    uf = {x.strip().lower() for x in (user_forbidden or set()) if x and str(x).strip()}
+    if any(f and f in nl_name for f in uf):
+        name = "this idea"
+    kb = get_kb()
+    related_ev = _related_concepts_in_evidence(
+        plan, primary, kb, user_forbidden=user_forbidden
+    )
+    if related_ev:
+        related_phrase = related_ev[0]
         return (
             f"That matters because {name} keeps reappearing alongside {related_phrase}, "
             "so a clean grasp here makes the next idea easier to read."
@@ -428,7 +535,9 @@ def _grounded_why_it_matters(
 
 
 def render_tutor_style_answer(
-    plan: AnswerPlan, evidence: list[dict[str, Any]]
+    plan: AnswerPlan,
+    evidence: list[dict[str, Any]],
+    structured_query: StructuredQuery | None = None,
 ) -> str:
     """Tutor-tone narrative answer for chat-mode replies.
 
@@ -476,10 +585,14 @@ def render_tutor_style_answer(
     raw_explanation_lines = _build_explanation_bullets(
         plan, evidence, primary, skip_first_chunk_lines=lines_consumed_by_direct_answer
     )
-    concept_label = _primary_concept_label(plan, primary)
+    concept_label = _primary_concept_label(plan, primary, structured_query)
+    uf = _user_forbidden_set(structured_query)
+    if uf and raw_direct_answer and _line_contains_user_forbidden(raw_direct_answer, uf):
+        raw_direct_answer = ""
     cleaned_explanation_lines = _clean_explanation_lines(
         raw_explanation_lines, direct_answer=raw_direct_answer
     )
+    cleaned_explanation_lines = _drop_lines_matching_forbidden(cleaned_explanation_lines, uf)
 
     paragraphs: list[str] = []
     paragraphs.append(_natural_opening_sentence(raw_direct_answer, concept_label))
@@ -490,10 +603,14 @@ def render_tutor_style_answer(
     example_block_lines: list[str] = []
     if plan.include_example:
         example_text = _example_intuition_block(primary)
+        if uf and _line_contains_user_forbidden(example_text, uf):
+            example_text = ""
         if _has_concrete_example(example_text):
             example_block_lines = _format_example_block(example_text)
 
     paragraphs = _dedupe_paragraphs([p for p in paragraphs if p])
+    if uf:
+        paragraphs = [p for p in paragraphs if not _line_contains_user_forbidden(p, uf)]
 
     rendered_lines: list[str] = ["Course Answer:", ""]
     for paragraph in paragraphs:
@@ -508,15 +625,31 @@ def render_tutor_style_answer(
         _key_idea_sentence(raw_direct_answer, cleaned_explanation_lines, concept_label),
         max_sentences=1,
     )
+    if uf and _line_contains_user_forbidden(key_idea, uf):
+        key_idea = (
+            f"{concept_label} is the anchor idea here."
+            if concept_label
+            else "The anchor idea is the definition in your notes."
+        )
     rendered_lines.extend(["The key idea:", key_idea, ""])
 
     why_it_matters = _truncate_to_first_sentences(
-        _grounded_why_it_matters(plan, primary, concept_label),
+        _grounded_why_it_matters(plan, primary, concept_label, user_forbidden=uf),
         max_sentences=2,
     )
     rendered_lines.append(why_it_matters)
 
-    return "\n".join(rendered_lines).rstrip()
+    out = "\n".join(rendered_lines).rstrip()
+    if uf and _line_contains_user_forbidden(out, uf):
+        # Last pass: drop forbidden mentions anywhere (e.g. stray contrast lines).
+        lines = out.split("\n")
+        kept: list[str] = []
+        for ln in lines:
+            if _line_contains_user_forbidden(ln, uf):
+                continue
+            kept.append(ln)
+        out = "\n".join(kept).strip()
+    return out
 
 
 def _build_explanation_bullets(
@@ -624,10 +757,12 @@ def generate_structured_answer(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
     structured_query: StructuredQuery,
+    *,
+    concept_constraints: ConceptConstraints | None = None,
 ) -> str:
     """Build **Course Answer:** with the tutor four-section layout (aligned with OpenAI primary path)."""
-    constraints = structured_query.response_constraints
-    if constraints.allow_incorrect_statements:
+    rc = structured_query.response_constraints
+    if rc.allow_incorrect_statements:
         refusal_message = (
             "Course Answer:\n\n"
             "### Direct Answer\n"
@@ -680,25 +815,32 @@ def generate_structured_answer(
             "Staying close to the course vocabulary keeps answers aligned with what you’re graded on."
         )
 
-    # Chat-mode intents flow as a tutor narrative. Compare / compare_multi
-    # already returned above; lecture_summary and cross_lecture_synthesis fall
-    # through to the legacy four-section markdown layout below.
-    #
-    # The narrow exception is the structured-explanation constraints
+    # Chat-shaped intents flow as a tutor narrative via :func:`compose_concept_answer`.
+    # The narrow exception is structured-explanation constraints
     # (``exact_explanation_count`` / ``repeat_explanation_times``), which
     # explicitly request the numbered-subsection / repeated-block layout —
     # those keep the legacy markdown so the dedicated copy still applies.
     keeps_legacy_structured_layout = (
-        constraints.exact_explanation_count is not None
-        or constraints.repeat_explanation_times is not None
+        rc.exact_explanation_count is not None
+        or rc.repeat_explanation_times is not None
     )
     if plan.answer_mode in _CHAT_NARRATIVE_MODES and not keeps_legacy_structured_layout:
+        from app.services.answers.concept_answer_composer import compose_concept_answer
+
         # Honor ``no_examples`` / ``intuition_only`` by suppressing the example
         # block at the call site, without mutating the planner's plan instance.
         plan_for_render = plan
-        if constraints.no_examples or constraints.intuition_only:
+        if rc.no_examples or rc.intuition_only:
             plan_for_render = dataclasses.replace(plan, include_example=False)
-        return render_tutor_style_answer(plan_for_render, all_chunks)
+        purity_constraints = concept_constraints
+        if purity_constraints is None:
+            purity_constraints = build_concept_constraints(structured_query, get_kb())
+        return compose_concept_answer(
+            plan_for_render,
+            all_chunks,
+            structured_query,
+            constraints=purity_constraints,
+        )
 
     direct_answer_text, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
     explanation_bullets = _build_explanation_bullets(
@@ -707,7 +849,7 @@ def generate_structured_answer(
     example_intuition_text = _example_intuition_block(primary)
     why_it_matters_text = _why_matters_block(plan, structured_query, primary)
 
-    requested_distinct_explanations = constraints.exact_explanation_count
+    requested_distinct_explanations = rc.exact_explanation_count
     wants_numbered_explanation_subsections = (
         requested_distinct_explanations is not None and requested_distinct_explanations >= 2
     )
@@ -751,7 +893,7 @@ def generate_structured_answer(
                 "- The notes may pack the idea into a short block—say if you want it slower or with a diagram."
             )
 
-    repeat_explanation_count = constraints.repeat_explanation_times
+    repeat_explanation_count = rc.repeat_explanation_times
     if repeat_explanation_count is not None and repeat_explanation_count >= 2:
         repeated_explanation_markdown = (
             "\n".join(f"- {bullet_text}" for bullet_text in explanation_bullets)
@@ -767,7 +909,7 @@ def generate_structured_answer(
             ]
         )
 
-    if constraints.intuition_only:
+    if rc.intuition_only:
         course_answer_lines.extend(
             [
                 "",
@@ -782,7 +924,7 @@ def generate_structured_answer(
         )
         return "\n".join(course_answer_lines).rstrip()
 
-    if constraints.no_examples:
+    if rc.no_examples:
         course_answer_lines.extend(
             [
                 "",

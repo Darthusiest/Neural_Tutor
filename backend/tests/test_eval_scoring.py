@@ -39,7 +39,10 @@ def _case(**kw) -> EvalCase:
         forbidden_sections=d["forbidden_sections"],
         category=d["category"],
         error_tags=d["error_tags"],
+        critical=bool(d.get("critical", False)),
         mode=d["mode"],
+        mode_override=d.get("mode_override") or "",
+        raw={},
     )
 
 

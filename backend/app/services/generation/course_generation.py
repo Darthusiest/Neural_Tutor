@@ -8,6 +8,7 @@ from flask import current_app
 
 from app.services.answers.answer_generation import generate_structured_answer
 from app.services.answers.answer_planning import AnswerPlan
+from app.services.answers.concept_constraints import ConceptConstraints
 from app.services.generation.llm import generate_plan_constrained_answer
 from app.services.knowledge.structured_query import StructuredQuery
 
@@ -16,6 +17,9 @@ def generate_course_answer(
     plan: AnswerPlan,
     chunks: list[dict[str, Any]],
     sq: StructuredQuery,
+    *,
+    retrieval_confidence: float | None = None,
+    concept_constraints: ConceptConstraints | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Generate the main **Course Answer** only.
@@ -30,7 +34,17 @@ def generate_course_answer(
     # so the per-mode shape (Quiz: + Answer Key, Summary: + Main idea/Key topics, compare table)
     # cannot be overwritten by a free-form generation path.
     if plan.answer_mode in ("compare", "compare_multi", "lecture_summary", "teaching_plus_check"):
-        text = generate_structured_answer(plan, chunks, sq)
+        text = generate_structured_answer(plan, chunks, sq, concept_constraints=concept_constraints)
+        return text.strip(), "rule_based", {}
+
+    threshold = float(current_app.config.get("CONFIDENCE_THRESHOLD", 0.35))
+    if (
+        plan.answer_mode == "direct_definition"
+        and (plan.direct_answer or "").strip()
+        and retrieval_confidence is not None
+        and retrieval_confidence >= threshold
+    ):
+        text = generate_structured_answer(plan, chunks, sq, concept_constraints=concept_constraints)
         return text.strip(), "rule_based", {}
 
     use_openai = bool(current_app.config.get("PRIMARY_COURSE_ANSWER_OPENAI")) and bool(
@@ -40,4 +54,8 @@ def generate_course_answer(
         text, usage_meta = generate_plan_constrained_answer(plan, chunks, sq)
         if text and text.strip():
             return text.strip(), "openai", usage_meta or {}
-    return generate_structured_answer(plan, chunks, sq), "rule_based", {}
+    return (
+        generate_structured_answer(plan, chunks, sq, concept_constraints=concept_constraints),
+        "rule_based",
+        {},
+    )

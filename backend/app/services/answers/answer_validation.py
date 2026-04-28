@@ -29,6 +29,7 @@ CRITICAL_CHECK_NAMES = frozenset(
         "must_have_each_side_evidence_or_note",
         "must_direct_answer_match_target",
         "must_not_have_section_duplication",
+        "must_be_concept_pure",
     }
 )
 
@@ -704,10 +705,13 @@ def validate_answer(
     if plan.direct_answer:
         soft_ok = _must_direct_answer_mention_target_concept(plan, sq, kb)
         run("must_direct_answer_mention_target_concept", soft_ok)
-        # Promote to a critical contract for direct_definition /
-        # multi_step_explanation only — these modes own a clearly target-
-        # bound direct answer. Other intents keep the legacy soft warn.
-        if ai in ("direct_definition", "multi_step_explanation"):
+        # Critical when the direct answer must bind to the primary concept.
+        if ai in (
+            "direct_definition",
+            "multi_step_explanation",
+            "scoped_explanation",
+            "simplified_reteach",
+        ):
             run("must_direct_answer_match_target", soft_ok)
 
     generic = len(answer) < 120 and not sq.concept_ids

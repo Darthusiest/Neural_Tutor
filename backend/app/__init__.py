@@ -42,7 +42,7 @@ def create_app(config_object: type | None = None) -> Flask:
         app,
         resources={
             r"/api/*": {
-                "origins": [app.config["FRONTEND_ORIGIN"]],
+                "origins": app.config["FRONTEND_ORIGINS"],
                 "allow_headers": ["Content-Type", "X-CSRFToken"],
                 "expose_headers": [],
             }

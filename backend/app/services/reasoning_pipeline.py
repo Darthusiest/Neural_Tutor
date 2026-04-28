@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,6 +63,7 @@ def run_reasoning_pipeline(
     4. Validate; if LLM answer was used and validation **failed**, fall back to rule-based.
     """
     kb = get_kb()
+    pipeline_t0 = time.perf_counter()
     enhanced = retrieve_enhanced(query, top_k=top_k, backend=backend, user_mode=user_mode)
     intent = enhanced.query_intent
     if intent is None:
@@ -113,12 +115,20 @@ def run_reasoning_pipeline(
 
     constraints = build_concept_constraints(sq, kb)
     constrained_chunks = apply_concept_constraints(enhanced.chunks, constraints)
+    supporting_raw = list(enhanced.supporting_chunks or [])
+    constrained_supporting = (
+        apply_concept_constraints(supporting_raw, constraints) if supporting_raw else []
+    )
     plan = build_answer_plan(
-        sq, constrained_chunks, enhanced.supporting_chunks, kb=kb, constraints=constraints
+        sq, constrained_chunks, constrained_supporting, kb=kb, constraints=constraints
     )
 
     course_answer, primary_model, primary_llm_usage = generate_course_answer(
-        plan, constrained_chunks, sq
+        plan,
+        constrained_chunks,
+        sq,
+        retrieval_confidence=enhanced.confidence,
+        concept_constraints=constraints,
     )
     used_llm = primary_model == "openai"
 
@@ -134,7 +144,12 @@ def run_reasoning_pipeline(
         constraints=constraints,
     )
 
-    if bool(current_app.config.get("PIPELINE_RETRIEVAL_RETRY_ENABLED", True)) and validation.severity == "fail":
+    retry_budget_s = float(current_app.config.get("PIPELINE_RETRY_WALL_CLOCK_BUDGET_SEC", 3.5))
+    if (
+        bool(current_app.config.get("PIPELINE_RETRIEVAL_RETRY_ENABLED", True))
+        and validation.severity == "fail"
+        and (time.perf_counter() - pipeline_t0) <= retry_budget_s
+    ):
         extra = int(current_app.config.get("PIPELINE_RETRY_TOP_K_EXTRA", 6))
         enhanced2 = retrieve_enhanced(
             query, top_k=top_k + extra, backend=backend, user_mode=user_mode
@@ -147,15 +162,25 @@ def run_reasoning_pipeline(
             )
             constraints = build_concept_constraints(sq, kb)
             constrained_chunks = apply_concept_constraints(enhanced.chunks, constraints)
+            supporting_raw2 = list(enhanced.supporting_chunks or [])
+            constrained_supporting = (
+                apply_concept_constraints(supporting_raw2, constraints)
+                if supporting_raw2
+                else []
+            )
             plan = build_answer_plan(
                 sq,
                 constrained_chunks,
-                enhanced.supporting_chunks,
+                constrained_supporting,
                 kb=kb,
                 constraints=constraints,
             )
             course_answer, primary_model, primary_llm_usage = generate_course_answer(
-                plan, constrained_chunks, sq
+                plan,
+                constrained_chunks,
+                sq,
+                retrieval_confidence=enhanced.confidence,
+                concept_constraints=constraints,
             )
             used_llm = primary_model == "openai"
             pl_lectures = [
@@ -173,7 +198,9 @@ def run_reasoning_pipeline(
             )
 
     if used_llm and validation.severity == "fail":
-        course_answer = generate_structured_answer(plan, constrained_chunks, sq)
+        course_answer = generate_structured_answer(
+            plan, constrained_chunks, sq, concept_constraints=constraints
+        )
         primary_model = "rule_based"
         used_llm = False
         primary_llm_usage = {}
@@ -212,6 +239,7 @@ def run_reasoning_pipeline(
         )
 
     enhanced.chunks = constrained_chunks
+    enhanced.supporting_chunks = constrained_supporting
     enhanced.structured_query = sq
     enhanced.answer_plan = plan
     enhanced.validation_result = validation

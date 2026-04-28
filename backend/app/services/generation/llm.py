@@ -58,6 +58,7 @@ def _openai_chat(
     messages: list[dict[str, str]],
     *,
     temperature: float | None = None,
+    timeout_sec: int | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """
     Minimal chat-completions call (stdlib only).
@@ -69,7 +70,11 @@ def _openai_chat(
         return None, {}
 
     model = current_app.config.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-    timeout = int(current_app.config.get("OPENAI_TIMEOUT_SEC", 60))
+    timeout = int(
+        timeout_sec
+        if timeout_sec is not None
+        else current_app.config.get("OPENAI_TIMEOUT_SEC", 60)
+    )
     temp = (
         float(temperature)
         if temperature is not None
@@ -121,38 +126,140 @@ def _openai_chat(
     return str(text).strip(), meta
 
 
+_OPENAI_BOOST_SYSTEM = (
+    "You are a teaching assistant for LING 487. Produce a **Boosted Explanation** that "
+    "clarifies or expands the student's understanding using ONLY the COURSE_ANSWER and "
+    "RETRIEVED_CHUNKS. Do not contradict the Course Answer. Do not introduce facts not "
+    "supported by the materials. If material is thin, say so briefly. "
+    "Start with the exact line:\n\nBoosted Explanation:\n\n"
+)
+
+_OPENAI_BOOST_CONSTRAINED_SYSTEM = (
+    "You are improving clarity ONLY.\n\n"
+    "Rules:\n"
+    "- Do NOT introduce any new concepts.\n"
+    "- ONLY use ideas present in allowed_evidence_lines.\n"
+    "- If draft contains forbidden concepts, REMOVE them.\n"
+    "- Do NOT mention forbidden_terms.\n"
+    "- Do NOT expand beyond the topic.\n"
+    "- Keep explanation concise and tutor-like.\n\n"
+    "Goal: rewrite for clarity, not add content.\n"
+    "Start with the exact line:\n\nBoosted Explanation:\n\n"
+)
+
+
+def _ensure_boost_prefix(text: str) -> str:
+    if not text.lower().startswith("boosted explanation"):
+        return "Boosted Explanation:\n\n" + text
+    return text
+
+
 def generate_boosted_explanation(
     user_question: str,
     retrieved_context: str,
 ) -> tuple[str | None, dict]:
     """
-    OpenAI-only **Boosted Explanation** (optional fallback).
+    Legacy OpenAI **Boosted Explanation** entrypoint (used by the legacy non-structured path).
 
-    Primary product path uses Gemini: :func:`app.services.generation.gemini_boost.generate_boosted_explanation`.
-    This function is used when ``OPENAI_BOOST_FALLBACK`` is enabled and Gemini is unavailable.
+    Modern code should call :func:`generate_openai_boosted_explanation`, which mirrors the
+    Gemini signature so the orchestrator can run either provider symmetrically.
 
     Returns (text, usage_meta).
     """
     if not current_app.config.get("OPENAI_API_KEY"):
         return None, {}
 
-    system = (
-        "You are a teaching assistant for LING 487. Produce a **Boosted Explanation** that "
-        "clarifies the student's question using ONLY ideas supported by the RETRIEVED_CONTEXT. "
-        "If context is thin, say so and stay course-relevant—do not invent facts. "
-        "Start the response with the exact line:\n\nBoosted Explanation:\n\n"
-        "then continue. Do not restate the full Course Answer verbatim."
-    )
     user = (
         f"STUDENT_QUESTION:\n{user_question}\n\n"
         f"RETRIEVED_CONTEXT (JSON lecture chunks):\n{retrieved_context}"
     )
     boost_temp = float(current_app.config.get("OPENAI_TEMPERATURE_BOOST", 0.45))
     text, usage = _openai_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        [{"role": "system", "content": _OPENAI_BOOST_SYSTEM}, {"role": "user", "content": user}],
         temperature=boost_temp,
     )
+    if text:
+        text = _ensure_boost_prefix(text)
     return text, usage
+
+
+def generate_openai_boosted_explanation(
+    user_question: str,
+    course_answer_block: str,
+    plan: "AnswerPlan",
+    chunks: list[dict[str, Any]],
+    sq: "StructuredQuery",
+) -> tuple[str | None, dict[str, Any]]:
+    """
+    OpenAI **Boosted Explanation** with the same structured payload as the Gemini path.
+
+    Mirrors :func:`app.services.generation.gemini_boost.generate_gemini_boosted_explanation`
+    so the orchestrator can route either provider through one shared call site.
+    """
+    if not current_app.config.get("OPENAI_API_KEY"):
+        return None, {}
+
+    payload = {
+        "student_question": user_question,
+        "answer_plan_summary": plan.to_dict() if hasattr(plan, "to_dict") else {},
+        "course_answer": (course_answer_block or "")[:80_000],
+        "retrieved_chunks": chunks[:16],
+    }
+    user_text = (
+        f"STUDENT_QUESTION:\n{user_question}\n\n"
+        f"STRUCTURED_CONTEXT_JSON:\n{json.dumps(payload, ensure_ascii=False)[:100_000]}"
+    )
+    boost_temp = float(current_app.config.get("OPENAI_TEMPERATURE_BOOST", 0.45))
+    text, usage = _openai_chat(
+        [
+            {"role": "system", "content": _OPENAI_BOOST_SYSTEM},
+            {"role": "user", "content": user_text},
+        ],
+        temperature=boost_temp,
+    )
+    if not text:
+        return None, usage
+    return _ensure_boost_prefix(text), usage
+
+
+def generate_openai_constrained_boost(
+    *,
+    user_question: str,
+    target_concept: str,
+    allowed_evidence_lines: list[str],
+    forbidden_terms: list[str],
+    draft_answer: str,
+    mode: str,
+) -> tuple[str | None, dict[str, Any]]:
+    """Constrained boost: clarity-only rewrite with capped evidence (deferred endpoint)."""
+    if not current_app.config.get("OPENAI_API_KEY"):
+        return None, {}
+
+    lines = [ln[:400] for ln in (allowed_evidence_lines or [])[:5]]
+    payload = {
+        "target_concept": target_concept,
+        "allowed_evidence_lines": lines,
+        "forbidden_terms": list(forbidden_terms or [])[:40],
+        "draft_answer": (draft_answer or "")[:8000],
+        "mode": mode or "chat",
+    }
+    user_text = (
+        f"STUDENT_QUESTION:\n{user_question[:4000]}\n\n"
+        f"BOOST_INPUT_JSON:\n{json.dumps(payload, ensure_ascii=False)[:50_000]}"
+    )
+    boost_temp = float(current_app.config.get("OPENAI_TEMPERATURE_BOOST", 0.45))
+    boost_timeout = int(current_app.config.get("BOOST_TIMEOUT_SEC", 2))
+    text, usage = _openai_chat(
+        [
+            {"role": "system", "content": _OPENAI_BOOST_CONSTRAINED_SYSTEM},
+            {"role": "user", "content": user_text},
+        ],
+        temperature=boost_temp,
+        timeout_sec=boost_timeout,
+    )
+    if not text:
+        return None, usage
+    return _ensure_boost_prefix(text), usage
 
 
 def generate_comparison_boost(
@@ -201,9 +308,11 @@ def generate_plan_constrained_answer(
     clean_input = build_generation_input(sq, plan, chunks)
     user = format_generation_prompt_user_message(clean_input)
     course_temp = float(current_app.config.get("OPENAI_TEMPERATURE_COURSE_ANSWER", 0.4))
+    primary_timeout = int(current_app.config.get("PRIMARY_LLM_TIMEOUT_SEC", 8))
     raw, usage = _openai_chat(
         [{"role": "system", "content": _COURSE_ANSWER_SYSTEM_PROMPT}, {"role": "user", "content": user}],
         temperature=course_temp,
+        timeout_sec=primary_timeout,
     )
     if not raw:
         return None, usage

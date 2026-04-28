@@ -13,6 +13,7 @@ from typing import Any
 
 from app import create_app
 from app.eval.dataset import case_expected_behavior_dict, load_eval_dataset
+from app.eval.regression import write_regression_report
 from app.eval.report_markdown import (
     canonical_tags_and_retrieval_blob,
     fetch_previous_run_map,
@@ -381,6 +382,9 @@ def main(argv: list[str] | None = None) -> int:
             "structured_pipeline_enabled": struct_on,
             "boost_toggle": boost_toggle,
         }
+        reg_path = write_regression_report(out_dir, run_id, dname)
+        if reg_path is not None:
+            summary["regression_report"] = str(reg_path)
         (out_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )

@@ -19,6 +19,7 @@ class EvalCase:
     forbidden_sections: list[str] = field(default_factory=list)
     category: str = ""
     error_tags: list[str] = field(default_factory=list)
+    critical: bool = False
     note: str | None = None
     mode: str = "auto"
     mode_override: str = ""
@@ -46,6 +47,7 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
             mode = "auto"
         if mode_override and mode_override not in ("auto", "chat", "quiz", "compare", "summary"):
             mode_override = ""
+        critical = bool(item.get("critical"))
         cases.append(
             EvalCase(
                 id=case_id,
@@ -57,6 +59,7 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
                 forbidden_sections=[str(x) for x in (item.get("forbidden_sections") or []) if x is not None],
                 category=(item.get("category") or "").strip(),
                 error_tags=[str(x) for x in (item.get("error_tags") or []) if x is not None],
+                critical=critical,
                 note=(item.get("note") or None),
                 mode=mode,
                 mode_override=mode_override,
@@ -76,6 +79,17 @@ def case_expected_behavior_dict(case: EvalCase) -> dict[str, Any]:
         "forbidden_sections": case.forbidden_sections,
         "category": case.category,
         "error_tags": case.error_tags,
+        "critical": case.critical,
         "mode": case.mode,
         "mode_override": case.mode_override,
     }
+
+
+def case_is_critical_from_behavior(beh: dict[str, Any]) -> bool:
+    """Suite marker: ``critical: true`` or ``error_tags`` contains ``critical``."""
+    if beh.get("critical") is True:
+        return True
+    for t in beh.get("error_tags") or []:
+        if str(t).strip().lower() == "critical":
+            return True
+    return False

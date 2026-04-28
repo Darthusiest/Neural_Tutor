@@ -19,14 +19,12 @@ from app.models import (
     RetrievalChunkHit,
     RetrievalLog,
 )
-from app.services.answers.answer_planning import build_answer_plan
 from app.services.answers.clarification import (
     clarification_for_mode,
     is_underspecified_for_mode,
 )
+from app.services.answers.concept_constraints import build_concept_constraints
 from app.services.generation.boost_triggers import should_use_gemini_boost
-from app.services.generation.gemini_boost import generate_gemini_boosted_explanation
-from app.services.generation.llm import generate_boosted_explanation as generate_openai_boost_fallback
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import build_structured_query
 from app.services.query_mode import (
@@ -141,17 +139,6 @@ def _populate_previous_outcome(session: ChatSession, current_user_text: str) -> 
 
 def _response_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-
-
-def _plan_and_sq_for_gemini_boost(text: str, r: EnhancedRetrievalResult):
-    """Build :class:`AnswerPlan` + :class:`StructuredQuery` for legacy (non-structured) chat path."""
-    kb = get_kb()
-    intent = r.query_intent
-    if intent is None:
-        intent = analyze_query(text)
-    sq = build_structured_query(intent, kb=kb, mode_routing=r.mode_routing or {})
-    plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
-    return plan, sq
 
 
 def _build_underspecified_retrieval_result(
@@ -320,7 +307,7 @@ def handle_chat_turn(
         )
 
     boosted = None
-    boost_provider: str | None = None
+    boost_provider = None
     boost_usage_meta: dict[str, Any] | None = None
     primary_llm_usage: dict[str, Any] = pr.primary_llm_usage if pr else {}
     primary_for_log = pipeline_extra.get("primary_model") if pipeline_extra else None
@@ -328,52 +315,31 @@ def handle_chat_turn(
         pipeline_extra.get("validation", {}).get("severity") if pipeline_extra else None
     )
 
-    if need_boost:
-        gemini_key = current_app.config.get("GEMINI_API_KEY") or current_app.config.get(
-            "GOOGLE_API_KEY"
+    if pr is not None:
+        constraints_for_boost = build_concept_constraints(pr.structured_query, get_kb())
+    else:
+        intent_b = r.query_intent or analyze_query(text)
+        sq_b = build_structured_query(
+            intent_b, kb=get_kb(), mode_routing=r.mode_routing or {}
         )
-        if gemini_key and r.chunks:
-            if pr is not None:
-                boosted, gmeta = generate_gemini_boosted_explanation(
-                    text,
-                    course_answer,
-                    pr.answer_plan,
-                    r.chunks or [],
-                    pr.structured_query,
-                )
-            else:
-                plan_l, sq_l = _plan_and_sq_for_gemini_boost(text, r)
-                boosted, gmeta = generate_gemini_boosted_explanation(
-                    text,
-                    course_answer,
-                    plan_l,
-                    r.chunks or [],
-                    sq_l,
-                )
-            if boosted:
-                boost_provider = gmeta.get("provider", "gemini")
-                boost_usage_meta = gmeta
+        constraints_for_boost = build_concept_constraints(sq_b, get_kb())
+    boost_constraints_snapshot = constraints_for_boost.to_dict()
 
-        use_openai_fallback = bool(current_app.config.get("OPENAI_BOOST_FALLBACK")) and bool(
-            current_app.config.get("OPENAI_API_KEY")
-        )
-        if not boosted and use_openai_fallback:
-            ctx = json.dumps(r.chunks) if r.chunks else "[]"
-            boosted, ometa = generate_openai_boost_fallback(text, ctx)
-            if boosted:
-                boost_provider = "openai"
-                boost_usage_meta = ometa
+    if need_boost and r.chunks:
+        boost_status = "pending"
+    else:
+        boost_status = "skipped"
 
     logger.info(
         "chat_turn structured=%s confidence=%.3f primary_model=%s validation_severity=%s "
-        "need_boost=%s boost_reason=%s boost_provider=%s",
+        "need_boost=%s boost_reason=%s boost_status=%s",
         structured_on,
         r.confidence,
         primary_for_log,
         val_sev,
         need_boost,
         boost_reason,
-        boost_provider,
+        boost_status,
     )
 
     mode_meta = mode_metadata_for_api(r.mode_routing)
@@ -416,6 +382,8 @@ def handle_chat_turn(
                 ),
                 "boost_provider": boost_provider,
                 "boost_reason": boost_reason,
+                "boost_status": boost_status,
+                "boost_constraints": boost_constraints_snapshot,
                 "query_complexity": pipeline_extra.get("query_complexity") if pipeline_extra else None,
                 "no_match_kind": no_match_kind,
                 "mode": mode_meta,
@@ -430,8 +398,6 @@ def handle_chat_turn(
         parts: dict[str, Any] = {}
         if primary_llm_usage:
             parts["primary"] = primary_llm_usage
-        if boost_usage_meta:
-            parts["boost"] = boost_usage_meta
         if not parts:
             return None
         return json.dumps(parts)
@@ -525,7 +491,7 @@ def handle_chat_turn(
             )
 
     # --- ResponseVariant (enriched) ---
-    boost_used = boosted is not None
+    boost_used = bool(boosted)
     rv = ResponseVariant(
         message_id=assistant.id,
         retrieval_log_id=log.id,
@@ -552,6 +518,7 @@ def handle_chat_turn(
         "course_answer": course_answer,
         "answer": course_answer,
         "boosted_explanation": boosted,
+        "boost_status": boost_status,
         "retrieval_confidence": r.confidence,
         "boost_applied": boost_used,
         "mode": mode_meta,

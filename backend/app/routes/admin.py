@@ -13,6 +13,11 @@ from app.services.admin_insights import (
     render_low_confidence_csv,
     _parse_limit_offset,
 )
+from app.services.eval_admin import (
+    evaluation_run_detail,
+    evaluation_run_failures,
+    list_evaluation_runs,
+)
 
 bp = Blueprint("admin", __name__)
 
@@ -119,3 +124,42 @@ def insights_content_quality():
     if err := _admin_forbidden_response():
         return err
     return jsonify(compute_content_quality(_parse_days()))
+
+
+@bp.route("/eval/runs", methods=["GET"])
+@login_required
+@limiter.limit("60 per minute")
+def eval_runs_list():
+    """List persisted batch eval runs (``evaluation_runs``). Paths: ``/api/admin/eval/runs``."""
+    if err := _admin_forbidden_response():
+        return err
+    try:
+        lim = int(request.args.get("limit", "100"))
+    except (TypeError, ValueError):
+        lim = 100
+    ds = (request.args.get("dataset") or "").strip() or None
+    return jsonify(list_evaluation_runs(limit=lim, dataset_substring=ds))
+
+
+@bp.route("/eval/runs/<int:run_id>", methods=["GET"])
+@login_required
+@limiter.limit("120 per minute")
+def eval_run_get(run_id: int):
+    if err := _admin_forbidden_response():
+        return err
+    body = evaluation_run_detail(run_id)
+    if body is None:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify(body)
+
+
+@bp.route("/eval/runs/<int:run_id>/failures", methods=["GET"])
+@login_required
+@limiter.limit("120 per minute")
+def eval_run_failures_get(run_id: int):
+    if err := _admin_forbidden_response():
+        return err
+    body = evaluation_run_failures(run_id)
+    if body is None:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify(body)

@@ -434,6 +434,7 @@ def test_constraints_to_dict_round_trips(app):
             "target_aliases",
             "target_concepts",
             "target_lectures",
+            "user_forbidden_terms",
         ]
         assert "cnn" in snap["target_concepts"]
         assert isinstance(snap["forbidden_terms"], list)

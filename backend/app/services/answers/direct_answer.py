@@ -222,6 +222,13 @@ def _candidate_sentences_for_chat(
                     continue
                 if (
                     constraints is not None
+                    and not constraints.is_relational
+                    and constraints.forbidden_terms
+                    and line_has_forbidden(sentence, constraints)
+                ):
+                    continue
+                if (
+                    constraints is not None
                     and constraints.target_aliases
                     and not constraints.is_relational
                     and not chunk_target_scoped
@@ -288,6 +295,44 @@ def _rank_chat_sentence(
     return score, -length
 
 
+def _synthesize_minimal_direct_answer(
+    chunks: list[dict[str, Any]],
+    constraints: ConceptConstraints,
+) -> str | None:
+    """When ranking finds no good sentence, use the first pure, target-bearing line
+    from a target-scoped chunk (already reranked by concept constraints).
+    """
+    if constraints.is_relational or not constraints.target_aliases:
+        return None
+
+    for chunk in chunks:
+        if not _chunk_is_target_scoped(chunk, constraints):
+            continue
+        sources = [
+            chunk.get("clean_explanation"),
+            chunk.get("source_excerpt"),
+            chunk.get("sample_answer"),
+        ]
+        for src in sources:
+            if not src:
+                continue
+            for sentence in _split_sentences(str(src)):
+                if _looks_like_skip(sentence):
+                    continue
+                length = len(sentence)
+                if length < _MIN_LEN or length > _MAX_LEN:
+                    continue
+                if not line_has_target(sentence, constraints):
+                    continue
+                if line_has_forbidden(sentence, constraints):
+                    continue
+                if not is_line_concept_pure(sentence, constraints):
+                    continue
+                return _normalize_terminal(sentence)
+
+    return None
+
+
 def _select_chat_direct_answer(
     chunks: list[dict[str, Any]],
     constraints: ConceptConstraints | None,
@@ -313,14 +358,14 @@ def _select_chat_direct_answer(
         chunks, constraints, kb=kb, primary_concept_id=primary_id
     )
     if not candidates:
-        return None
+        return _synthesize_minimal_direct_answer(chunks, constraints)
     scored = [
         (_rank_chat_sentence(sent, chunk, constraints), sent) for sent, chunk in candidates
     ]
     scored.sort(key=lambda x: (x[0][0], x[0][1]), reverse=True)
     best_score, best_sentence = scored[0]
     if best_score[0] < 0:
-        return None
+        return _synthesize_minimal_direct_answer(chunks, constraints)
     return _normalize_terminal(best_sentence)
 
 
