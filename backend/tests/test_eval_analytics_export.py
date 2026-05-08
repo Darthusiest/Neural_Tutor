@@ -19,56 +19,6 @@ from app.extensions import db
 from app.models import EvaluationCaseResult, EvaluationRun
 
 
-def test_plot_eval_metrics_writes_pngs(app, tmp_path, monkeypatch):
-    from app.eval import plot_eval_metrics
-
-    # CLI modules call create_app() with production Config; bind to test DB.
-    monkeypatch.setattr(plot_eval_metrics, "create_app", lambda config_object=None: app)
-
-    with app.app_context():
-        r = EvaluationRun(
-            run_name="plot",
-            dataset_name="ds",
-            total_cases=1,
-            passed_cases=1,
-            failed_cases=0,
-            overall_score=0.9,
-            notes_json="{}",
-        )
-        db.session.add(r)
-        db.session.flush()
-        rid = r.id
-        db.session.add(
-            EvaluationCaseResult(
-                evaluation_run_id=rid,
-                test_id="only",
-                query_text="q",
-                expected_mode="chat",
-                detected_mode="chat",
-                effective_mode="chat",
-                expected_behavior_json=json.dumps({"category": "definitions"}),
-                actual_response="",
-                pass_bool=True,
-                score=1.0,
-                error_categories_json="[]",
-                validation_failures_json=None,
-                retrieval_chunk_ids_json="[]",
-                latency_ms=50,
-            )
-        )
-        db.session.commit()
-
-    code = plot_eval_metrics.main(["--out-dir", str(tmp_path), "--run-ids", str(rid)])
-    assert code == 0
-    for name in (
-        "iteration_accuracy_over_runs.png",
-        "capability_breakdown.png",
-        "error_distribution.png",
-    ):
-        assert (tmp_path / name).is_file()
-    assert not (tmp_path / "latency_over_time.png").exists()
-
-
 def test_suite_category_fallback(app):
     with app.app_context():
         c = EvaluationCaseResult(

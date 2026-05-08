@@ -95,6 +95,19 @@ class TestAnswerPlanning:
                     assert cid not in seen, f"chunk {cid} reused across sections"
                     seen.add(cid)
 
+    def test_compare_plan_requires_clarification_when_entities_unresolved(self, corpus, app):
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("What is the difference between spectral features and temporal features?")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=8)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            if len(sq.concept_ids) < 2:
+                assert plan.requires_clarification is True
+                assert plan.clarification_reason == "compare_unresolved_entities"
+
 
 class TestValidation:
     def test_compare_missing_side_fails(self, corpus, app):
@@ -198,7 +211,7 @@ class TestRuleBasedTutorFormat:
             assert "matters because" in text.lower()
 
     def test_chat_mode_softmax_example_and_no_repeated_lines(self, corpus, app):
-        """Softmax-specific: bracketed example, probability framing, key idea, no duplicates (Task 8)."""
+        """Softmax definition: probability framing + key idea + no repeated lines."""
         with app.app_context():
             kb = get_kb(_KB)
             intent = analyze_query("What is softmax?")
@@ -214,9 +227,8 @@ class TestRuleBasedTutorFormat:
             assert "probabilit" in lowered, (
                 "softmax answer must mention probabilities to ground the explanation"
             )
-            # Bracketed numeric example like "[2,5]" or "[2, 5]" should appear when
-            # the corpus carries it. The fixture corpus does, so this is locked in.
-            assert "[2," in text, "expected a bracketed numeric example like [2,5]"
+            # Definition questions stay concise: no forced example block.
+            assert "Think of it this way:" not in text
             # No repeated content lines (paragraph dedupe + sentence dedupe in renderer).
             normalized = [
                 " ".join(ln.lower().split()).rstrip(".!?:—-")
@@ -266,6 +278,23 @@ class TestRuleBasedTutorFormat:
             text = generate_structured_answer(plan, r.chunks, sq)
             assert "### Direct Answer" in text
             assert "### Repeated explanation (as requested)" in text
+
+    def test_mfcc_process_query_returns_numbered_steps_or_clarification(self, corpus, app):
+        """Step-by-step process answers must be concrete numbered steps or fail closed."""
+        with app.app_context():
+            kb = get_kb(_KB)
+            intent = analyze_query("Explain the steps used to compute MFCCs from a raw speech signal.")
+            sq = build_structured_query(intent, kb=kb)
+            from app.services.retrieval_v2 import retrieve_enhanced
+
+            r = retrieve_enhanced(intent.original_query, top_k=8)
+            plan = build_answer_plan(sq, r.chunks, r.supporting_chunks, kb=kb)
+            text = generate_structured_answer(plan, r.chunks, sq)
+            numbered = [
+                ln for ln in text.split("\n") if ln.strip().startswith(("1. ", "2. ", "3. "))
+            ]
+            has_clarification = "don't have enough lecture material" in text.lower()
+            assert len(numbered) >= 3 or has_clarification
 
     def test_compare_answer_no_per_line_scaffold_spam(self, corpus, app):
         """Regression: compare mode must not repeat 'First idea' / 'In one line' on every bullet."""

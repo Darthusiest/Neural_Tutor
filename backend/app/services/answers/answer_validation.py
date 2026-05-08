@@ -134,6 +134,11 @@ _GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"this topic connects to", re.IGNORECASE),
     re.compile(r"solid intuition here makes the next topics", re.IGNORECASE),
     re.compile(r"notation and vocabulary pay off later", re.IGNORECASE),
+    re.compile(r"captures sound shape", re.IGNORECASE),
+    re.compile(r"essence of sound", re.IGNORECASE),
+    re.compile(r"compact representation", re.IGNORECASE),
+    re.compile(r"fingerprint of sound", re.IGNORECASE),
+    re.compile(r"clear intuition for this topic", re.IGNORECASE),
 )
 
 

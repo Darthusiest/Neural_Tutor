@@ -18,6 +18,7 @@ from app.eval.capability_analytics import (
     write_capability_report_md,
 )
 from app.eval.dataset import case_expected_behavior_dict, load_eval_dataset
+from app.eval.evaluation_outputs import generate_evaluation_outputs
 from app.eval.regression import write_regression_report
 from app.eval.report_markdown import (
     canonical_tags_and_retrieval_blob,
@@ -490,6 +491,9 @@ def main(argv: list[str] | None = None) -> int:
             cases=persisted_cases,
             payload=analytics_payload,
         )
+
+        eval_outputs_dir = _repo_root() / "evaluation_outputs"
+        generate_evaluation_outputs(persisted_cases, eval_outputs_dir, current_run=run)
 
     print(
         f"Eval run {run_id} done: {passed_n}/{len(cases)} passed, mean score {run.overall_score}. "

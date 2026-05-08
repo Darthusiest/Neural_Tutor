@@ -8,7 +8,10 @@ from typing import Any
 
 from flask import current_app
 
-from app.services.answers.answer_generation import generate_structured_answer
+from app.services.answers.answer_generation import (
+    generate_structured_answer,
+    strict_clarification_answer,
+)
 from app.services.answers.answer_planning import AnswerPlan, build_answer_plan
 from app.services.answers.answer_validation import ValidationResult, validate_answer
 from app.services.answers.clarification import clarification_for_mode
@@ -109,6 +112,51 @@ def run_reasoning_pipeline(
             validation=vr,
             used_llm_for_answer=False,
             primary_model="none",
+            query_complexity=complexity,
+            primary_llm_usage={},
+        )
+
+    confidence_threshold = float(current_app.config.get("CONFIDENCE_THRESHOLD", 0.35))
+    if not sq.concept_ids and float(enhanced.confidence or 0.0) < confidence_threshold:
+        low_confidence_plan = AnswerPlan(
+            answer_mode=sq.answer_intent,
+            sections=[],
+            primary_chunk_ids=[c.get("id") for c in enhanced.chunks if c.get("id") is not None],
+            supporting_chunk_ids=[
+                c.get("id") for c in (enhanced.supporting_chunks or []) if c.get("id") is not None
+            ],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=list(sq.lecture_scope),
+            section_specs=[],
+            evidence_bundles={},
+            direct_answer=None,
+            requires_clarification=True,
+            clarification_reason="low_confidence_no_target",
+        )
+        vr = ValidationResult(
+            passed=True,
+            checks_run=[],
+            checks_passed=[],
+            checks_failed=[],
+            flags={"low_confidence_no_target": True},
+            severity="pass",
+        )
+        course_answer = strict_clarification_answer("definition", reason="low_confidence_no_target")
+        enhanced.structured_query = sq
+        enhanced.answer_plan = low_confidence_plan
+        enhanced.validation_result = vr
+        return PipelineResult(
+            enhanced_result=enhanced,
+            structured_query=sq,
+            answer_plan=low_confidence_plan,
+            course_answer=course_answer,
+            validation=vr,
+            used_llm_for_answer=False,
+            primary_model="rule_based",
             query_complexity=complexity,
             primary_llm_usage={},
         )

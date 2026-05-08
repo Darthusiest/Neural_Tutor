@@ -7,7 +7,7 @@ Uses generic lexical cues only—no topic-specific hardcoding.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
 from app.services.answers.concept_constraints import (
@@ -692,26 +692,84 @@ _PROCESS_STEP_VERB_RE = re.compile(
 )
 
 
+QueryTypeLabel = Literal[
+    "definition",
+    "mechanism",
+    "step_by_step",
+    "comparison",
+    "why",
+    "limitation",
+]
+
+
+_STEP_BY_STEP_QUERY_RE = re.compile(
+    r"\bstep[- ]by[- ]step\b|"
+    r"\bwalk me through\b|"
+    r"\bprocess of\b|"
+    r"\b(steps?|stages?|phases?)\b\s+(?:used|involved|to|of)\b|"
+    r"\bcompute\b.*\bfrom\b|"
+    r"\bhow .* (?:computed|derived|built|constructed)\b",
+    re.IGNORECASE,
+)
+
+_COMPARISON_QUERY_RE = re.compile(
+    r"\b(difference|differ|vs\.?|versus|contrast|compare|comparison)\b",
+    re.IGNORECASE,
+)
+
+_LIMITATION_QUERY_RE = re.compile(
+    r"\bwhy not\b|\blimitations?\b|\bcan'?t\b|\bdoes not\b|\bfails?\b",
+    re.IGNORECASE,
+)
+
+_MECHANISM_QUERY_RE = re.compile(
+    r"\bhow does\b|\bhow is\b|\bhow do\b|\brole of\b",
+    re.IGNORECASE,
+)
+
+
+def classify_query_type(
+    sq: StructuredQuery | None,
+    *,
+    answer_mode: str | None = None,
+) -> QueryTypeLabel:
+    """Strict query-type taxonomy used by the composer templates."""
+    mode = (answer_mode or (sq.answer_intent if sq else "")).strip().lower()
+    if mode in {"compare", "compare_multi"}:
+        return "comparison"
+    raw = (sq.intent.original_query if sq else "").strip().lower()
+    if _COMPARISON_QUERY_RE.search(raw):
+        return "comparison"
+    if _STEP_BY_STEP_QUERY_RE.search(raw):
+        return "step_by_step"
+    if _LIMITATION_QUERY_RE.search(raw):
+        return "limitation"
+    if raw.startswith("why "):
+        return "why"
+    if _MECHANISM_QUERY_RE.search(raw):
+        return "mechanism"
+    if re.match(r"\s*(?:what\s+is|what\s+are|define|explain)\b", raw):
+        return "definition"
+    return "definition"
+
+
 def _classify_query_signals(sq: StructuredQuery | None) -> dict[str, Any]:
+    """Legacy query signals shim kept for older tests/callers."""
+    qtype = classify_query_type(sq)
     raw = (sq.intent.original_query if sq else "").lower()
-    wants_steps = bool(
-        re.search(
-            r"\bstep[- ]by[- ]step\b|\bhow is it computed\b|\bwalk me through\b|\bprocess of\b",
-            raw,
-        )
-    )
+    wants_steps = qtype == "step_by_step"
     wants_example = bool(re.search(r"\bexample\b|\bshow me\b|\billustrate\b", raw))
-    wants_why = bool(re.search(r"\bwhy\b", raw))
-    wants_contrast = bool(
-        re.search(r"\b(difference|differ|vs\.?|versus|contrast)\b", raw),
-    )
+    wants_why = qtype in {"why", "limitation"}
+    wants_contrast = qtype == "comparison"
     # Prefer explicit definitional depth before ``step'' / ``computed'' process cues.
-    if re.match(r"\s*(what\s+is|define)\b", raw):
+    if qtype == "definition":
         depth = "short"
+    elif qtype == "step_by_step":
+        depth = "process"
+    elif qtype in {"why", "limitation"}:
+        depth = "medium"
     elif re.search(r"\bexplain\b|\btell me about\b|\bin detail\b", raw):
         depth = "long"
-    elif "step" in raw or "computed" in raw:
-        depth = "process"
     else:
         depth = "medium"
     return {
@@ -723,47 +781,65 @@ def _classify_query_signals(sq: StructuredQuery | None) -> dict[str, Any]:
     }
 
 
-def _compose_inline_step_paragraph(
+def _normalize_step_sentence(sentence: str, concept_label: str) -> str:
+    raw = _strip_key_section_labels(sentence).strip()
+    if not raw:
+        return ""
+    # Strip common leading subjects so steps read as imperative actions.
+    if concept_label:
+        raw = re.sub(
+            rf"^{re.escape(concept_label)}\s+",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        ).strip()
+    raw = _PRONOUN_SUBJECT_PREFIX_RE.sub("", raw).strip()
+    raw = re.sub(r"^It works by\s+", "", raw, flags=re.IGNORECASE).strip()
+    if not raw:
+        return ""
+    if raw[-1] in ".!?":
+        raw = raw[:-1]
+    if not raw:
+        return ""
+    return raw[0].upper() + raw[1:] + "."
+
+
+def _compose_numbered_steps(
     buckets: dict[str, list[str]],
+    ordered: list[str],
+    *,
     opening_norm_keys: set[str],
     concept_label: str,
-) -> tuple[str, set[str]]:
+) -> list[str] | None:
     pool: list[str] = []
     pool.extend(buckets.get(MECHANISM) or [])
     for role in (KEY_IDEA, DEFINITION):
         for line in buckets.get(role) or []:
             if _PROCESS_STEP_VERB_RE.search(line):
                 pool.append(line)
+    for sent in ordered:
+        if _PROCESS_STEP_VERB_RE.search(sent):
+            pool.append(sent)
+
     seen: set[str] = set()
     steps: list[str] = []
-    used_norms: set[str] = set()
-    lab = concept_label or ""
     for sent in pool:
         nk = _normalize_for_dedupe(sent)
         if nk in seen or nk in opening_norm_keys:
             continue
-        fm = _format_mechanism_sentence(sent, lab)
-        if not fm:
+        step_line = _normalize_step_sentence(sent, concept_label)
+        if not step_line:
             continue
-        core = fm.rstrip(".").strip()
-        probe = core[0].upper() + core[1:] if core else ""
+        probe = step_line[0].upper() + step_line[1:] if step_line else ""
         if not _is_complete_sentence(probe):
             continue
-        steps.append(core)
+        steps.append(step_line)
         seen.add(nk)
-        used_norms.add(nk)
         if len(steps) >= 4:
             break
-    if len(steps) < 2:
-        return "", set()
-    markers = ["First", "then", "next", "finally"]
-    parts: list[str] = []
-    for i, st in enumerate(steps[:4]):
-        marker = markers[min(i, 3)]
-        body = st[0].lower() + st[1:] if st else ""
-        parts.append(f"{marker}, {body}")
-    para = "; ".join(parts) + "."
-    return para, used_norms
+    if len(steps) < 3:
+        return None
+    return steps[:5]
 
 
 def _strong_why_it_matters(buckets: dict[str, list[str]], _concept_label: str) -> str | None:
@@ -849,7 +925,7 @@ def compose_concept_answer(
     *,
     constraints: ConceptConstraints | None = None,
 ) -> str:
-    """Compose tutor narrative matching :func:`render_tutor_style_answer` layout."""
+    """Compose strict query-aware tutor narrative."""
     from app.services.answers import answer_generation as ag
 
     primary = ag._primary_chunks_ordered(plan, evidence)
@@ -864,12 +940,22 @@ def compose_concept_answer(
     raw_direct_answer, _skip = ag._direct_answer_and_skip(plan, primary)
     concept_label = ag._primary_concept_label(plan, primary, structured_query)
     uf = ag._user_forbidden_set(structured_query)
+    if constraints is not None and raw_direct_answer and not constraints.is_relational:
+        if constraints.target_aliases and not line_has_target(raw_direct_answer, constraints):
+            raw_direct_answer = ""
+        if (
+            raw_direct_answer
+            and constraints.forbidden_terms
+            and line_has_forbidden(raw_direct_answer, constraints)
+            and not line_has_target(raw_direct_answer, constraints)
+        ):
+            raw_direct_answer = ""
     if uf and raw_direct_answer and ag._line_contains_user_forbidden(raw_direct_answer, uf):
         raw_direct_answer = ""
 
     legacy_example_prefetch = ag._example_intuition_block(primary)
 
-    signals = _classify_query_signals(structured_query)
+    query_type = classify_query_type(structured_query, answer_mode=plan.answer_mode)
 
     collected = collect_role_buckets(plan, evidence, constraints=constraints)
     buckets: dict[str, list[str]] = collected["buckets"]
@@ -898,12 +984,13 @@ def compose_concept_answer(
     want_example_block = not blocked and (
         plan.include_example or (not legacy_is_placeholder and bool(numeric_pick))
     )
-    if signals["depth"] == "short" and not signals["wants_example"] and not numeric_pick:
+    if query_type in {"definition", "step_by_step", "why", "limitation", "comparison"}:
+        want_example_block = False
+    if query_type == "definition" and not numeric_pick:
         want_example_block = False
 
     contrast_pat = ag._CONTRAST_CUE_PATTERN
-    prefers_contrast = bool(signals["wants_contrast"])
-    max_expl_sentences = 6 if signals["depth"] == "long" else 5
+    max_expl_sentences = 3
     np_pat = ag._NUMERIC_EXAMPLE_PATTERN
 
     # Opening paragraph (optionally strip numeric illustration sentences for example-block ownership)
@@ -932,36 +1019,9 @@ def compose_concept_answer(
     lab = concept_label or ""
 
     explanation_para = ""
+    numbered_steps: list[str] | None = None
     explanation_segment_norms: set[str] = set()
-
-    if signals["depth"] == "short":
-        open_blob = _normalize_for_dedupe(opening_src_for_para)
-        for cand in buckets.get(MECHANISM) or []:
-            nk = _normalize_for_dedupe(cand)
-            if nk and nk not in opening_norm_keys:
-                if nk in open_blob:
-                    continue
-                explanation_para = _format_mechanism_sentence(cand, lab)
-                if explanation_para:
-                    explanation_segment_norms.add(nk)
-                break
-    elif signals["depth"] == "process":
-        explanation_para, explanation_segment_norms = _compose_inline_step_paragraph(
-            buckets,
-            opening_norm_keys,
-            lab,
-        )
-        if not explanation_para:
-            explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
-                buckets,
-                ordered,
-                contrast_pat,
-                opening_norm_keys,
-                ag,
-                concept_label=lab,
-                prefers_contrast=prefers_contrast,
-            )
-    else:
+    if query_type == "mechanism":
         explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
             buckets,
             ordered,
@@ -969,20 +1029,34 @@ def compose_concept_answer(
             opening_norm_keys,
             ag,
             concept_label=lab,
-            prefers_contrast=prefers_contrast,
+            prefers_contrast=False,
         )
+    elif query_type == "step_by_step":
+        numbered_steps = _compose_numbered_steps(
+            buckets,
+            ordered,
+            opening_norm_keys=opening_norm_keys,
+            concept_label=lab,
+        )
+    elif query_type in {"why", "limitation"}:
+        for cand in (buckets.get(RELEVANCE) or []) + (buckets.get(KEY_IDEA) or []):
+            nk = _normalize_for_dedupe(cand)
+            if nk and nk not in opening_norm_keys:
+                explanation_para = _ensure_terminal_period(_strip_key_section_labels(cand))
+                explanation_segment_norms.add(nk)
+                break
 
-    if explanation_para and want_example_block and numeric_pick:
-        explanation_para = _strip_numeric_illustration_sentences(explanation_para, np_pat)
+    if explanation_para:
+        explanation_para = ag._truncate_to_first_sentences(explanation_para, max_sentences=max_expl_sentences)
+        if want_example_block and numeric_pick:
+            explanation_para = _strip_numeric_illustration_sentences(explanation_para, np_pat)
 
     used_norms_for_key: set[str] = set(opening_norm_keys)
     used_norms_for_key.update(explanation_segment_norms)
 
     paragraphs: list[str] = [opening_para]
     if explanation_para:
-        paragraphs.append(
-            ag._truncate_to_first_sentences(explanation_para, max_sentences=max_expl_sentences)
-        )
+        paragraphs.append(explanation_para)
     paragraphs = _strip_paragraphs_repeating_prior_sentences(paragraphs, ag)
 
     # Example block — mirror legacy `_example_intuition_block` priority (sample/question/excerpt)
@@ -1025,6 +1099,11 @@ def compose_concept_answer(
         rendered_lines.append(paragraph)
         rendered_lines.append("")
 
+    if numbered_steps:
+        for idx, step in enumerate(numbered_steps, start=1):
+            rendered_lines.append(f"{idx}. {step}")
+        rendered_lines.append("")
+
     if example_block_lines:
         rendered_lines.extend(example_block_lines)
         rendered_lines.append("")
@@ -1052,6 +1131,16 @@ def compose_concept_answer(
             ag._key_idea_sentence(opening_src, fallback_expl_lines, concept_label),
             max_sentences=1,
         )
+    if _norm_overlap(opening_para, key_idea):
+        replacement = ""
+        for line in (buckets.get(KEY_IDEA) or []) + (buckets.get(DEFINITION) or []):
+            if not _norm_overlap(opening_para, line):
+                replacement = ag._truncate_to_first_sentences(line, max_sentences=1)
+                break
+        if replacement:
+            key_idea = replacement
+        elif concept_label:
+            key_idea = f"{concept_label} is the anchor concept for this question."
 
     if uf and key_idea and ag._line_contains_user_forbidden(key_idea, uf):
         key_idea = (
@@ -1062,7 +1151,7 @@ def compose_concept_answer(
 
     rendered_lines.extend(["The key idea:", key_idea, ""])
 
-    max_why = 3 if signals["wants_why"] else 2
+    max_why = 2
     why_it_matters = _strong_why_it_matters(buckets, lab) or ""
     if not why_it_matters:
         why_it_matters = ag._truncate_to_first_sentences(
@@ -1071,19 +1160,11 @@ def compose_concept_answer(
         )
     else:
         why_it_matters = ag._truncate_to_first_sentences(why_it_matters, max_sentences=max_why)
+    if why_it_matters.startswith("This matters because"):
+        why_it_matters = "That matters because" + why_it_matters[len("This matters because") :]
 
     rendered_lines.append(why_it_matters)
     out = "\n".join(rendered_lines).rstrip()
-
-    if _looks_broken(out):
-        out = _failsafe_render(
-            raw_direct_answer=raw_direct_answer,
-            buckets=buckets,
-            opening_para=opening_para,
-            concept_label=lab,
-            key_idea=key_idea,
-            why_it_matters=why_it_matters,
-        )
 
     if uf and ag._line_contains_user_forbidden(out, uf):
         lines = out.split("\n")

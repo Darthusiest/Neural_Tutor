@@ -14,6 +14,7 @@ from app.services.answers.concept_answer_composer import (
     KEY_IDEA,
     MECHANISM,
     RELEVANCE,
+    classify_query_type,
     classify_line,
     collect_role_buckets,
     compose_concept_answer,
@@ -47,6 +48,24 @@ def test_classify_line_roles():
     assert classify_line("For example, [2, 5] becomes [0.05, 0.95].") == EXAMPLE
     assert classify_line("The key idea: turn scores into probabilities.") == KEY_IDEA
     assert classify_line("Useful for classification because outputs sum to one.") == RELEVANCE
+
+
+def test_classify_query_type_routes_required_taxonomy(app):
+    with app.app_context():
+        kb = get_kb(_KB)
+        assert classify_query_type(build_structured_query(analyze_query("What is MFCC?"), kb=kb)) == "definition"
+        assert classify_query_type(build_structured_query(analyze_query("How does softmax work?"), kb=kb)) == "mechanism"
+        assert (
+            classify_query_type(
+                build_structured_query(
+                    analyze_query("Explain the steps used to compute MFCCs from speech."),
+                    kb=kb,
+                )
+            )
+            == "step_by_step"
+        )
+        assert classify_query_type(build_structured_query(analyze_query("Why is log used in MFCCs?"), kb=kb)) == "why"
+        assert classify_query_type(build_structured_query(analyze_query("Why can't this method use perfect alignment?"), kb=kb)) == "limitation"
 
 
 def test_collect_role_buckets_dedupes_and_caps_per_role(app):
@@ -337,7 +356,7 @@ def test_grammar_no_pronoun_after_transition(app):
 
 
 def test_what_is_query_short_layout(app):
-    """Definitional ``what is`` depth: opening + one mechanism sentence before key idea."""
+    """Definition query keeps a short opening before key-idea block."""
     with app.app_context():
         kb = get_kb(_KB)
         intent = analyze_query("What is softmax?")
@@ -372,11 +391,11 @@ def test_what_is_query_short_layout(app):
         parts = [p.strip() for p in head.split("\n\n") if p.strip()]
         parts = [p for p in parts if not p.startswith("Course Answer")]
         parts = [p for p in parts if not p.startswith("Think of it this way")]
-        assert len(parts) == 2
+        assert len(parts) == 1
 
 
 def test_step_by_step_inline_sequence(app):
-    """Process queries emit ``First, …; then, …`` inline markers."""
+    """Process queries emit concrete numbered steps (not inline prose markers)."""
     with app.app_context():
         kb = get_kb(_KB)
         intent = analyze_query("Walk me through MFCCs step by step.")
@@ -408,13 +427,16 @@ def test_step_by_step_inline_sequence(app):
             lecture_scope=[],
             direct_answer=None,
         )
-        text = compose_concept_answer(plan, [chunk], sq, constraints=c).lower()
-        markers = ("first,", "then,", "next,", "finally,")
-        assert sum(1 for m in markers if m in text) >= 2
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c)
+        numbered = [ln for ln in text.split("\n") if ln.strip().startswith(("1. ", "2. ", "3. "))]
+        assert len(numbered) >= 3
+        lowered = text.lower()
+        assert "first," not in lowered
+        assert "then," not in lowered
 
 
 def test_strong_why_it_matters_canonical_pattern(app):
-    """Relevance lines feed canonical ``This matters because it allows the system to …``."""
+    """Relevance lines feed canonical ``That matters because ...`` causal closer."""
     with app.app_context():
         kb = get_kb(_KB)
         intent = analyze_query("Why softmax?")
@@ -444,7 +466,7 @@ def test_strong_why_it_matters_canonical_pattern(app):
             direct_answer=None,
         )
         text = compose_concept_answer(plan, [chunk], sq, constraints=c)
-        assert "This matters because it allows the system to " in text
+        assert "That matters because" in text
         assert "which is important for " in text
 
 

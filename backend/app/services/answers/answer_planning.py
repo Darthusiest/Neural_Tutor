@@ -76,6 +76,10 @@ class AnswerPlan:
     # definition sentence). When set, the chat / definition renderers prefer
     # this string over the legacy "first bullet of the first chunk" heuristic.
     direct_answer: str | None = None
+    # Strict composer guardrail: when ``True`` the renderer should not attempt a
+    # normal answer and should return a clarification prompt instead.
+    requires_clarification: bool = False
+    clarification_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +96,8 @@ class AnswerPlan:
             "section_specs": [s.to_dict() for s in self.section_specs],
             "evidence_bundles": {k: v.to_dict() for k, v in self.evidence_bundles.items()},
             "direct_answer": self.direct_answer,
+            "requires_clarification": self.requires_clarification,
+            "clarification_reason": self.clarification_reason,
         }
 
 
@@ -249,6 +255,29 @@ def _forbidden_for_entity(entity_id: str, peer_ids: list[str], kb: ConceptKB) ->
     return forbidden_terms_for_concept(entity_id, peer_ids, kb)[:12]
 
 
+def _bundles_share_core_lines(
+    left_bundle: EvidenceBundleLike,
+    right_bundle: EvidenceBundleLike,
+) -> bool:
+    left_lines = list(getattr(left_bundle, "core_lines", []) or [])
+    right_lines = list(getattr(right_bundle, "core_lines", []) or [])
+    if not left_lines or not right_lines:
+        return False
+    left_norm = {
+        " ".join(str(line).split()).strip().lower()
+        for line in left_lines[:3]
+        if str(line).strip()
+    }
+    right_norm = {
+        " ".join(str(line).split()).strip().lower()
+        for line in right_lines[:3]
+        if str(line).strip()
+    }
+    if not left_norm or not right_norm:
+        return False
+    return left_norm == right_norm
+
+
 def build_answer_plan(
     sq: StructuredQuery,
     chunks: list[dict[str, Any]],
@@ -311,6 +340,25 @@ def build_answer_plan(
     section_specs: list[SectionSpec] = []
     evidence_bundles: dict[str, EvidenceBundleLike] = {}
 
+    if mode == "compare" and len(sq.concept_ids) < 2:
+        return AnswerPlan(
+            answer_mode=mode,
+            sections=[],
+            primary_chunk_ids=primary_ids,
+            supporting_chunk_ids=sup_ids,
+            include_example=include_example,
+            include_analogy=False,
+            include_prerequisites=include_prereq,
+            include_related_concepts=related_names,
+            comparison_axes=comparison_axes or ["role", "computation", "typical use"],
+            lecture_scope=list(sq.lecture_scope),
+            section_specs=[],
+            evidence_bundles={},
+            direct_answer=None,
+            requires_clarification=True,
+            clarification_reason="compare_unresolved_entities",
+        )
+
     # --- Multi-entity compare (3+) ---
     if mode == "compare_multi" and len(sq.concept_ids) >= 2:
         bundles = build_bundles_multi_v2(chunks, sq.concept_ids[:8], kb, top_per_entity=3)
@@ -357,6 +405,25 @@ def build_answer_plan(
         bundle_a, bundle_b = build_bundles_for_compare_v2(chunks, ca_id, cb_id, kb)
         evidence_bundles[ca_id] = bundle_a
         evidence_bundles[cb_id] = bundle_b
+        if _bundles_share_core_lines(bundle_a, bundle_b):
+            merged_primary = _ranked_chunk_ids(chunks, [ca_id, cb_id], kb, max_n=8)
+            return AnswerPlan(
+                answer_mode=mode,
+                sections=[],
+                primary_chunk_ids=merged_primary or primary_ids,
+                supporting_chunk_ids=sup_ids,
+                include_example=include_example,
+                include_analogy=False,
+                include_prerequisites=include_prereq,
+                include_related_concepts=related_names,
+                comparison_axes=comparison_axes or ["role", "computation", "typical use"],
+                lecture_scope=list(sq.lecture_scope),
+                section_specs=[],
+                evidence_bundles=evidence_bundles,
+                direct_answer=None,
+                requires_clarification=True,
+                clarification_reason="compare_shared_evidence",
+            )
 
         def _safe(ids: list[int]) -> list[int]:
             return ids if ids else primary_ids[:1]

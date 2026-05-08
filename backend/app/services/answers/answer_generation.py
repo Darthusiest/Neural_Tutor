@@ -287,6 +287,25 @@ _GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"think of the explanation above as the core picture", re.IGNORECASE
     ),
     re.compile(r"see the explanation below for how the notes develop", re.IGNORECASE),
+    re.compile(r"captures sound shape", re.IGNORECASE),
+    re.compile(r"essence of sound", re.IGNORECASE),
+    re.compile(r"compact representation", re.IGNORECASE),
+    re.compile(r"fingerprint of sound", re.IGNORECASE),
+    re.compile(r"keeps reappearing alongside", re.IGNORECASE),
+    re.compile(r"clear intuition for this topic", re.IGNORECASE),
+    re.compile(r"^concept a\s*:", re.IGNORECASE),
+    re.compile(r"^concept b\s*:", re.IGNORECASE),
+    re.compile(r"forward pass:\s*compute output", re.IGNORECASE),
+    re.compile(r"\[1,\s*2\]\s*→", re.IGNORECASE),
+)
+
+_STRICT_BANNED_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"captures sound shape", re.IGNORECASE),
+    re.compile(r"essence of sound", re.IGNORECASE),
+    re.compile(r"compact representation", re.IGNORECASE),
+    re.compile(r"forward pass:\s*compute output", re.IGNORECASE),
+    re.compile(r"concept a\s*:", re.IGNORECASE),
+    re.compile(r"concept b\s*:", re.IGNORECASE),
 )
 
 # Splits a paragraph into sentences for sentence-level dedupe. Conservative
@@ -300,6 +319,188 @@ def _is_generic_filler(line: str) -> bool:
 
 def _normalize_for_dedupe(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower().rstrip(".!?:—-")
+
+
+def strict_clarification_answer(
+    query_type: str | None = None,
+    *,
+    reason: str | None = None,
+) -> str:
+    kind = (query_type or "").strip().lower()
+    if kind == "step_by_step":
+        body = (
+            "I don't have enough lecture material to give you a clean step-by-step answer for that. "
+            'Try asking with a specific course term (e.g. "How is the mel filterbank computed?").'
+        )
+    elif kind == "comparison" or (reason or "").startswith("compare_"):
+        body = (
+            "I don't have enough clean lecture evidence to compare those concepts without mixing them. "
+            "Try naming two explicit concepts from class so I can contrast them directly."
+        )
+    else:
+        body = (
+            "I don't have enough lecture-grounded evidence to answer that cleanly yet. "
+            "Try a narrower question with one explicit class concept."
+        )
+    return f"Course Answer:\n\n{body}"
+
+
+def _query_type_for_audit(plan: AnswerPlan, sq: StructuredQuery) -> str:
+    try:
+        from app.services.answers.concept_answer_composer import classify_query_type
+
+        return classify_query_type(sq, answer_mode=plan.answer_mode)
+    except Exception:
+        if plan.answer_mode in {"compare", "compare_multi"}:
+            return "comparison"
+        return "definition"
+
+
+def _opening_line(answer: str) -> str:
+    lines = [ln.strip() for ln in (answer or "").split("\n") if ln.strip()]
+    for ln in lines:
+        if ln in {"Course Answer:", "The key idea:"}:
+            continue
+        if re.match(r"^\d+\.\s+", ln):
+            continue
+        return ln
+    return ""
+
+
+def _key_idea_line(answer: str) -> str:
+    lines = [ln.strip() for ln in (answer or "").split("\n")]
+    for idx, ln in enumerate(lines):
+        if ln.strip() == "The key idea:":
+            for follow in lines[idx + 1 :]:
+                if follow.strip():
+                    return follow.strip()
+    return ""
+
+
+def _why_line(answer: str) -> str:
+    lines = [ln.strip() for ln in (answer or "").split("\n") if ln.strip()]
+    for ln in reversed(lines):
+        if ln in {"Course Answer:", "The key idea:"}:
+            continue
+        if re.match(r"^\d+\.\s+", ln):
+            continue
+        return ln
+    return ""
+
+
+def _explanation_text(answer: str, opening: str, key_idea: str, why: str) -> str:
+    lines = [ln.strip() for ln in (answer or "").split("\n") if ln.strip()]
+    out: list[str] = []
+    for ln in lines:
+        if ln in {"Course Answer:", "The key idea:", opening, key_idea, why}:
+            continue
+        if ln.startswith("Think of it this way:"):
+            continue
+        if re.match(r"^\d+\.\s+", ln):
+            continue
+        out.append(ln)
+    return " ".join(out).strip()
+
+
+def _assert_section_disjoint(opening: str, explanation: str, key_idea: str, why: str) -> bool:
+    parts = [opening, explanation, key_idea, why]
+    norm = [_normalize_for_dedupe(p) for p in parts]
+    for i in range(len(norm)):
+        if not norm[i]:
+            continue
+        for j in range(i + 1, len(norm)):
+            if not norm[j]:
+                continue
+            if norm[i] == norm[j]:
+                return False
+            if len(norm[i]) > 24 and norm[i] in norm[j]:
+                return False
+            if len(norm[j]) > 24 and norm[j] in norm[i]:
+                return False
+    return True
+
+
+def _mentions_target_in_opening(
+    opening: str,
+    sq: StructuredQuery,
+    constraints: ConceptConstraints | None,
+) -> bool:
+    if sq.answer_intent in {"compare", "compare_multi", "cross_lecture_synthesis"}:
+        return True
+    low = (opening or "").lower()
+    if not low:
+        return False
+    if constraints is not None and not constraints.is_relational and constraints.target_aliases:
+        return any(term and term in low for term in constraints.target_aliases)
+    if not sq.concept_ids:
+        return True
+    kb = get_kb()
+    concept = kb.get_concept_by_id(sq.concept_ids[0])
+    if concept is None:
+        return True
+    aliases = [concept.name.lower(), *[a.lower() for a in concept.aliases[:8]]]
+    return any(alias and alias in low for alias in aliases)
+
+
+def _compare_labels(sq: StructuredQuery) -> list[str]:
+    labels: list[str] = []
+    if sq.intent.compare_entities:
+        labels.extend([x for x in sq.intent.compare_entities if x][:2])
+    elif sq.intent.compare_concepts:
+        labels.extend([x for x in sq.intent.compare_concepts if x][:2])
+    elif len(sq.concept_ids) >= 2:
+        kb = get_kb()
+        for cid in sq.concept_ids[:2]:
+            c = kb.get_concept_by_id(cid)
+            labels.append(c.name if c else cid)
+    return labels[:2]
+
+
+def audit_rendered_answer(
+    text: str,
+    query_type: str,
+    plan: AnswerPlan,
+    sq: StructuredQuery,
+    *,
+    concept_constraints: ConceptConstraints | None = None,
+) -> str | None:
+    if plan.requires_clarification:
+        return strict_clarification_answer(query_type, reason=plan.clarification_reason)
+    body = (text or "").strip()
+    if not body:
+        return strict_clarification_answer(query_type)
+    if any(p.search(body) for p in _STRICT_BANNED_PATTERNS):
+        return strict_clarification_answer(query_type)
+
+    if query_type in {"definition", "mechanism", "step_by_step", "why", "limitation"}:
+        if "The key idea:" not in body:
+            return strict_clarification_answer(query_type)
+
+    if query_type == "step_by_step":
+        step_lines = [
+            ln.strip()
+            for ln in body.split("\n")
+            if re.match(r"^\d+\.\s+\S", ln.strip())
+        ]
+        if len(step_lines) < 3:
+            return strict_clarification_answer(query_type)
+
+    if query_type == "comparison":
+        labels = _compare_labels(sq)
+        if len(labels) >= 2:
+            low = body.lower()
+            if labels[0].lower() not in low or labels[1].lower() not in low:
+                return strict_clarification_answer(query_type)
+
+    opening = _opening_line(body)
+    key_idea = _key_idea_line(body)
+    why = _why_line(body)
+    explanation = _explanation_text(body, opening, key_idea, why)
+    if not _assert_section_disjoint(opening, explanation, key_idea, why):
+        return strict_clarification_answer(query_type)
+    if not _mentions_target_in_opening(opening, sq, concept_constraints):
+        return strict_clarification_answer(query_type)
+    return body
 
 
 def _clean_explanation_lines(
@@ -762,6 +963,10 @@ def generate_structured_answer(
     concept_constraints: ConceptConstraints | None = None,
 ) -> str:
     """Build **Course Answer:** with the tutor four-section layout (aligned with OpenAI primary path)."""
+    query_type = _query_type_for_audit(plan, structured_query)
+    if plan.requires_clarification:
+        return strict_clarification_answer(query_type, reason=plan.clarification_reason)
+
     rc = structured_query.response_constraints
     if rc.allow_incorrect_statements:
         refusal_message = (
@@ -798,9 +1003,17 @@ def generate_structured_answer(
         bundle_concept_ids = list(plan.evidence_bundles.keys())
         left_bundle = plan.evidence_bundles[bundle_concept_ids[0]]
         right_bundle = plan.evidence_bundles[bundle_concept_ids[1]]
-        return format_two_entity_compare_markdown(
+        rendered_compare = format_two_entity_compare_markdown(
             plan, all_chunks, structured_query, left_bundle, right_bundle
         )
+        audited = audit_rendered_answer(
+            rendered_compare,
+            query_type,
+            plan,
+            structured_query,
+            concept_constraints=concept_constraints,
+        )
+        return audited or strict_clarification_answer(query_type)
 
     primary = _primary_chunks_ordered(plan, all_chunks)
     if not primary:
@@ -836,12 +1049,20 @@ def generate_structured_answer(
         purity_constraints = concept_constraints
         if purity_constraints is None:
             purity_constraints = build_concept_constraints(structured_query, get_kb())
-        return compose_concept_answer(
+        composed = compose_concept_answer(
             plan_for_render,
             all_chunks,
             structured_query,
             constraints=purity_constraints,
         )
+        audited = audit_rendered_answer(
+            composed,
+            query_type,
+            plan,
+            structured_query,
+            concept_constraints=purity_constraints,
+        )
+        return audited or strict_clarification_answer(query_type)
 
     direct_answer_text, lines_consumed_by_direct_answer = _direct_answer_and_skip(plan, primary)
     explanation_bullets = _build_explanation_bullets(
@@ -923,7 +1144,17 @@ def generate_structured_answer(
                 why_it_matters_text,
             ]
         )
-        return "\n".join(course_answer_lines).rstrip()
+        rendered = "\n".join(course_answer_lines).rstrip()
+        if keeps_legacy_structured_layout:
+            return rendered
+        audited = audit_rendered_answer(
+            rendered,
+            query_type,
+            plan,
+            structured_query,
+            concept_constraints=concept_constraints,
+        )
+        return audited or strict_clarification_answer(query_type)
 
     if rc.no_examples:
         course_answer_lines.extend(
@@ -934,7 +1165,17 @@ def generate_structured_answer(
                 why_it_matters_text,
             ]
         )
-        return "\n".join(course_answer_lines).rstrip()
+        rendered = "\n".join(course_answer_lines).rstrip()
+        if keeps_legacy_structured_layout:
+            return rendered
+        audited = audit_rendered_answer(
+            rendered,
+            query_type,
+            plan,
+            structured_query,
+            concept_constraints=concept_constraints,
+        )
+        return audited or strict_clarification_answer(query_type)
 
     course_answer_lines.extend(
         [
@@ -948,4 +1189,14 @@ def generate_structured_answer(
             why_it_matters_text,
         ]
     )
-    return "\n".join(course_answer_lines).rstrip()
+    rendered = "\n".join(course_answer_lines).rstrip()
+    if keeps_legacy_structured_layout:
+        return rendered
+    audited = audit_rendered_answer(
+        rendered,
+        query_type,
+        plan,
+        structured_query,
+        concept_constraints=concept_constraints,
+    )
+    return audited or strict_clarification_answer(query_type)
