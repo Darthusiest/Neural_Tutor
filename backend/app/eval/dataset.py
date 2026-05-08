@@ -7,6 +7,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+CAPABILITY_INTENTS = frozenset(
+    {
+        "definition",
+        "step_by_step",
+        "compare",
+        "synthesis",
+        "retrieval_grounded",
+    }
+)
+
+CATEGORY_TO_INTENT: dict[str, str] = {
+    "definitions": "definition",
+    "direct_answer_accuracy": "definition",
+    "compare": "compare",
+    "summary": "step_by_step",
+    "quiz": "step_by_step",
+    "synthesis": "synthesis",
+    "retrieval_purity": "retrieval_grounded",
+    "mode_detection": "definition",
+    "clarification": "definition",
+    "adversarial": "definition",
+}
+
 
 @dataclass
 class EvalCase:
@@ -18,6 +41,7 @@ class EvalCase:
     expected_sections: list[str] = field(default_factory=list)
     forbidden_sections: list[str] = field(default_factory=list)
     category: str = ""
+    intent: str = ""
     error_tags: list[str] = field(default_factory=list)
     critical: bool = False
     note: str | None = None
@@ -43,6 +67,13 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
             raise ValueError(f"case {case_id!r} is missing 'query'")
         mode = (item.get("mode") or "auto").strip().lower()
         mode_override = (item.get("mode_override") or "").strip().lower()
+        category = (item.get("category") or "").strip()
+        intent = (item.get("intent") or "").strip().lower()
+        if intent and intent not in CAPABILITY_INTENTS:
+            raise ValueError(
+                f"case {case_id!r} has unsupported intent {intent!r}; "
+                f"expected one of {sorted(CAPABILITY_INTENTS)}"
+            )
         if mode not in ("auto", "chat", "quiz", "compare", "summary"):
             mode = "auto"
         if mode_override and mode_override not in ("auto", "chat", "quiz", "compare", "summary"):
@@ -57,7 +88,8 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
                 must_not_include=[str(x) for x in (item.get("must_not_include") or []) if x is not None],
                 expected_sections=[str(x) for x in (item.get("expected_sections") or []) if x is not None],
                 forbidden_sections=[str(x) for x in (item.get("forbidden_sections") or []) if x is not None],
-                category=(item.get("category") or "").strip(),
+                category=category,
+                intent=intent,
                 error_tags=[str(x) for x in (item.get("error_tags") or []) if x is not None],
                 critical=critical,
                 note=(item.get("note") or None),
@@ -78,11 +110,25 @@ def case_expected_behavior_dict(case: EvalCase) -> dict[str, Any]:
         "expected_sections": case.expected_sections,
         "forbidden_sections": case.forbidden_sections,
         "category": case.category,
+        "intent": effective_intent(case),
         "error_tags": case.error_tags,
         "critical": case.critical,
         "mode": case.mode,
         "mode_override": case.mode_override,
     }
+
+
+def effective_intent(case_or_behavior: EvalCase | dict[str, Any]) -> str:
+    """Return the explicit eval intent, falling back to the suite category mapping."""
+    if isinstance(case_or_behavior, EvalCase):
+        explicit = (case_or_behavior.intent or "").strip().lower()
+        category = (case_or_behavior.category or "").strip().lower()
+    else:
+        explicit = str(case_or_behavior.get("intent") or "").strip().lower()
+        category = str(case_or_behavior.get("category") or "").strip().lower()
+    if explicit:
+        return explicit
+    return CATEGORY_TO_INTENT.get(category, "definition")
 
 
 def case_is_critical_from_behavior(beh: dict[str, Any]) -> bool:

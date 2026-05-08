@@ -82,6 +82,7 @@
     },
     {
       "id": "sigmoid",
+      "allow_external_clarification": true,
       "name": "sigmoid / nonlinearity",
       "aliases": ["sigmoid", "activation", "nonlinearity", "nonlinearities"],
       "lecture_scope": [4, 10, 11],
@@ -225,6 +226,7 @@
     },
     {
       "id": "backpropagation",
+      "allow_external_clarification": true,
       "name": "backpropagation",
       "aliases": ["backprop", "back propagation"],
       "lecture_scope": [8],
@@ -303,6 +305,7 @@
     },
     {
       "id": "softmax",
+      "allow_external_clarification": true,
       "name": "softmax",
       "aliases": ["soft max", "probability distribution from logits"],
       "lecture_scope": [9, 11, 12],
@@ -368,6 +371,7 @@
     },
     {
       "id": "mfcc",
+      "allow_external_clarification": true,
       "name": "MFCCs",
       "aliases": ["mfcc", "mel-frequency cepstral coefficients", "spectrum of the spectrum"],
       "lecture_scope": [10],
@@ -446,6 +450,7 @@
     },
     {
       "id": "attention",
+      "allow_external_clarification": true,
       "name": "attention",
       "aliases": ["self-attention", "attention mechanism"],
       "lecture_scope": [12, 13, 14, 15],
@@ -511,6 +516,7 @@
     },
     {
       "id": "cnn",
+      "allow_external_clarification": true,
       "name": "convolutional neural network",
       "aliases": ["cnn", "convolution", "wavnet pre idea"],
       "lecture_scope": [16],

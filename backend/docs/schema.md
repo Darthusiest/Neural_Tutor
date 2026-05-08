@@ -268,12 +268,14 @@ Per test case in a run. ORM: [`EvaluationCaseResult`](../app/models/evaluation.p
 | expected_mode | String(32) nullable | |
 | detected_mode | String(32) nullable | from mode routing |
 | effective_mode | String(32) nullable | |
-| expected_behavior_json | Text nullable | suite constraints (`must_include`, `expected_mode`, `category`, `error_tags`, etc.); `flask run-eval` persists the suite case fields except `id`, `query`, and `note` |
+| expected_behavior_json | Text nullable | suite constraints (`must_include`, `expected_mode`, `category`, `intent`, `error_tags`, etc.); `flask run-eval` persists the suite case fields except `id`, `query`, and `note` |
 | actual_response | Text nullable | `course_answer` from pipeline |
 | pass_bool | Boolean | |
 | score | Float nullable | 0..1 |
 | error_categories_json | Text nullable | JSON list of canonical failure tags (failed cases only; passes store `[]`). Vocabulary: `mode_misclassification`, `mode_routing_failure`, `retrieval_leakage`, `forbidden_topic_leakage`, `missing_required_concept`, `wrong_direct_answer`, `compare_entity_collapse`, `compare_asymmetry`, `summary_generic`, `summary_wrong_scope`, `quiz_not_rendered`, `clarification_missing`, `duplicated_content`, `scaffold_leakage`, `generic_filler`, `validation_missed_error` — see `ERROR_CATEGORY_TAGS` in [`eval_run.py`](../app/services/eval_run.py). |
+| primary_error_type | String(64) nullable, indexed | Single primary failure mode for rule-based diagnostics: `retrieval_miss`, `retrieval_noise`, `structure_failure`, `missing_steps`, `shallow_explanation`, `hallucination`, or `template_misuse`. Passing cases store NULL. |
 | validation_failures_json | Text nullable | `ValidationResult` dict or subset |
 | retrieval_chunk_ids_json | Text nullable | JSON list of chunk ids |
+| boost_metrics_json | Text nullable | Paired boost A/B metrics from `python -m app.eval.run_eval --paired-boost` (`score_without_boost`, `score_with_boost`, boost latency, trigger/improvement booleans). |
 | latency_ms | Integer nullable | |
 | created_at | DateTime | server default now |

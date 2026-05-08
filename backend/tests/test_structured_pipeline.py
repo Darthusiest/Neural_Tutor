@@ -130,7 +130,7 @@ class TestRuleBasedTutorFormat:
             assert "### Example / Intuition" not in text
             assert "### Why it matters" not in text
             assert "The key idea:" in text
-            assert "That matters because" in text
+            assert "matters because" in text.lower()
 
     def test_chat_mode_no_examples_uses_tutor_narrative_without_example_block(
         self, corpus, app
@@ -195,7 +195,7 @@ class TestRuleBasedTutorFormat:
             # Paragraphs are visually separated: at least one blank line in the body.
             assert "\n\n" in text
             # Closer flows with causal language so it doesn't read like a data dump.
-            assert "That matters because" in text
+            assert "matters because" in text.lower()
 
     def test_chat_mode_softmax_example_and_no_repeated_lines(self, corpus, app):
         """Softmax-specific: bracketed example, probability framing, key idea, no duplicates (Task 8)."""

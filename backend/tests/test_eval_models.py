@@ -43,8 +43,10 @@ def test_evaluation_run_roundtrip(app):
             pass_bool=True,
             score=1.0,
             error_categories_json="[]",
+            primary_error_type=None,
             validation_failures_json="{}",
             retrieval_chunk_ids_json="[]",
+            boost_metrics_json=None,
             latency_ms=10,
         )
         db.session.add(c)

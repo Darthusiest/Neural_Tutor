@@ -228,7 +228,7 @@ def test_compose_narrative_contract(app, corpus):
         text = compose_concept_answer(plan, r.chunks + list(r.supporting_chunks or []), sq, constraints=c)
         assert text.startswith("Course Answer:")
         assert "The key idea:" in text
-        assert "That matters because" in text
+        assert "matters because" in text.lower()
         assert "### Direct Answer" not in text
         for ln in text.split("\n"):
             if ln.strip():
@@ -262,3 +262,227 @@ def test_softmax_answer_does_not_bleed_mfcc(app, corpus):
         pool = r.chunks + list(r.supporting_chunks or [])
         text = compose_concept_answer(plan, pool, sq, constraints=c).lower()
         assert "mfcc" not in text
+
+
+def test_grammar_no_double_subject_after_works_by(app):
+    """Standalone ``Softmax converts …`` must not become ``It works by softmax converts …``."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("How does softmax work?")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 991,
+            "topic": "Softmax — overview",
+            "keywords": "softmax",
+            "clean_explanation": (
+                "Softmax converts logits to probabilities using exponentials and normalization."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="direct_definition",
+            sections=[],
+            primary_chunk_ids=[991],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer=None,
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c).lower()
+        assert "it works by softmax converts" not in text
+
+
+def test_grammar_no_pronoun_after_transition(app):
+    """Bridge clauses must not surface ``This means that They …`` after stitching."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("Contrast softmax versus hardmax.")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 992,
+            "topic": "Softmax — contrast",
+            "keywords": "softmax hardmax",
+            "clean_explanation": (
+                "Softmax spreads probability mass smoothly across logits instead of picking one winner.\n"
+                "They emphasize larger logits without zeroing everything else.\n"
+                "Hardmax assigns probability one to the largest logit only."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="direct_definition",
+            sections=[],
+            primary_chunk_ids=[992],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer=None,
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c)
+        tl = text.lower()
+        assert "this means that they " not in tl
+        assert "as a result, captures" not in tl
+
+
+def test_what_is_query_short_layout(app):
+    """Definitional ``what is`` depth: opening + one mechanism sentence before key idea."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("What is softmax?")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 993,
+            "topic": "Softmax — overview",
+            "keywords": "softmax",
+            "clean_explanation": (
+                "Softmax is a function that maps logits to probabilities.\n"
+                "Softmax applies a smooth exponential tilt toward larger logits without collapsing smaller ones entirely."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="direct_definition",
+            sections=[],
+            primary_chunk_ids=[993],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer="Softmax is a function that maps logits to probabilities.",
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c)
+        head = text.split("The key idea:")[0]
+        parts = [p.strip() for p in head.split("\n\n") if p.strip()]
+        parts = [p for p in parts if not p.startswith("Course Answer")]
+        parts = [p for p in parts if not p.startswith("Think of it this way")]
+        assert len(parts) == 2
+
+
+def test_step_by_step_inline_sequence(app):
+    """Process queries emit ``First, …; then, …`` inline markers."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("Walk me through MFCCs step by step.")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 994,
+            "topic": "MFCC — pipeline",
+            "keywords": "mfcc mel fft",
+            "clean_explanation": (
+                "MFCC applies a window to each frame of speech.\n"
+                "MFCC computes an FFT for local spectra.\n"
+                "MFCC maps power onto mel-scaled frequency bins.\n"
+                "MFCC compresses coefficients using the discrete cosine transform."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="multi_step_explanation",
+            sections=[],
+            primary_chunk_ids=[994],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer=None,
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c).lower()
+        markers = ("first,", "then,", "next,", "finally,")
+        assert sum(1 for m in markers if m in text) >= 2
+
+
+def test_strong_why_it_matters_canonical_pattern(app):
+    """Relevance lines feed canonical ``This matters because it allows the system to …``."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("Why softmax?")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 995,
+            "topic": "Softmax — relevance",
+            "keywords": "softmax",
+            "clean_explanation": (
+                "It is used to map logits for classification decisions in neural networks."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="direct_definition",
+            sections=[],
+            primary_chunk_ids=[995],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer=None,
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c)
+        assert "This matters because it allows the system to " in text
+        assert "which is important for " in text
+
+
+def test_failsafe_drops_broken_segments(app):
+    """Never emit stitched ``As a result, Captures`` / ``This means that They`` fragments."""
+    with app.app_context():
+        kb = get_kb(_KB)
+        intent = analyze_query("Explain MFCC briefly.")
+        sq = build_structured_query(intent, kb=kb)
+        c = build_concept_constraints(sq, kb=kb)
+        chunk = {
+            "id": 996,
+            "topic": "MFCC — overview",
+            "keywords": "mfcc",
+            "clean_explanation": (
+                "Captures spectral envelope compactly.\n"
+                "They align with human pitch perception.\n"
+                "Used for speech recognition pipelines."
+            ),
+            "source_excerpt": "",
+            "sample_answer": "",
+        }
+        plan = AnswerPlan(
+            answer_mode="direct_definition",
+            sections=[],
+            primary_chunk_ids=[996],
+            supporting_chunk_ids=[],
+            include_example=False,
+            include_analogy=False,
+            include_prerequisites=False,
+            include_related_concepts=[],
+            comparison_axes=[],
+            lecture_scope=[],
+            direct_answer=None,
+        )
+        text = compose_concept_answer(plan, [chunk], sq, constraints=c)
+        tl = text.lower()
+        assert text.startswith("Course Answer:")
+        assert "as a result, captures" not in tl
+        assert "this means that they " not in tl
+        assert tl.strip().endswith(".") or "matters because" in tl

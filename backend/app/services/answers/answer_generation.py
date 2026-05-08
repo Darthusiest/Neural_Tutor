@@ -524,9 +524,10 @@ def _grounded_why_it_matters(
     if primary:
         topic_value = (primary[0].get("topic") or "").strip()
         if topic_value and topic_value.lower() != name.lower():
+            head = re.split(r"\s+[—\-–:]\s+", topic_value, maxsplit=1)[0].strip()
             return (
-                f"That matters because {name} is what the notes lean on when they introduce "
-                f"{topic_value}."
+                f"That matters because understanding {name} clearly frames how you interpret "
+                f"the ideas bundled under {head}."
             )
     return (
         f"That matters because clear intuition for {name} is what lets the next idea land "

@@ -58,8 +58,10 @@ class EvaluationCaseResult(db.Model):
     pass_bool = db.Column(db.Boolean, nullable=False, default=False)
     score = db.Column(db.Float, nullable=True)
     error_categories_json = db.Column(db.Text, nullable=True)
+    primary_error_type = db.Column(db.String(64), nullable=True, index=True)
     validation_failures_json = db.Column(db.Text, nullable=True)
     retrieval_chunk_ids_json = db.Column(db.Text, nullable=True)
+    boost_metrics_json = db.Column(db.Text, nullable=True)
     latency_ms = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, server_default=db.func.now())
 

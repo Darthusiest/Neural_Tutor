@@ -6,6 +6,7 @@
     {
       "id": "md_softmax_001",
       "category": "mode_detection",
+      "intent": "definition",
       "critical": true,
       "query": "What is softmax?",
       "expected_mode": "chat",
@@ -18,6 +19,7 @@
     {
       "id": "def_softmax_001",
       "category": "definitions",
+      "intent": "definition",
       "query": "Explain the softmax function in the course",
       "expected_mode": "chat",
       "must_include": ["softmax", "probabilit"],
@@ -29,6 +31,7 @@
     {
       "id": "cmp_cnn_mlp_001",
       "category": "compare",
+      "intent": "compare",
       "query": "Compare CNN and MLP",
       "expected_mode": "compare",
       "must_include": ["CNN", "MLP"],
@@ -40,6 +43,7 @@
     {
       "id": "sum_lec_001",
       "category": "summary",
+      "intent": "step_by_step",
       "query": "Summarize lecture 10",
       "expected_mode": "summary",
       "must_include": ["Summary:"],
@@ -51,6 +55,7 @@
     {
       "id": "quiz_softmax_001",
       "category": "quiz",
+      "intent": "step_by_step",
       "query": "Quiz me on softmax",
       "expected_mode": "quiz",
       "must_include": ["Quiz:"],
@@ -62,6 +67,7 @@
     {
       "id": "purity_mfcc_001",
       "category": "retrieval_purity",
+      "intent": "retrieval_grounded",
       "query": "What is MFCC?",
       "expected_mode": "chat",
       "must_include": ["MFCC"],
@@ -73,6 +79,7 @@
     {
       "id": "da_softmax_001",
       "category": "direct_answer_accuracy",
+      "intent": "definition",
       "query": "Define softmax in one sentence for this course",
       "expected_mode": "chat",
       "must_include": ["softmax", "probabilit"],
@@ -84,6 +91,7 @@
     {
       "id": "syn_bias_var_001",
       "category": "synthesis",
+      "intent": "synthesis",
       "query": "How do bias and variance relate to overfitting in this class?",
       "expected_mode": "chat",
       "must_include": ["bias", "variance"],
@@ -95,6 +103,7 @@
     {
       "id": "clar_compare_001",
       "category": "clarification",
+      "intent": "compare",
       "query": "Compare these",
       "expected_mode": "compare",
       "must_include": ["two", "compare"],
@@ -107,6 +116,7 @@
     {
       "id": "adv_nonsense_001",
       "category": "adversarial",
+      "intent": "definition",
       "query": "asdfasdf loremipsum notacoursewordzzz",
       "expected_mode": "chat",
       "must_include": [],
@@ -118,6 +128,7 @@
     {
       "id": "md_quiz_001",
       "category": "mode_detection",
+      "intent": "step_by_step",
       "query": "Test me on lecture 10",
       "expected_mode": "quiz",
       "must_include": ["Quiz:"],
@@ -129,6 +140,7 @@
     {
       "id": "def_dp_001",
       "category": "definitions",
+      "intent": "definition",
       "query": "What is dynamic programming in this context?",
       "expected_mode": "chat",
       "must_include": ["dynamic programming"],

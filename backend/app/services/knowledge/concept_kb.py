@@ -24,6 +24,8 @@ class ConceptMeta:
     aliases: list[str]
     lecture_scope: list[int]
     summary: str
+    #: When True, deferred boost may add at most two marker-phrased standard-knowledge sentences.
+    allow_external_clarification: bool = False
     prerequisites: list[str] = field(default_factory=list)
     builds_on: list[str] = field(default_factory=list)
     related: list[str] = field(default_factory=list)
@@ -169,6 +171,7 @@ def load_concept_kb(path: Path | str | None = None) -> ConceptKB:
             aliases=list(row.get("aliases", [])),
             lecture_scope=list(row.get("lecture_scope", [])),
             summary=row.get("summary", ""),
+            allow_external_clarification=bool(row.get("allow_external_clarification", False)),
             prerequisites=list(row.get("prerequisites", [])),
             builds_on=list(row.get("builds_on", [])),
             related=list(row.get("related", [])),

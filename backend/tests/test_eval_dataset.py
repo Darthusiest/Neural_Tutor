@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from app.eval.dataset import EvalCase, case_is_critical_from_behavior, load_eval_dataset
+from app.eval.dataset import (
+    EvalCase,
+    case_is_critical_from_behavior,
+    effective_intent,
+    load_eval_dataset,
+)
 
 _SUITE = Path(__file__).resolve().parent.parent / "data" / "eval" / "l487_eval_suite.json"
 
@@ -17,8 +22,17 @@ def test_load_eval_dataset_roundtrip():
     assert meta.get("name") == "l487_eval_suite"
     assert len(cases) >= 5
     assert all(isinstance(c, EvalCase) for c in cases)
+    assert all(c.intent for c in cases)
+    assert {effective_intent(c) for c in cases} >= {"definition", "compare", "step_by_step"}
     crit = [c for c in cases if c.critical]
     assert any(c.id == "md_softmax_001" for c in crit)
+
+
+def test_effective_intent_falls_back_to_category():
+    case = EvalCase(id="x", query="q", expected_mode="chat", category="retrieval_purity")
+    assert effective_intent(case) == "retrieval_grounded"
+    assert effective_intent({"category": "synthesis"}) == "synthesis"
+    assert effective_intent({"intent": "compare", "category": "definitions"}) == "compare"
 
 
 def test_load_eval_dataset_missing_cases(tmp_path):

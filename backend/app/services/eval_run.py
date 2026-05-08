@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.eval.capability_analytics import derive_primary_error_type
 from app.extensions import db
 from app.models import EvaluationCaseResult, EvaluationRun
 from app.services.reasoning_pipeline import PipelineResult, run_reasoning_pipeline
@@ -358,8 +359,19 @@ def run_eval_suite(
             pass_bool=bool(scored["pass_bool"]),
             score=scored["score"],
             error_categories_json=json.dumps(scored["error_categories"]),
+            primary_error_type=derive_primary_error_type(
+                expected_behavior,
+                list(scored["error_categories"]),
+                list(scored["error_categories"]),
+                pr.validation.to_dict(),
+                pr.course_answer,
+                retrieval_text=_combined_retrieval_text(pr),
+            )
+            if not scored["pass_bool"]
+            else None,
             validation_failures_json=json.dumps(pr.validation.to_dict()),
             retrieval_chunk_ids_json=json.dumps(_chunk_ids_from_result(pr)),
+            boost_metrics_json=None,
             latency_ms=latency_ms,
         )
         db.session.add(ecr)

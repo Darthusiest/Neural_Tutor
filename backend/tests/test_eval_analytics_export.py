@@ -5,7 +5,12 @@ from pathlib import Path
 
 from app.eval.analytics_common import suite_category
 from app.eval.export_analytics import (
+    export_capability_breakdown,
+    export_coverage,
     export_error_counts,
+    export_primary_error_breakdown,
+    export_retrieval_diagnostics,
+    export_structure_compliance,
     export_mode_accuracy_by_run,
     export_overall_by_run,
     export_score_by_category,
@@ -14,8 +19,11 @@ from app.extensions import db
 from app.models import EvaluationCaseResult, EvaluationRun
 
 
-def test_plot_eval_metrics_writes_pngs(app, tmp_path):
+def test_plot_eval_metrics_writes_pngs(app, tmp_path, monkeypatch):
     from app.eval import plot_eval_metrics
+
+    # CLI modules call create_app() with production Config; bind to test DB.
+    monkeypatch.setattr(plot_eval_metrics, "create_app", lambda config_object=None: app)
 
     with app.app_context():
         r = EvaluationRun(
@@ -50,17 +58,15 @@ def test_plot_eval_metrics_writes_pngs(app, tmp_path):
         )
         db.session.commit()
 
-        code = plot_eval_metrics.main(["--out-dir", str(tmp_path), "--run-ids", str(rid)])
-        assert code == 0
-        for name in (
-            "overall_score_over_time.png",
-            "pass_rate_by_category_over_time.png",
-            "error_categories_over_time.png",
-            "mode_accuracy_over_time.png",
-            "retrieval_leakage_over_time.png",
-            "latency_over_time.png",
-        ):
-            assert (tmp_path / name).is_file()
+    code = plot_eval_metrics.main(["--out-dir", str(tmp_path), "--run-ids", str(rid)])
+    assert code == 0
+    for name in (
+        "iteration_accuracy_over_runs.png",
+        "capability_breakdown.png",
+        "error_distribution.png",
+    ):
+        assert (tmp_path / name).is_file()
+    assert not (tmp_path / "latency_over_time.png").exists()
 
 
 def test_suite_category_fallback(app):
@@ -148,6 +154,7 @@ def test_export_aggregates(app):
                     error_categories_json=json.dumps(
                         ["mode_mismatch", "retrieval_leakage"]
                     ),
+                    primary_error_type="retrieval_noise",
                     validation_failures_json=None,
                     retrieval_chunk_ids_json="[]",
                     latency_ms=200,
@@ -184,6 +191,23 @@ def test_export_aggregates(app):
         assert mode_rows[0]["cases_with_expected_mode"] == 2
         assert mode_rows[0]["effective_matches"] == 1
 
+        cap = export_capability_breakdown(cases)
+        assert cap[0]["total_cases"] == 2
+
+        primary = export_primary_error_breakdown(cases)
+        assert primary == [
+            {"error_type": "retrieval_noise", "count": 1, "percentage": 100.0}
+        ]
+
+        retrieval = export_retrieval_diagnostics(cases)
+        assert {row["test_id"] for row in retrieval} == {"c1", "c2"}
+
+        structure = export_structure_compliance(cases)
+        assert structure
+
+        coverage = export_coverage(cases)
+        assert coverage
+
 
 def test_run_eval_suite_persists_category_in_expected_behavior(app):
     path = Path(__file__).resolve().parent.parent / "data" / "eval" / "l487_eval_suite.json"
@@ -196,3 +220,4 @@ def test_run_eval_suite_persists_category_in_expected_behavior(app):
         beh = json.loads(row.expected_behavior_json)
         assert "category" in beh
         assert beh["category"]
+        assert "intent" in beh

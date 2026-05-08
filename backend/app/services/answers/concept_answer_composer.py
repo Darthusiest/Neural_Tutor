@@ -29,8 +29,8 @@ EXAMPLE = "example"
 RELEVANCE = "relevance"
 
 _MECHANISM_RE = re.compile(
-    r"\b(?:uses|processes|extracts?|computes?|maps?|works?\s+by|operates|applies|performs|"
-    r"takes|outputs|produces|transforms|combines|generates|builds|runs|implements)\b",
+    r"\b(?:uses|processes|extracts?|computes?|maps?|captures?|converts?|works?\s+by|operates|"
+    r"applies|performs|takes|outputs|produces|transforms|combines|generates|builds|runs|implements)\b",
     re.IGNORECASE,
 )
 
@@ -296,6 +296,94 @@ def _ensure_terminal_period(text: str) -> str:
     return t
 
 
+# Heads kept capitalized after transitions like ``This means that softmax …``.
+_PROPER_HEAD_TERMS = frozenset(
+    {"softmax", "mfcc", "mfccs", "cnn", "fft", "dct", "mel", "relu", "gpu", "nlp"}
+)
+
+_PRONOUN_SUBJECT_PREFIX_RE = re.compile(
+    r"^(?:It|They|This|That|These|Those)\s+",
+    re.IGNORECASE,
+)
+
+
+def _lower_first_safe(text: str) -> str:
+    """Lowercase first character unless it begins a likely proper noun."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    first_word = t.split()[0]
+    lw = first_word.lower().rstrip(".!?,;:—")
+    if lw in _PROPER_HEAD_TERMS:
+        return t
+    if t[0].isupper():
+        return t[0].lower() + t[1:]
+    return t
+
+
+def _strip_leading_pronoun_subject(text: str) -> str:
+    return _PRONOUN_SUBJECT_PREFIX_RE.sub("", (text or "").strip()).strip()
+
+
+def _is_complete_sentence(text: str) -> bool:
+    """Cheap clause completeness check for stitched explanations."""
+    t = (text or "").strip()
+    if len(t) < 12:
+        return False
+    tl = t.lower()
+    if tl.startswith(
+        (
+            "it ",
+            "they ",
+            "there ",
+            "this ",
+            "that ",
+            "these ",
+            "those ",
+            "the ",
+            "a ",
+            "an ",
+        )
+    ):
+        return True
+    if _MECHANISM_RE.search(t):
+        return True
+    if has_definition_cue(t):
+        return True
+    # Subject–verb opener like ``Softmax converts …``.
+    return bool(
+        re.match(
+            r"^[A-Za-z][\w\-]*\s+(?:uses|computes|maps|transforms|converts|captures|extracts|"
+            r"applies|combines|generates|outputs|normalizes|processes)\b",
+            t,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _looks_like_initial_verb_fragment(line: str) -> bool:
+    """Fragment led by imperative-like verb (``Captures spatial …``) needing a subject."""
+    s = (line or "").strip()
+    if not s:
+        return False
+    first = s.split(maxsplit=1)[0]
+    fl = first.lower().rstrip(".!?")
+    if fl in {"it", "they", "the", "this", "that", "these", "those", "there", "a", "an"}:
+        return False
+    # Starts with capitalized verb-ish token + remainder (not ``Softmax converts`` — two-token pattern above).
+    return bool(
+        re.match(
+            r"^[A-Z][a-z]{2,}(?:es|s|ed)?\s+\S",
+            s,
+        )
+        and not re.match(
+            r"^[A-Za-z][\w\-]*\s+(?:uses|computes|maps|transforms|converts|captures|extracts)\b",
+            s,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _reads_like_standalone_process_sentence(line: str) -> bool:
     """True when the line already opens like a mechanism sentence (no ``It works by`` needed)."""
     s = (line or "").strip()
@@ -303,7 +391,7 @@ def _reads_like_standalone_process_sentence(line: str) -> bool:
         return False
     return bool(
         re.match(
-            r"^(It |They |There |This\b|The\b|[\w\-]+\s+(uses|computes|maps|transforms|"
+            r"^(It |They |There |This\b|The\b|[\w\-]+\s+(uses|computes|maps|transforms|converts|captures|"
             r"works\s+by|applies|runs|builds|outputs|normalizes|extracts)\b)",
             s,
             re.IGNORECASE,
@@ -311,21 +399,27 @@ def _reads_like_standalone_process_sentence(line: str) -> bool:
     )
 
 
-def _format_it_works_by_sentence(line: str) -> str:
-    """Turn a mechanism line into a first explanation sentence (what it does)."""
-    raw = _strip_key_section_labels(line)
-    raw = raw.strip()
+def _format_mechanism_sentence(line: str, concept_label: str) -> str:
+    """Turn a mechanism line into a standalone grammatical sentence."""
+    raw = _strip_key_section_labels(line).strip()
     if not raw:
         return ""
     if _reads_like_standalone_process_sentence(raw):
         return _ensure_terminal_period(raw)
-    core = raw.rstrip(".!?")
-    if core and core[0].isupper() and not raw.startswith(
+    lab = (concept_label or "").strip()
+    core = raw.rstrip(".!?").strip()
+    if _looks_like_initial_verb_fragment(core):
+        frag_rest = core[0].lower() + core[1:] if core else ""
+        if lab:
+            return _ensure_terminal_period(f"{lab} {frag_rest}")
+        return ""
+    inner = core
+    if inner and inner[0].isupper() and not raw.startswith(
         ("It ", "The ", "This ", "They ", "There ")
     ):
-        core = core[0].lower() + core[1:]
-    inner = core.strip()
-    return _ensure_terminal_period(f"It works by {inner}")
+        inner = inner[0].lower() + inner[1:]
+    inner = inner.strip()
+    return _ensure_terminal_period(f"It works by {inner}") if inner else ""
 
 
 def _split_interpretation_and_result(key_line: str, ag: Any) -> tuple[str, str]:
@@ -360,12 +454,109 @@ def _norm_overlap(a: str, b: str) -> bool:
     return False
 
 
+def _strip_numeric_illustration_sentences(paragraph: str, numeric_pat: Any) -> str:
+    """Drop sentences containing bracket/tuple numeric lifts so the example block can own them."""
+    if not paragraph or not numeric_pat or not numeric_pat.search(paragraph):
+        return paragraph
+    ssp, _, _, _ = _ag()
+    parts = [s.strip() for s in ssp.split(paragraph) if s.strip()]
+    kept = [s for s in parts if not numeric_pat.search(s)]
+    return " ".join(kept).strip()
+
+
+def _sentences_expanded_for_dedupe(para: str, ag: Any) -> list[str]:
+    """Split prose including em-dash clauses so sentence dedupe catches ``A — B`` pairs."""
+    raw_parts: list[str] = []
+    for segment in re.split(r"\s+[—\-]\s+", para):
+        for sent in ag._SENTENCE_SPLIT_PATTERN.split(segment):
+            st = sent.strip()
+            if st:
+                raw_parts.append(st)
+    return raw_parts if raw_parts else ([para.strip()] if para.strip() else [])
+
+
+def _strip_paragraphs_repeating_prior_sentences(paragraphs: list[str], ag: Any) -> list[str]:
+    """Remove sentences from later paragraphs that repeat a sentence seen in an earlier paragraph."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for para in paragraphs:
+        kept_sents: list[str] = []
+        for sent in _sentences_expanded_for_dedupe(para, ag):
+            sn = _normalize_for_dedupe(sent)
+            if sn and sn in seen:
+                continue
+            if sn:
+                seen.add(sn)
+            kept_sents.append(sent.rstrip())
+        block = " ".join(kept_sents).strip()
+        if block:
+            out.append(block)
+    return out
+
+
+def _drop_duplicate_example_sentences(example_text: str, opening_para: str, ag: Any) -> str:
+    """Remove sentences from example body that repeat the opening paragraph verbatim."""
+    if not example_text or not opening_para:
+        return example_text
+    open_norms = {
+        _normalize_for_dedupe(s)
+        for s in ag._SENTENCE_SPLIT_PATTERN.split(opening_para)
+        if s.strip()
+    }
+    kept: list[str] = []
+    for sent in ag._SENTENCE_SPLIT_PATTERN.split(example_text):
+        sn = _normalize_for_dedupe(sent)
+        if sn and sn in open_norms:
+            continue
+        kept.append(sent.strip())
+    return " ".join(kept).strip()
+
+
+def _finalize_transition_clause(
+    raw_clause: str,
+    *,
+    transition_prefix: str,
+    concept_label: str,
+    mech_line: str,
+) -> str | None:
+    """Normalize clause after ``This means that`` / ``As a result,``; drop bad fragments."""
+    inner = _strip_key_section_labels(raw_clause).strip()
+    inner = _strip_leading_pronoun_subject(inner).strip().rstrip(".!?")
+    if not inner:
+        return None
+    inner_adj = _lower_first_safe(inner)
+    probe = inner_adj[0].upper() + inner_adj[1:] if inner_adj else ""
+    candidate_body = probe
+    lab = (concept_label or "").strip()
+    if not _is_complete_sentence(probe):
+        if lab:
+            merged = f"{lab} {inner_adj}".strip()
+            if _is_complete_sentence(merged):
+                candidate_body = merged
+            else:
+                return None
+        else:
+            return None
+    if _norm_overlap(mech_line, candidate_body):
+        return None
+    tail = candidate_body
+    fw = tail.split()[0].lower().rstrip(".!,?:;—") if tail.split() else ""
+    if fw not in _PROPER_HEAD_TERMS and tail:
+        tail_out = tail[0].lower() + tail[1:]
+    else:
+        tail_out = tail
+    return _ensure_terminal_period(f"{transition_prefix}{tail_out}")
+
+
 def _build_coherent_explanation_paragraph(
     buckets: dict[str, list[str]],
     ordered: list[str],
     contrast_pat: Any,
     opening_norm_keys: set[str],
     ag: Any,
+    *,
+    concept_label: str,
+    prefers_contrast: bool,
 ) -> tuple[str, set[str]]:
     """Three-beat explanation: mechanism → interpretation → result (single flowing paragraph).
 
@@ -376,13 +567,27 @@ def _build_coherent_explanation_paragraph(
 
     mech_line = ""
     mech_how = ""  # "mechanism" | "contrast" | "definition" | ""
-    for cand in buckets.get(MECHANISM) or []:
-        nk = _normalize_for_dedupe(cand)
-        if nk and nk not in opening_norm_keys:
-            mech_line = cand
-            mech_how = "mechanism"
-            used_segment_norms.add(nk)
-            break
+    label_for_mech = concept_label or ""
+
+    mechs = buckets.get(MECHANISM) or []
+    if prefers_contrast and contrast_pat:
+        for cand in mechs:
+            if contrast_pat.search(cand):
+                nk = _normalize_for_dedupe(cand)
+                if nk and nk not in opening_norm_keys:
+                    mech_line = cand
+                    mech_how = "mechanism"
+                    used_segment_norms.add(nk)
+                    break
+
+    if not mech_line:
+        for cand in mechs:
+            nk = _normalize_for_dedupe(cand)
+            if nk and nk not in opening_norm_keys:
+                mech_line = cand
+                mech_how = "mechanism"
+                used_segment_norms.add(nk)
+                break
 
     if not mech_line and contrast_pat:
         for sent in ordered:
@@ -428,41 +633,213 @@ def _build_coherent_explanation_paragraph(
 
     if mech_line:
         if mech_how in ("mechanism", "contrast"):
-            m_sent = _format_it_works_by_sentence(mech_line)
+            m_sent = _format_mechanism_sentence(mech_line, label_for_mech)
         else:
             m_sent = _ensure_terminal_period(_strip_key_section_labels(mech_line))
         if m_sent:
             sentences.append(m_sent)
 
     if interp_line:
-        inner_i = _strip_key_section_labels(interp_line).strip()
-        inner_i = inner_i.rstrip(".!?")
-        if inner_i and not _norm_overlap(mech_line, inner_i):
-            bridge = _ensure_terminal_period(f"This means that {inner_i}")
+        bridge = _finalize_transition_clause(
+            interp_line,
+            transition_prefix="This means that ",
+            concept_label=label_for_mech,
+            mech_line=mech_line,
+        )
+        if bridge:
             sentences.append(bridge)
 
     if result_line:
-        inner_r = _strip_key_section_labels(result_line).strip()
-        inner_r = inner_r.rstrip(".!?")
         tail_ref = interp_line or mech_line
-        if inner_r and not _norm_overlap(tail_ref, inner_r):
-            sentences.append(_ensure_terminal_period(f"As a result, {inner_r}"))
+        bridge_r = _finalize_transition_clause(
+            result_line,
+            transition_prefix="As a result, ",
+            concept_label=label_for_mech,
+            mech_line=tail_ref,
+        )
+        if bridge_r:
+            sentences.append(bridge_r)
+
     if len(sentences) < 2 and mech_line:
         for cand in buckets.get(DEFINITION) or []:
             nk = _normalize_for_dedupe(cand)
             if nk in opening_norm_keys or nk in used_segment_norms:
                 continue
             inner = _strip_key_section_labels(cand).strip().rstrip(".!?")
+            inner = _strip_leading_pronoun_subject(inner).strip()
+            inner = _lower_first_safe(inner)
             if inner and not _norm_overlap(mech_line, inner):
-                sentences.append(_ensure_terminal_period(f"In practice, {inner}"))
-                used_segment_norms.add(nk)
-                break
+                probe = inner[0].upper() + inner[1:] if inner else ""
+                if label_for_mech and not _is_complete_sentence(probe):
+                    inner = _lower_first_safe(f"{label_for_mech.strip()} {inner}")
+                    probe = inner[0].upper() + inner[1:] if inner else ""
+                if _is_complete_sentence(probe):
+                    sentences.append(_ensure_terminal_period(f"In practice, {inner}"))
+                    used_segment_norms.add(nk)
+                    break
 
     if not sentences:
         return "", used_segment_norms
 
     paragraph = " ".join(sentences)
     return paragraph, used_segment_norms
+
+
+_PROCESS_STEP_VERB_RE = re.compile(
+    r"\b(?:uses|computes|maps|extracts|applies|combines|takes|produces|transforms|generates|"
+    r"converts|captures|normalizes|builds)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_query_signals(sq: StructuredQuery | None) -> dict[str, Any]:
+    raw = (sq.intent.original_query if sq else "").lower()
+    wants_steps = bool(
+        re.search(
+            r"\bstep[- ]by[- ]step\b|\bhow is it computed\b|\bwalk me through\b|\bprocess of\b",
+            raw,
+        )
+    )
+    wants_example = bool(re.search(r"\bexample\b|\bshow me\b|\billustrate\b", raw))
+    wants_why = bool(re.search(r"\bwhy\b", raw))
+    wants_contrast = bool(
+        re.search(r"\b(difference|differ|vs\.?|versus|contrast)\b", raw),
+    )
+    # Prefer explicit definitional depth before ``step'' / ``computed'' process cues.
+    if re.match(r"\s*(what\s+is|define)\b", raw):
+        depth = "short"
+    elif re.search(r"\bexplain\b|\btell me about\b|\bin detail\b", raw):
+        depth = "long"
+    elif "step" in raw or "computed" in raw:
+        depth = "process"
+    else:
+        depth = "medium"
+    return {
+        "wants_steps": wants_steps,
+        "wants_example": wants_example,
+        "wants_why": wants_why,
+        "wants_contrast": wants_contrast,
+        "depth": depth,
+    }
+
+
+def _compose_inline_step_paragraph(
+    buckets: dict[str, list[str]],
+    opening_norm_keys: set[str],
+    concept_label: str,
+) -> tuple[str, set[str]]:
+    pool: list[str] = []
+    pool.extend(buckets.get(MECHANISM) or [])
+    for role in (KEY_IDEA, DEFINITION):
+        for line in buckets.get(role) or []:
+            if _PROCESS_STEP_VERB_RE.search(line):
+                pool.append(line)
+    seen: set[str] = set()
+    steps: list[str] = []
+    used_norms: set[str] = set()
+    lab = concept_label or ""
+    for sent in pool:
+        nk = _normalize_for_dedupe(sent)
+        if nk in seen or nk in opening_norm_keys:
+            continue
+        fm = _format_mechanism_sentence(sent, lab)
+        if not fm:
+            continue
+        core = fm.rstrip(".").strip()
+        probe = core[0].upper() + core[1:] if core else ""
+        if not _is_complete_sentence(probe):
+            continue
+        steps.append(core)
+        seen.add(nk)
+        used_norms.add(nk)
+        if len(steps) >= 4:
+            break
+    if len(steps) < 2:
+        return "", set()
+    markers = ["First", "then", "next", "finally"]
+    parts: list[str] = []
+    for i, st in enumerate(steps[:4]):
+        marker = markers[min(i, 3)]
+        body = st[0].lower() + st[1:] if st else ""
+        parts.append(f"{marker}, {body}")
+    para = "; ".join(parts) + "."
+    return para, used_norms
+
+
+def _strong_why_it_matters(buckets: dict[str, list[str]], _concept_label: str) -> str | None:
+    pool: list[str] = []
+    pool.extend(buckets.get(RELEVANCE) or [])
+    pool.extend(buckets.get(KEY_IDEA) or [])
+    blob = " ".join(pool).strip()
+    if not blob:
+        return None
+    cap = None
+    task = None
+    m = re.search(r"\bused\s+to\s+([^,.;:]{8,160})", blob, re.IGNORECASE)
+    if m:
+        cap = m.group(1).strip()
+    if not cap:
+        m = re.search(r"\ballows\s+(?:the\s+)?(?:system\s+)?to\s+([^,.;:]{8,160})", blob, re.IGNORECASE)
+        if m:
+            cap = m.group(1).strip()
+    if not cap:
+        m = re.search(r"\benables\s+([^,.;:]{8,160})", blob, re.IGNORECASE)
+        if m:
+            cap = m.group(1).strip()
+    m = re.search(r"\b(?:for|during)\s+([^,.;:]{8,120})", blob, re.IGNORECASE)
+    if m:
+        task = m.group(1).strip()
+    if not task:
+        m = re.search(r"\bin\s+([^,.;:]{8,120})", blob, re.IGNORECASE)
+        if m:
+            task = m.group(1).strip()
+    if cap and task:
+        return (
+            f"This matters because it allows the system to {cap.rstrip('.')}, "
+            f"which is important for {task.rstrip('.')}."
+        )
+    if cap:
+        return f"This matters because it allows the system to {cap.rstrip('.')}."
+    if task:
+        return f"This matters because it supports {task.rstrip('.')}."
+    return None
+
+
+def _looks_broken(text: str) -> bool:
+    if re.search(
+        r"\bIt works by [a-z]+\s+(?:uses|converts|extracts|computes|maps|applies|combines|"
+        r"takes|produces|transforms)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(This means that|As a result,)\s+(?:They|This|That|These|Those|[A-Z][a-z]+s)\b",
+        text,
+    ):
+        return True
+    return False
+
+
+def _failsafe_render(
+    *,
+    raw_direct_answer: str,
+    buckets: dict[str, list[str]],
+    opening_para: str,
+    concept_label: str,
+    key_idea: str,
+    why_it_matters: str,
+) -> str:
+    opening = (raw_direct_answer or "").strip()
+    lab = concept_label or ""
+    if not opening:
+        mechs = buckets.get(MECHANISM) or []
+        if mechs:
+            opening = _format_mechanism_sentence(mechs[0], lab)
+        if not opening:
+            opening = (opening_para or "").strip()
+    lines = ["Course Answer:", "", opening, "", "The key idea:", key_idea, "", why_it_matters]
+    return "\n".join(lines).rstrip()
 
 
 def compose_concept_answer(
@@ -492,6 +869,8 @@ def compose_concept_answer(
 
     legacy_example_prefetch = ag._example_intuition_block(primary)
 
+    signals = _classify_query_signals(structured_query)
+
     collected = collect_role_buckets(plan, evidence, constraints=constraints)
     buckets: dict[str, list[str]] = collected["buckets"]
     ordered: list[str] = collected["ordered_sentences"]
@@ -519,21 +898,29 @@ def compose_concept_answer(
     want_example_block = not blocked and (
         plan.include_example or (not legacy_is_placeholder and bool(numeric_pick))
     )
+    if signals["depth"] == "short" and not signals["wants_example"] and not numeric_pick:
+        want_example_block = False
 
     contrast_pat = ag._CONTRAST_CUE_PATTERN
+    prefers_contrast = bool(signals["wants_contrast"])
+    max_expl_sentences = 6 if signals["depth"] == "long" else 5
+    np_pat = ag._NUMERIC_EXAMPLE_PATTERN
 
-    # Opening paragraph
+    # Opening paragraph (optionally strip numeric illustration sentences for example-block ownership)
     opening_src = raw_direct_answer
     if not opening_src.strip():
         defs = buckets.get(DEFINITION) or []
         if defs:
             opening_src = defs[0]
     if not opening_src.strip():
-        mechs = buckets.get(MECHANISM) or []
-        phrase = _lead_mechanism_phrase(mechs[0]) if mechs else "process the inputs introduced in this lecture"
-        label = concept_label or "This topic"
-        opening_src = f"{label} is a method described in the course materials, used to {phrase.strip()}."
-    opening_para = ag._natural_opening_sentence(opening_src, concept_label)
+        mechs_o = buckets.get(MECHANISM) or []
+        phrase = _lead_mechanism_phrase(mechs_o[0]) if mechs_o else "process the inputs introduced in this lecture"
+        label_o = concept_label or "This topic"
+        opening_src = f"{label_o} is a method described in the course materials, used to {phrase.strip()}."
+    opening_src_for_para = opening_src
+    if want_example_block and numeric_pick:
+        opening_src_for_para = _strip_numeric_illustration_sentences(opening_src_for_para, np_pat)
+    opening_para = ag._natural_opening_sentence(opening_src_for_para, concept_label)
 
     opening_norm_keys = set()
     if opening_src:
@@ -542,21 +929,61 @@ def compose_concept_answer(
             if k:
                 opening_norm_keys.add(k)
 
-    explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
-        buckets,
-        ordered,
-        contrast_pat,
-        opening_norm_keys,
-        ag,
-    )
+    lab = concept_label or ""
+
+    explanation_para = ""
+    explanation_segment_norms: set[str] = set()
+
+    if signals["depth"] == "short":
+        open_blob = _normalize_for_dedupe(opening_src_for_para)
+        for cand in buckets.get(MECHANISM) or []:
+            nk = _normalize_for_dedupe(cand)
+            if nk and nk not in opening_norm_keys:
+                if nk in open_blob:
+                    continue
+                explanation_para = _format_mechanism_sentence(cand, lab)
+                if explanation_para:
+                    explanation_segment_norms.add(nk)
+                break
+    elif signals["depth"] == "process":
+        explanation_para, explanation_segment_norms = _compose_inline_step_paragraph(
+            buckets,
+            opening_norm_keys,
+            lab,
+        )
+        if not explanation_para:
+            explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
+                buckets,
+                ordered,
+                contrast_pat,
+                opening_norm_keys,
+                ag,
+                concept_label=lab,
+                prefers_contrast=prefers_contrast,
+            )
+    else:
+        explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
+            buckets,
+            ordered,
+            contrast_pat,
+            opening_norm_keys,
+            ag,
+            concept_label=lab,
+            prefers_contrast=prefers_contrast,
+        )
+
+    if explanation_para and want_example_block and numeric_pick:
+        explanation_para = _strip_numeric_illustration_sentences(explanation_para, np_pat)
+
     used_norms_for_key: set[str] = set(opening_norm_keys)
     used_norms_for_key.update(explanation_segment_norms)
 
     paragraphs: list[str] = [opening_para]
     if explanation_para:
         paragraphs.append(
-            ag._truncate_to_first_sentences(explanation_para, max_sentences=5)
+            ag._truncate_to_first_sentences(explanation_para, max_sentences=max_expl_sentences)
         )
+    paragraphs = _strip_paragraphs_repeating_prior_sentences(paragraphs, ag)
 
     # Example block — mirror legacy `_example_intuition_block` priority (sample/question/excerpt)
     # so tests that strip ``sample_answer`` / ``source_excerpt`` still skip the block when the
@@ -584,6 +1011,8 @@ def compose_concept_answer(
             example_text = (bucket_lines[0] if bucket_lines else "").strip()
         if uf and example_text and ag._line_contains_user_forbidden(example_text, uf):
             example_text = ""
+        if example_text:
+            example_text = _drop_duplicate_example_sentences(example_text, opening_para, ag)
         if example_text:
             example_block_lines = ag._format_example_block(example_text)
 
@@ -633,34 +1062,28 @@ def compose_concept_answer(
 
     rendered_lines.extend(["The key idea:", key_idea, ""])
 
-    # Closer — relevance bucket first
-    rel_lines = buckets.get(RELEVANCE) or []
-    why_it_matters = ""
-    if rel_lines:
-        rel0 = rel_lines[0].strip()
-        rl = rel0.lower()
-        if rl.startswith("that matters because"):
-            why_it_matters = ag._truncate_to_first_sentences(rel0, max_sentences=2)
-        elif rl.startswith(("this matters because", "it matters because")):
-            why_it_matters = ag._truncate_to_first_sentences(rel0, max_sentences=2)
-        else:
-            # Strip redundant causal prefixes so we prepend canonical wording once.
-            rest = rel0
-            if rl.startswith("because "):
-                rest = rest[8:].strip()
-                rest = rest[0].upper() + rest[1:] if rest else rest
-            why_it_matters = ag._truncate_to_first_sentences(
-                f"That matters because {rest}",
-                max_sentences=2,
-            )
+    max_why = 3 if signals["wants_why"] else 2
+    why_it_matters = _strong_why_it_matters(buckets, lab) or ""
     if not why_it_matters:
         why_it_matters = ag._truncate_to_first_sentences(
             ag._grounded_why_it_matters(plan, primary, concept_label, user_forbidden=uf),
-            max_sentences=2,
+            max_sentences=max_why,
         )
+    else:
+        why_it_matters = ag._truncate_to_first_sentences(why_it_matters, max_sentences=max_why)
 
     rendered_lines.append(why_it_matters)
     out = "\n".join(rendered_lines).rstrip()
+
+    if _looks_broken(out):
+        out = _failsafe_render(
+            raw_direct_answer=raw_direct_answer,
+            buckets=buckets,
+            opening_para=opening_para,
+            concept_label=lab,
+            key_idea=key_idea,
+            why_it_matters=why_it_matters,
+        )
 
     if uf and ag._line_contains_user_forbidden(out, uf):
         lines = out.split("\n")

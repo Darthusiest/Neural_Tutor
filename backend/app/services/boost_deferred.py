@@ -28,6 +28,137 @@ logger = logging.getLogger(__name__)
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
+_SHALLOW_DRAFT_CHARS = 600
+_SHALLOW_EVIDENCE_LINES = 2
+
+_MARKER_PHRASES = (
+    "a useful clarification is",
+    "in standard speech processing terms",
+    "in standard machine learning terms",
+    "more generally",
+)
+
+
+def course_answer_is_shallow(course_answer: str, allowed_evidence: list[str]) -> bool:
+    """True when deferred boost may consider adding marker-phrased external clarification."""
+    body = (course_answer or "").strip()
+    if len(body) < _SHALLOW_DRAFT_CHARS:
+        return True
+    if len(allowed_evidence) <= _SHALLOW_EVIDENCE_LINES:
+        return True
+    return False
+
+
+def _evidence_fallback_from_course_answer(course_answer: str) -> list[str]:
+    """
+    When retrieval yields no chunk lines pure enough for ``collect_allowed_evidence_lines``,
+    ground prompt + validation on sentences from the rendered Course Answer block.
+    """
+    body = (course_answer or "").strip()
+    low = body.lower()
+    if low.startswith("course answer:"):
+        body = body.split(":", 1)[1].strip()
+    if not body:
+        return []
+    out: list[str] = []
+    for raw in body.replace("\r\n", "\n").split("\n"):
+        ln = raw.strip().lstrip("-*•").strip()
+        if len(ln) >= 12:
+            out.append(ln[:400])
+        if len(out) >= 5:
+            break
+    if out:
+        return out
+    return [body[:800]] if body else []
+
+
+def _sentence_evidence_overlap_ok(sentence: str, allowed_blob: str) -> bool:
+    """Cheap overlap gate for non-marker sentences."""
+    sn = sentence.strip().lower()
+    if len(sn) < 12:
+        return True
+    words = [w for w in re.findall(r"[a-z]{3,}", sn) if len(w) >= 3]
+    if not words:
+        return True
+    hits = sum(1 for w in words if w in allowed_blob)
+    return hits >= max(1, len(words) // 4)
+
+
+def _boost_body_after_prefix(text: str) -> str:
+    t = (text or "").strip()
+    low = t.lower()
+    marker = "boosted explanation:"
+    idx = low.find(marker)
+    if idx < 0:
+        return t
+    return t[idx + len(marker) :].lstrip()
+
+
+def _has_unmarked_external_addition(stripped: str, allowed_blob: str) -> bool:
+    body = _boost_body_after_prefix(stripped)
+    for raw in _SENTENCE_SPLIT.split(body):
+        piece = raw.strip()
+        if not piece:
+            continue
+        sl = piece.lower()
+        if any(sl.startswith(m) for m in _MARKER_PHRASES):
+            continue
+        if not _sentence_evidence_overlap_ok(piece, allowed_blob):
+            return True
+    return False
+
+
+def _cap_marker_prefixed_sentences(text: str, max_markers: int = 2) -> str:
+    """Keep only the first ``max_markers`` sentences that begin with a framing phrase."""
+    body = (text or "").strip()
+    if not body.lower().startswith("boosted explanation"):
+        body = "Boosted Explanation:\n\n" + body
+    prefix = "Boosted Explanation:"
+    rest = body[len(prefix) :].lstrip()
+    sentences = _SENTENCE_SPLIT.split(rest)
+    kept: list[str] = []
+    marker_count = 0
+    for s in sentences:
+        piece = s.strip()
+        if not piece:
+            continue
+        sl = piece.lower()
+        is_marker = any(sl.startswith(m) for m in _MARKER_PHRASES)
+        if is_marker:
+            if marker_count >= max_markers:
+                continue
+            marker_count += 1
+        kept.append(piece)
+    return prefix + "\n\n" + " ".join(kept)
+
+
+def _marker_segments_joined(body: str) -> str:
+    parts: list[str] = []
+    for raw in _SENTENCE_SPLIT.split(body):
+        piece = raw.strip()
+        if not piece:
+            continue
+        sl = piece.lower()
+        if any(sl.startswith(m) for m in _MARKER_PHRASES):
+            parts.append(piece)
+    return " ".join(parts)
+
+
+def _too_many_novel_terms_in_marker_segments(stripped: str, allowed_blob: str) -> bool:
+    body = _boost_body_after_prefix(stripped)
+    marker_blob = _marker_segments_joined(body)
+    if not marker_blob.strip():
+        return False
+    ab = allowed_blob.lower()
+    tokens: set[str] = set()
+    for m in re.finditer(r"\b[A-Z][a-z]{3,}\b|\b[A-Z]{2,}\b", marker_blob):
+        tok = m.group(0)
+        tl = tok.lower()
+        if tl in ab:
+            continue
+        tokens.add(tl)
+    return len(tokens) > 1
+
 
 def _lecture_chunk_to_dict(row: LectureChunk) -> dict[str, Any]:
     src = row.source_excerpt or ""
@@ -99,6 +230,9 @@ def _strip_forbidden_sentences(text: str, constraints: ConceptConstraints) -> st
 def _validate_boost_output(
     text: str | None,
     constraints: ConceptConstraints,
+    *,
+    allowed_evidence_lines: list[str] | None = None,
+    allow_external_clarification: bool = False,
 ) -> tuple[str | None, str | None]:
     """Return (clean_text, None) or (None, reason)."""
     if not text or not str(text).strip():
@@ -106,7 +240,6 @@ def _validate_boost_output(
     stripped = _strip_forbidden_sentences(text, constraints)
     if not stripped.strip():
         return None, "all_sentences_forbidden"
-    # Forbidden anywhere in full text after strip
     rest = stripped
     if line_has_forbidden(rest, constraints):
         return None, "forbidden_after_strip"
@@ -115,6 +248,17 @@ def _validate_boost_output(
         for t in constraints.forbidden_terms:
             if len(t) > 2 and t in al:
                 return None, f"forbidden_term:{t[:20]}"
+
+    allowed = list(allowed_evidence_lines or [])
+    allowed_blob = " ".join(allowed).lower()
+
+    if allow_external_clarification:
+        if _has_unmarked_external_addition(stripped, allowed_blob):
+            return None, "unmarked_external"
+        stripped = _cap_marker_prefixed_sentences(stripped)
+        if _too_many_novel_terms_in_marker_segments(stripped, allowed_blob):
+            return None, "too_many_new_terms"
+
     return stripped, None
 
 
@@ -200,7 +344,18 @@ def run_constrained_boost_for_message(
         constraints = build_concept_constraints(sq, kb)
 
     allowed = collect_allowed_evidence_lines(chunks, constraints, max_lines=5)
-    if not allowed:
+    kb_meta = (
+        kb.get_concept_by_id(constraints.target_concepts[0])
+        if constraints.target_concepts
+        else None
+    )
+    allow_external_clarification = bool(
+        kb_meta
+        and kb_meta.allow_external_clarification
+        and course_answer_is_shallow(course_answer, allowed)
+    )
+
+    if not allowed and not allow_external_clarification:
         payload["boost_status"] = "skipped"
         payload["boost_skip_reason"] = "no_evidence_lines"
         message.payload_json = json.dumps(payload)
@@ -212,6 +367,22 @@ def run_constrained_boost_for_message(
             "boost_skip_reason": "no_evidence_lines",
             "assistant_message_id": message.id,
         }
+
+    evidence_lines = list(allowed)
+    if not evidence_lines and allow_external_clarification:
+        evidence_lines = _evidence_fallback_from_course_answer(course_answer)
+        if not evidence_lines:
+            payload["boost_status"] = "skipped"
+            payload["boost_skip_reason"] = "no_evidence_lines"
+            message.payload_json = json.dumps(payload)
+            _sync_response_variant(message, payload, None, False)
+            db.session.commit()
+            return {
+                "boost_status": "skipped",
+                "boosted_explanation": None,
+                "boost_skip_reason": "no_evidence_lines",
+                "assistant_message_id": message.id,
+            }
 
     target_label = _target_concept_label(constraints, sq_dict)
     forbidden_list = sorted(constraints.forbidden_terms)
@@ -240,10 +411,11 @@ def run_constrained_boost_for_message(
             boosted, meta = generate_openai_constrained_boost(
                 user_question=user_q,
                 target_concept=target_label,
-                allowed_evidence_lines=allowed,
+                allowed_evidence_lines=evidence_lines,
                 forbidden_terms=forbidden_list,
                 draft_answer=course_answer,
                 mode=mode_eff,
+                allow_external_clarification=allow_external_clarification,
             )
             if boosted:
                 meta = {**meta, "provider": "openai"}
@@ -252,10 +424,11 @@ def run_constrained_boost_for_message(
             boosted, meta = generate_gemini_constrained_boost(
                 user_question=user_q,
                 target_concept=target_label,
-                allowed_evidence_lines=allowed,
+                allowed_evidence_lines=evidence_lines,
                 forbidden_terms=forbidden_list,
                 draft_answer=course_answer,
                 mode=mode_eff,
+                allow_external_clarification=allow_external_clarification,
             )
             if boosted:
                 break
@@ -276,7 +449,12 @@ def run_constrained_boost_for_message(
             "assistant_message_id": message.id,
         }
 
-    clean, reason = _validate_boost_output(boosted, constraints)
+    clean, reason = _validate_boost_output(
+        boosted,
+        constraints,
+        allowed_evidence_lines=evidence_lines,
+        allow_external_clarification=allow_external_clarification,
+    )
     if clean is None:
         logger.info("deferred_boost_discarded message_id=%s reason=%s", message.id, reason)
         payload["boost_status"] = "skipped"

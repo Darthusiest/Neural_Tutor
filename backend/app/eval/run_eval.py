@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from app import create_app
+from app.eval.capability_analytics import (
+    build_analytics_payload,
+    primary_error_type_for_row,
+    write_capability_report_md,
+)
 from app.eval.dataset import case_expected_behavior_dict, load_eval_dataset
 from app.eval.regression import write_regression_report
 from app.eval.report_markdown import (
@@ -186,8 +191,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Pass boost_toggle=True (default is False for stable scoring)",
     )
+    parser.add_argument(
+        "--paired-boost",
+        action="store_true",
+        help="Run each case twice (boost off/on) and store boost effectiveness metrics.",
+    )
     args = parser.parse_args(argv)
     boost_toggle = bool(args.with_boost)
+    paired_boost = bool(args.paired_boost)
 
     ds_path = Path(args.dataset)
     if not ds_path.is_absolute():
@@ -220,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                     "reports_dir": str(out_dir),
                     "structured_pipeline_enabled": struct_on,
                     "boost_toggle": boost_toggle,
+                    "paired_boost": paired_boost,
                     "eval_user_email": email,
                 }
             ),
@@ -235,7 +247,11 @@ def main(argv: list[str] | None = None) -> int:
 
         for case in cases:
             try:
-                one = _run_one_case(case, user, boost_toggle=boost_toggle)
+                one = _run_one_case(
+                    case,
+                    user,
+                    boost_toggle=False if paired_boost else boost_toggle,
+                )
             except Exception as e:  # noqa: BLE001
                 failed_n += 1
                 emsg = f"runner_exception:{e!s}"
@@ -268,8 +284,10 @@ def main(argv: list[str] | None = None) -> int:
                     pass_bool=False,
                     score=0.0,
                     error_categories_json=json.dumps([emsg]),
+                    primary_error_type="shallow_explanation",
                     validation_failures_json=None,
                     retrieval_chunk_ids_json=None,
+                    boost_metrics_json=None,
                     latency_ms=None,
                 )
                 db.session.add(ecr)
@@ -287,6 +305,37 @@ def main(argv: list[str] | None = None) -> int:
                     "score": 0.0,
                 }
                 continue
+
+            if paired_boost:
+                try:
+                    boost_one = _run_one_case(case, user, boost_toggle=True)
+                    boost_sc: ScoringResult = boost_one["score"]
+                    boost_metrics = {
+                        "boost_triggered": bool((boost_one.get("out") or {}).get("boost_applied")),
+                        "boost_latency_ms": max(
+                            0,
+                            int(boost_one.get("latency_ms") or 0)
+                            - int(one.get("latency_ms") or 0),
+                        ),
+                        "latency_without_boost_ms": one.get("latency_ms"),
+                        "latency_with_boost_ms": boost_one.get("latency_ms"),
+                        "score_without_boost": one["score"].score,
+                        "score_with_boost": boost_sc.score,
+                        "boost_improved": bool(boost_sc.score > one["score"].score),
+                    }
+                except Exception as e:  # noqa: BLE001
+                    boost_metrics = {
+                        "boost_triggered": False,
+                        "boost_latency_ms": None,
+                        "latency_without_boost_ms": one.get("latency_ms"),
+                        "latency_with_boost_ms": None,
+                        "score_without_boost": one["score"].score,
+                        "score_with_boost": None,
+                        "boost_improved": False,
+                        "boost_error": str(e),
+                    }
+            else:
+                boost_metrics = None
 
             out = one["out"]
             sc: ScoringResult = one["score"]
@@ -317,9 +366,12 @@ def main(argv: list[str] | None = None) -> int:
                 error_categories_json=json.dumps(sc.error_categories),
                 validation_failures_json=json.dumps(val_json) if val_json is not None else None,
                 retrieval_chunk_ids_json=json.dumps(one.get("chunk_ids") or []),
+                boost_metrics_json=json.dumps(boost_metrics) if boost_metrics is not None else None,
                 latency_ms=one.get("latency_ms"),
             )
             db.session.add(ecr)
+            db.session.flush()
+            ecr.primary_error_type = primary_error_type_for_row(ecr)
             db.session.commit()
 
             tags, ret_blob = canonical_tags_and_retrieval_blob(
@@ -421,6 +473,22 @@ def main(argv: list[str] | None = None) -> int:
             row_results=row_results,
             case_details=case_details,
             dataset_name=dname,
+        )
+        persisted_cases = (
+            EvaluationCaseResult.query.filter_by(evaluation_run_id=run_id)
+            .order_by(EvaluationCaseResult.test_id)
+            .all()
+        )
+        analytics_payload = build_analytics_payload(persisted_cases)
+        (out_dir / "analytics.json").write_text(
+            json.dumps(analytics_payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        write_capability_report_md(
+            out_dir / "report.md",
+            run=run,
+            cases=persisted_cases,
+            payload=analytics_payload,
         )
 
     print(

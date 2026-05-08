@@ -20,6 +20,14 @@ from app.eval.analytics_common import (
     percentile,
     suite_category,
 )
+from app.eval.capability_analytics import (
+    retrieval_diagnostics,
+    summarize_boost,
+    summarize_capability,
+    summarize_coverage,
+    summarize_errors,
+    summarize_structure,
+)
 from app.models import EvaluationCaseResult, EvaluationRun
 
 RETRIEVAL_LEAKAGE_TAG = "retrieval_leakage"
@@ -252,6 +260,92 @@ def export_latency_by_run(cases: list[EvaluationCaseResult]) -> list[dict[str, A
     return rows
 
 
+def export_capability_breakdown(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    cap = summarize_capability(cases)["by_intent"]
+    return [
+        {
+            "intent": intent,
+            "total_cases": data["total_cases"],
+            "correct_cases": data["correct_cases"],
+            "accuracy": data["accuracy"],
+        }
+        for intent, data in sorted(cap.items())
+    ]
+
+
+def export_primary_error_breakdown(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    errors = summarize_errors(cases)["by_error_type"]
+    return [
+        {
+            "error_type": error_type,
+            "count": data["count"],
+            "percentage": data["percentage"],
+        }
+        for error_type, data in errors.items()
+    ]
+
+
+def export_retrieval_diagnostics(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for diag in retrieval_diagnostics(cases):
+        d = diag.to_dict()
+        rows.append(
+            {
+                "test_id": d["test_id"],
+                "query_text": d["query_text"],
+                "concept": d["concept"],
+                "top_1_correct": d["top_1_correct"],
+                "top_k_contains_correct": d["top_k_contains_correct"],
+                "retrieval_noise": d["retrieval_noise"],
+                "retrieved_chunk_ids": ";".join(str(x) for x in d["retrieved_chunk_ids"]),
+                "concept_match_score": ""
+                if d["concept_match_score"] is None
+                else d["concept_match_score"],
+            }
+        )
+    return rows
+
+
+def export_structure_compliance(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    structure = summarize_structure(cases)
+    rows: list[dict[str, Any]] = []
+    violations = structure.get("violations", {})
+    for intent, data in structure["by_intent"].items():
+        rows.append(
+            {
+                "intent": intent,
+                "total_cases": data["total_cases"],
+                "compliant_cases": data["compliant_cases"],
+                "compliance_rate": data["compliance_rate"],
+                "violations": ";".join(
+                    f"{name}:{count}" for name, count in sorted(violations.items())
+                ),
+            }
+        )
+    return rows
+
+
+def export_coverage(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    coverage = summarize_coverage(cases)
+    under_tested = set(coverage["under_tested_concepts"])
+    return [
+        {
+            "concept": concept,
+            "case_count": coverage["count_per_concept"][concept],
+            "accuracy": coverage["accuracy_per_concept"][concept],
+            "under_tested": concept in under_tested,
+        }
+        for concept in sorted(coverage["count_per_concept"])
+    ]
+
+
+def export_boost_effectiveness(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
+    boost = summarize_boost(cases)
+    if not boost:
+        return []
+    return [boost]
+
+
 def _parse_run_ids(s: str | None) -> frozenset[int] | None:
     if not s or not s.strip():
         return None
@@ -295,9 +389,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    out_dir = args.out_dir or _default_out_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     rf = RunFilter(
         dataset_substring=args.dataset,
         run_ids=_parse_run_ids(args.run_ids),
@@ -308,8 +399,22 @@ def main(argv: list[str] | None = None) -> int:
     with app.app_context():
         runs = fetch_ordered_runs(rf)
         if not runs:
-            print("No evaluation runs matched filters; nothing written.")
+            total = EvaluationRun.query.count()
+            if total == 0:
+                print(
+                    "No evaluation runs in the database; nothing written.\n"
+                    "Create runs first, for example:\n"
+                    "  PYTHONPATH=. python -m app.eval.run_eval "
+                    '--dataset data/eval/l487_eval_suite.json --run-name "baseline"'
+                )
+            else:
+                print(
+                    "No evaluation runs matched filters; nothing written. "
+                    f"(Found {total} run(s) in DB — try different --dataset / --run-ids / --last-n.)"
+                )
             return 1
+        out_dir = args.out_dir or _default_out_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
         run_ids = [r.id for r in runs]
         cases = fetch_case_rows_for_runs(run_ids)
 
@@ -397,6 +502,54 @@ def main(argv: list[str] | None = None) -> int:
             export_latency_by_run(cases),
             ["run_id", "mean_latency_ms", "median_latency_ms", "p95_latency_ms"],
         )
+        _write_csv(
+            out_dir / "capability_breakdown.csv",
+            export_capability_breakdown(cases),
+            ["intent", "total_cases", "correct_cases", "accuracy"],
+        )
+        _write_csv(
+            out_dir / "error_breakdown.csv",
+            export_primary_error_breakdown(cases),
+            ["error_type", "count", "percentage"],
+        )
+        _write_csv(
+            out_dir / "retrieval_diagnostics.csv",
+            export_retrieval_diagnostics(cases),
+            [
+                "test_id",
+                "query_text",
+                "concept",
+                "top_1_correct",
+                "top_k_contains_correct",
+                "retrieval_noise",
+                "retrieved_chunk_ids",
+                "concept_match_score",
+            ],
+        )
+        _write_csv(
+            out_dir / "structure_compliance.csv",
+            export_structure_compliance(cases),
+            ["intent", "total_cases", "compliant_cases", "compliance_rate", "violations"],
+        )
+        _write_csv(
+            out_dir / "coverage.csv",
+            export_coverage(cases),
+            ["concept", "case_count", "accuracy", "under_tested"],
+        )
+        boost_rows = export_boost_effectiveness(cases)
+        if boost_rows:
+            _write_csv(
+                out_dir / "boost_effectiveness.csv",
+                boost_rows,
+                [
+                    "paired_cases",
+                    "boost_triggered_rate",
+                    "boost_added_value_rate",
+                    "avg_boost_latency_ms",
+                    "avg_latency_without_boost_ms",
+                    "avg_latency_with_boost_ms",
+                ],
+            )
 
     print(f"Wrote analytics CSVs to {out_dir}")
     return 0
