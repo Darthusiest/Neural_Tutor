@@ -1,8 +1,10 @@
 """Entity-scored retrieval and compare bundle helpers."""
 
 from app.services.answers.entity_retrieval import (
+    ConceptEvidenceBundleV2,
     build_bundles_for_compare,
     chunk_text_blob,
+    display_heading_for_compare,
     forbidden_terms_for_concept,
     score_chunk_for_entity,
 )
@@ -60,4 +62,20 @@ def test_build_bundles_splits_sides():
         assert a.chunk_ids or b.chunk_ids
         blob_a = chunk_text_blob(chunks[0])
         assert "mfcc" in blob_a or "mfcc" in blob_a.lower()
+
+
+def test_display_heading_adds_alias_when_label_omits_concept_id(app):
+    with app.app_context():
+        kb = get_kb()
+        bundle = ConceptEvidenceBundleV2(
+            concept="cnn",
+            aliases=["cnn"],
+            evidence_chunks=[],
+            core_lines=[],
+            support_score=0.5,
+            label_override="convolutional neural network",
+        )
+        heading = display_heading_for_compare(bundle, kb)
+        assert "convolutional neural network" in heading.lower()
+        assert "cnn" in heading.lower()
 

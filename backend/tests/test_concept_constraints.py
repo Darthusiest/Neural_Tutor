@@ -438,3 +438,10 @@ def test_constraints_to_dict_round_trips(app):
         ]
         assert "cnn" in snap["target_concepts"]
         assert isinstance(snap["forbidden_terms"], list)
+
+
+def test_pipeline_formants_avoids_mfcc_leak(corpus, app):
+    """Same-lecture peer (MFCC) must not leak into a formants definition."""
+    with app.app_context():
+        pr = run_reasoning_pipeline("What is formants in this course?", top_k=10)
+    assert "mfcc" not in pr.course_answer.lower()

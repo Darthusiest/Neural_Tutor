@@ -21,6 +21,14 @@ def test_without_mentioning():
     assert any("softmax" in t for t in topics)
 
 
+def test_without_discussion_tail():
+    rc = parse_response_constraints(
+        "Explain attention without MFCC discussion."
+    )
+    topics = [t.lower() for t in rc.forbidden_topics]
+    assert any("mfcc" in t for t in topics)
+
+
 def test_exclude_clause():
     rc = parse_response_constraints("Explain DP. Exclude neural networks.")
     assert rc.forbidden_topics

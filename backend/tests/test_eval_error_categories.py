@@ -53,7 +53,7 @@ def _pr(
 
 
 def test_error_category_tags_count():
-    assert len(ERROR_CATEGORY_TAGS) == 16
+    assert len(ERROR_CATEGORY_TAGS) == 17
 
 
 def test_failure_tags_empty_on_pass():
@@ -143,7 +143,7 @@ def test_validation_missed_error_when_validator_passes_but_suite_fails():
     )
     tags = failure_tags_for_case(case, pr, pass_bool=False)
     assert "missing_required_concept" in tags
-    assert "validation_missed_error" in tags
+    assert "validation_missed_error" not in tags
 
 
 def test_validation_check_maps_to_quiz_not_rendered():
@@ -173,6 +173,25 @@ def test_unmapped_validation_check_gets_validation_missed_error():
         chunks=[],
         validation=ValidationResult(
             passed=False,
+            checks_run=["must_hypothetical_future_rule"],
+            checks_passed=[],
+            checks_failed=["must_hypothetical_future_rule"],
+            flags={},
+            severity="fail",
+        ),
+    )
+    tags = failure_tags_for_case(case, pr, pass_bool=False)
+    assert "validation_missed_error" in tags
+
+
+def test_must_be_course_grounded_maps_to_missing_required_concept():
+    case = {"id": "cg", "query": "q", "must_include": []}
+    pr = _pr(
+        answer="x",
+        mode_routing=None,
+        chunks=[],
+        validation=ValidationResult(
+            passed=False,
             checks_run=["must_be_course_grounded"],
             checks_passed=[],
             checks_failed=["must_be_course_grounded"],
@@ -181,7 +200,8 @@ def test_unmapped_validation_check_gets_validation_missed_error():
         ),
     )
     tags = failure_tags_for_case(case, pr, pass_bool=False)
-    assert "validation_missed_error" in tags
+    assert "missing_required_concept" in tags
+    assert "validation_missed_error" not in tags
 
 
 def test_clarification_category_adds_tag():
@@ -194,6 +214,23 @@ def test_clarification_category_adds_tag():
     pr = _pr(answer="x", mode_routing=None, chunks=[])
     tags = failure_tags_for_case(case, pr, pass_bool=False)
     assert "clarification_missing" in tags
+
+
+def test_clarification_category_skips_tag_when_template_answer_present():
+    case = {
+        "id": "c2",
+        "query": "Compare these",
+        "category": "clarification",
+        "must_include": ["needle"],
+    }
+    pr = _pr(
+        answer="Tell me which two concepts to compare — for example, Compare CNN and MLP.",
+        mode_routing=None,
+        chunks=[],
+    )
+    tags = failure_tags_for_case(case, pr, pass_bool=False)
+    assert "missing_required_concept" in tags
+    assert "clarification_missing" not in tags
 
 
 def test_generic_filler_flag():

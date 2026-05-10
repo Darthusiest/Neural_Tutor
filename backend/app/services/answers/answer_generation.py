@@ -293,6 +293,11 @@ _GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"fingerprint of sound", re.IGNORECASE),
     re.compile(r"keeps reappearing alongside", re.IGNORECASE),
     re.compile(r"clear intuition for this topic", re.IGNORECASE),
+    re.compile(r"high-level picture", re.IGNORECASE),
+    re.compile(r"\bbig picture\b", re.IGNORECASE),
+    re.compile(r"\bstay(s)?\s+high.level\b", re.IGNORECASE),
+    re.compile(r"in the materials you already have", re.IGNORECASE),
+    re.compile(r"building blocks for later topics", re.IGNORECASE),
     re.compile(r"^concept a\s*:", re.IGNORECASE),
     re.compile(r"^concept b\s*:", re.IGNORECASE),
     re.compile(r"forward pass:\s*compute output", re.IGNORECASE),
@@ -442,20 +447,6 @@ def _mentions_target_in_opening(
     return any(alias and alias in low for alias in aliases)
 
 
-def _compare_labels(sq: StructuredQuery) -> list[str]:
-    labels: list[str] = []
-    if sq.intent.compare_entities:
-        labels.extend([x for x in sq.intent.compare_entities if x][:2])
-    elif sq.intent.compare_concepts:
-        labels.extend([x for x in sq.intent.compare_concepts if x][:2])
-    elif len(sq.concept_ids) >= 2:
-        kb = get_kb()
-        for cid in sq.concept_ids[:2]:
-            c = kb.get_concept_by_id(cid)
-            labels.append(c.name if c else cid)
-    return labels[:2]
-
-
 def audit_rendered_answer(
     text: str,
     query_type: str,
@@ -469,7 +460,15 @@ def audit_rendered_answer(
     body = (text or "").strip()
     if not body:
         return strict_clarification_answer(query_type)
-    if any(p.search(body) for p in _STRICT_BANNED_PATTERNS):
+    # Compare answers quote scoped lecture lines; those may contain phrasing we
+    # ban in chat-mode composed output (e.g. "Forward pass: compute output").
+    if query_type != "comparison" and any(
+        p.search(body) for p in _STRICT_BANNED_PATTERNS
+    ):
+        return strict_clarification_answer(query_type)
+
+    uf_global = _user_forbidden_set(sq)
+    if uf_global and _line_contains_user_forbidden(body, uf_global):
         return strict_clarification_answer(query_type)
 
     if query_type in {"definition", "mechanism", "step_by_step", "why", "limitation"}:
@@ -486,11 +485,13 @@ def audit_rendered_answer(
             return strict_clarification_answer(query_type)
 
     if query_type == "comparison":
-        labels = _compare_labels(sq)
-        if len(labels) >= 2:
-            low = body.lower()
-            if labels[0].lower() not in low or labels[1].lower() not in low:
-                return strict_clarification_answer(query_type)
+        from app.services.answers.answer_validation import _must_match_compare_contract
+
+        if not _must_match_compare_contract(body, sq, get_kb()):
+            return strict_clarification_answer(query_type)
+        # Multi-entity compare uses a dedicated table layout (not tutor sections).
+        if "### Compared architectures" in body:
+            return body
 
     opening = _opening_line(body)
     key_idea = _key_idea_line(body)
@@ -995,9 +996,17 @@ def generate_structured_answer(
 
     if plan.answer_mode == "compare_multi" and plan.evidence_bundles:
         entity_bundles = list(plan.evidence_bundles.values())
-        return format_multi_entity_compare_markdown(
+        rendered_multi = format_multi_entity_compare_markdown(
             entity_bundles, all_chunks, structured_query, plan=plan
         )
+        audited = audit_rendered_answer(
+            rendered_multi,
+            query_type,
+            plan,
+            structured_query,
+            concept_constraints=concept_constraints,
+        )
+        return audited or strict_clarification_answer(query_type)
 
     if plan.answer_mode == "compare" and len(plan.evidence_bundles) >= 2:
         bundle_concept_ids = list(plan.evidence_bundles.keys())

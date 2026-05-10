@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, replace
+from typing import Literal
+
 from app.services.query_understanding import (
     QueryIntent,
     QueryType,
@@ -16,11 +18,37 @@ from app.services.query_understanding import (
 
 logger = logging.getLogger(__name__)
 
+ApiMode = Literal["quiz", "compare", "summary", "chat"]
+
 # Priority when multiple families score high (first wins).
 _MODE_PRIORITY: tuple[ApiMode, ...] = ("quiz", "compare", "summary", "chat")
 
 _MIN_SCORE = 0.32
 _AMBIGUITY_GAP = 0.12
+
+
+def _is_how_do_multi_entity_contrast_synthesis(q: str) -> bool:
+    """Triple+ style pedagogy: *How do A, B, and C contrast …?* → chat/synthesis, not compare."""
+    ql = q.strip()
+    if not re.match(r"^how\s+do\b", ql, re.IGNORECASE):
+        return False
+    if not re.search(r"\bcontrast\b", ql, re.IGNORECASE):
+        return False
+    parts = re.split(r"\bcontrast\b", ql, maxsplit=1, flags=re.IGNORECASE)
+    if not parts or not parts[0]:
+        return False
+    pre = parts[0].lower()
+    return "," in pre and " and " in pre
+
+
+def _url_with_course_instruction_bait(raw: str) -> bool:
+    """Do not route URL-bait + course verbs to summary/compare (stay in chat)."""
+    if not re.search(r"https?://", raw, re.IGNORECASE):
+        return False
+    ql = raw.lower()
+    return bool(
+        re.search(r"\b(summarize|summarise|explain|compare|contrast)\b", ql)
+    )
 
 
 def _normalize(raw: str) -> str:
@@ -38,7 +66,10 @@ def _score_quiz(q: str) -> tuple[float, list[str]]:
     patterns: list[tuple[str, str, float]] = [
         (r"\bquiz\s+me\b", "phrase:quiz_me", 0.95),
         (r"\btest\s+me\b", "phrase:test_me", 0.92),
+        (r"\btest\s+my\s+knowledge\b", "phrase:test_my_knowledge", 0.9),
         (r"\bgive\s+me\s+a\s+quiz\b", "phrase:give_quiz", 0.95),
+        (r"\bgive\s+me\s+\d+\s+questions?\b", "phrase:give_n_questions", 0.9),
+        (r"\bthree\s+questions\s+on\b", "phrase:three_questions_on", 0.88),
         (r"\bpractice\s+quiz\b", "phrase:practice_quiz", 0.9),
         (r"\bask\s+me\s+questions\b", "phrase:ask_me_questions", 0.88),
         (r"\bask\s+questions\s+about\b", "phrase:ask_questions_about", 0.85),
@@ -64,7 +95,12 @@ def _score_compare(q: str) -> tuple[float, list[str]]:
         (r"\bcontrast\b", "keyword:contrast", 0.7),
         (r"\bdifferences?\s+between\b", "phrase:differences_between", 0.88),
         (r"\bdifference\s+between\b", "phrase:difference_between", 0.88),
+        # Underspecified compare follow-ups (clar_v3_* routing probes).
+        (r"\bhow\s+do\s+they\s+differ\b", "phrase:how_do_they_differ", 0.88),
+        (r"\bhow\s+are\s+they\s+different\b", "phrase:how_are_they_different", 0.88),
+        (r"\bwhat'?s\s+the\s+difference\b", "phrase:whats_the_difference", 0.82),
         (r"\bhow\s+is\s+.+\s+different\s+from\b", "pattern:how_different_from", 0.9),
+        (r"\bis\s+[a-z0-9][a-z0-9\s\-]+\s+different\s+from\s+[a-z0-9]", "pattern:is_x_different_from_y", 0.88),
         (r"\bdistinguish\s+.+\s+from\b", "pattern:distinguish_from", 0.85),
         (r"\bversus\b", "keyword:versus", 0.65),
         (r"\bvs\.?\b", "keyword:vs", 0.62),
@@ -100,7 +136,12 @@ def _score_summary(q: str) -> tuple[float, list[str]]:
         (r"\boverview\s+of\b", "phrase:overview_of", 0.8),
         (r"\bbrief\s+overview\b", "phrase:brief_overview", 0.78),
         (r"\bsummarize\s+lecture\b", "phrase:summarize_lecture", 0.9),
+        (r"\bwrap\s*up\s+(?:the\s+)?(?:lecture|chapter|module|section)\b", "phrase:wrap_up_lecture", 0.9),
+        (r"\bwrap\s*up\s+the\s+chapter\s+on\b", "phrase:wrap_chapter_on", 0.9),
+        (r"\bwrap\s+up\s+(?:lecture|chapter|module)\s+on\b", "phrase:wrap_up_on_topic", 0.88),
         (r"\bsummarize\s+topic\b", "phrase:summarize_topic", 0.85),
+        (r"\bsummary\s+please\b", "phrase:summary_please", 0.88),
+        (r"\bgive\s+me\s+a\s+summary\b", "phrase:give_me_summary", 0.85),
         (r"\bmain\s+ideas\s+(?:of|in|from)\b", "phrase:main_ideas", 0.8),
         (r"\btl;?dr\b", "keyword:tldr", 0.7),
     ]
@@ -134,6 +175,20 @@ def detect_query_mode(raw_query: str) -> ModeDetectionResult:
             mode="chat",
             confidence=0.2,
             signals=["empty:query"],
+        )
+
+    if _url_with_course_instruction_bait(raw_query):
+        return ModeDetectionResult(
+            mode="chat",
+            confidence=0.9,
+            signals=["guard:url_course_instruction"],
+        )
+
+    if _is_how_do_multi_entity_contrast_synthesis(q):
+        return ModeDetectionResult(
+            mode="chat",
+            confidence=0.92,
+            signals=["phrase:how_do_multi_contrast_synthesis"],
         )
 
     qz, sig_qz = _score_quiz(q)
@@ -239,6 +294,14 @@ def apply_effective_api_mode(
     **quiz / compare / summary**: coerce ``query_type`` so retrieval strategies match.
     """
     if effective_api_mode == "chat":
+        qn = _normalize(original_query)
+        if _is_how_do_multi_entity_contrast_synthesis(qn):
+            return replace(
+                intent,
+                query_type=QueryType.SYNTHESIS,
+                compare_entities=[],
+                compare_concepts=None,
+            )
         return intent
 
     if effective_api_mode == "quiz":

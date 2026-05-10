@@ -24,10 +24,12 @@ from app.services.answers.compare_evidence import (
     scoped_lines_from_chunks,
     shorten_for_compare_cell,
 )
+from app.services.answers.answer_validation import _normalize_line_for_dup
 from app.services.answers.entity_retrieval import (
     ConceptEvidenceBundle,
     ConceptEvidenceBundleV2,
     EvidenceBundleLike,
+    display_heading_for_compare,
     forbidden_terms_for_concept,
 )
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
@@ -154,8 +156,11 @@ def _compare_clarification_fallback(
         structured_query,
         "compare",
     )
+    kb = get_kb()
+    left_h = display_heading_for_compare(left_bundle, kb)
+    right_h = display_heading_for_compare(right_bundle, kb)
     return (
-        f"Compare: {left_bundle.label} vs {right_bundle.label}\n\n"
+        f"Compare: {left_h} vs {right_h}\n\n"
         "I couldn't pull enough course material to compare those two side-by-side.\n\n"
         f"{clarify}"
     )
@@ -185,6 +190,8 @@ def format_two_entity_compare_markdown(
        :data:`COMPARE_SHARED_MIN_SUPPORT`).
     """
     kb = kb or get_kb()
+    left_heading = display_heading_for_compare(left_bundle, kb)
+    right_heading = display_heading_for_compare(right_bundle, kb)
     chunks_by_id = {c.get("id"): c for c in all_chunks if c.get("id") is not None}
     left_chunks = [chunks_by_id[i] for i in left_bundle.chunk_ids if i in chunks_by_id]
     right_chunks = [chunks_by_id[i] for i in right_bundle.chunk_ids if i in chunks_by_id]
@@ -222,27 +229,35 @@ def format_two_entity_compare_markdown(
     )
 
     shared_lines = _shared_lines_from_bundles(left_bundle, right_bundle)
+    bullet_norm_keys = {_normalize_line_for_dup(line) for line in (*left_lines, *right_lines)}
+    bullet_norm_keys.discard("")
+    slim_shared: list[str] = []
+    for line in shared_lines:
+        key = _normalize_line_for_dup(line)
+        if key and key not in bullet_norm_keys:
+            slim_shared.append(line)
+    shared_lines = slim_shared
 
     left_summary_line = (
         shorten_for_compare_cell(left_lines[0], max_len=380)
         if left_lines
-        else f"(Limited direct material for **{left_bundle.label}** in retrieved notes.)"
+        else f"(Limited direct material for **{left_heading}** in retrieved notes.)"
     )
     right_summary_line = (
         shorten_for_compare_cell(right_lines[0], max_len=380)
         if right_lines
-        else f"(Limited direct material for **{right_bundle.label}** in retrieved notes.)"
+        else f"(Limited direct material for **{right_heading}** in retrieved notes.)"
     )
 
     if left_is_provisional and left_lines:
         left_summary_line = (
             f"{left_summary_line} *(provisional wording—notes mix topics; prefer a follow-up "
-            f"scoped to {left_bundle.label}.)*"
+            f"scoped to {left_heading}.)*"
         )
     if right_is_provisional and right_lines:
         right_summary_line = (
             f"{right_summary_line} *(provisional wording—notes mix topics; prefer a follow-up "
-            f"scoped to {right_bundle.label}.)*"
+            f"scoped to {right_heading}.)*"
         )
 
     axis_labels = plan.comparison_axes[:6] if plan.comparison_axes else [
@@ -266,17 +281,17 @@ def format_two_entity_compare_markdown(
             else "*(No scoped line in retrieved notes for this axis.)*"
         )
         contrast_bullets.append(
-            f"- **{axis_label}:** **{left_bundle.label}:** {left_snippet} **{right_bundle.label}:** {right_snippet}"
+            f"- **{axis_label}:** **{left_heading}:** {left_snippet} **{right_heading}:** {right_snippet}"
         )
 
     evidence_gap_bullets: list[str] = []
     if left_bundle.gap_flags:
         evidence_gap_bullets.append(
-            f"- **{left_bundle.label}:** evidence support is thin; treat claims as provisional."
+            f"- **{left_heading}:** evidence support is thin; treat claims as provisional."
         )
     if right_bundle.gap_flags:
         evidence_gap_bullets.append(
-            f"- **{right_bundle.label}:** evidence support is thin; treat claims as provisional."
+            f"- **{right_heading}:** evidence support is thin; treat claims as provisional."
         )
     evidence_gaps_block = "\n".join(evidence_gap_bullets)
 
@@ -285,13 +300,13 @@ def format_two_entity_compare_markdown(
         "",
         "### Direct Answer",
         "",
-        f"**{left_bundle.label}** in one line: {left_summary_line}",
+        f"**{left_heading}** in one line: {left_summary_line}",
         "",
-        f"**{right_bundle.label}** in one line: {right_summary_line}",
+        f"**{right_heading}** in one line: {right_summary_line}",
         "",
         "### Explanation",
         "",
-        f"**{left_bundle.label} (from course text):**",
+        f"**{left_heading} (from course text):**",
         "",
     ]
     for line in left_lines[1:5]:
@@ -299,7 +314,7 @@ def format_two_entity_compare_markdown(
     markdown_parts.extend(
         [
             "",
-            f"**{right_bundle.label} (from course text):**",
+            f"**{right_heading} (from course text):**",
             "",
         ]
     )
@@ -375,7 +390,8 @@ def format_multi_entity_compare_markdown(
     table_body_rows: list[str] = []
     for bundle in entity_bundles:
         row_lines, _ = scoped_lines_by_concept.get(bundle.concept_id, ([], False))
-        row_cells = [f"**{bundle.label}**"]
+        row_heading = display_heading_for_compare(bundle, kb)
+        row_cells = [f"**{row_heading}**"]
         for axis_label in axis_labels:
             best_line = pick_line_for_axis(row_lines, axis_label) if row_lines else None
             if best_line:
@@ -386,9 +402,19 @@ def format_multi_entity_compare_markdown(
                 row_cells.append("*Limited evidence in retrieved chunks.*")
         table_body_rows.append("| " + " | ".join(row_cells) + " |")
 
+    direct_answer_lines: list[str] = []
+    if plan and plan.direct_answer:
+        direct_answer_lines = [
+            "### Direct Answer",
+            "",
+            plan.direct_answer.strip(),
+            "",
+        ]
+
     markdown_parts = [
         "Course Answer:",
         "",
+        *direct_answer_lines,
         "### Compared architectures",
         "",
         "This answer uses **separate evidence pools** per entity; each table cell is drawn only "
@@ -405,7 +431,8 @@ def format_multi_entity_compare_markdown(
         note_lines, used_provisional_fallback = scoped_lines_by_concept.get(
             bundle.concept_id, ([], False)
         )
-        markdown_parts.append(f"#### {bundle.label}")
+        sec_heading = display_heading_for_compare(bundle, kb)
+        markdown_parts.append(f"#### {sec_heading}")
         markdown_parts.append("")
         if bundle.gap_flags:
             markdown_parts.append(

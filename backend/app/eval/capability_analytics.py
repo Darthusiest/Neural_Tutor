@@ -137,11 +137,80 @@ def _row_intent(row: EvaluationCaseResult) -> str:
 
 def _case_concept(row: EvaluationCaseResult) -> str:
     behavior = parse_expected_behavior(row.expected_behavior_json)
+    cc = str(behavior.get("coverage_concept") or "").strip().lower()
+    if cc:
+        return cc
     terms = _expected_terms(behavior)
     if terms:
         return terms[0]
     category = str(behavior.get("category") or row.expected_mode or "unknown").strip().lower()
     return category or "unknown"
+
+
+def summarize_coverage_phase_buckets(
+    cases: list[EvaluationCaseResult],
+    *,
+    min_cases: int = 3,
+    sort_mode: str = "failure_first",
+) -> list[dict[str, Any]]:
+    """Per-concept pass/fail buckets with explicit phase ranks for remediation planning.
+
+    ``sort_mode``:
+    - ``failure_first`` (default): adequately sampled concepts (``total >= min_cases``)
+      rank by descending failures, then ascending accuracy, then label.
+    - ``chart_volume``: matches ``coverage_by_concept.png`` — descending total volume.
+
+    Under-sampled concepts (``total < min_cases``) are listed after the main block,
+    using the same secondary sort keys.
+    """
+    by_concept: dict[str, dict[str, int]] = defaultdict(lambda: {"passed": 0, "failed": 0})
+    for row in cases:
+        concept = _case_concept(row)
+        if row.pass_bool:
+            by_concept[concept]["passed"] += 1
+        else:
+            by_concept[concept]["failed"] += 1
+
+    rows: list[dict[str, Any]] = []
+    under_tested = sorted(k for k, v in by_concept.items() if v["passed"] + v["failed"] < min_cases)
+
+    for concept, st in sorted(by_concept.items()):
+        passed_n = int(st["passed"])
+        failed_n = int(st["failed"])
+        total = passed_n + failed_n
+        acc = _round_rate(passed_n, total) if total else 0.0
+        rows.append(
+            {
+                "concept_label": concept,
+                "case_count": total,
+                "passed": passed_n,
+                "failed": failed_n,
+                "accuracy": acc,
+                "under_tested": concept in under_tested,
+            }
+        )
+
+    def sort_key_volume(r: dict[str, Any]) -> tuple[int, str]:
+        return (-int(r["case_count"]), str(r["concept_label"]))
+
+    def sort_key_failure(r: dict[str, Any]) -> tuple[int, float, str]:
+        return (-int(r["failed"]), float(r["accuracy"]), str(r["concept_label"]))
+
+    tested = [r for r in rows if not r["under_tested"]]
+    under = [r for r in rows if r["under_tested"]]
+    key = sort_key_volume if sort_mode == "chart_volume" else sort_key_failure
+    tested.sort(key=key)
+    under.sort(key=key)
+    ordered = tested + under
+
+    out: list[dict[str, Any]] = []
+    for rank, item in enumerate(ordered, start=1):
+        row = dict(item)
+        row["phase_rank"] = rank
+        row["sort_mode"] = sort_mode
+        row["min_cases_threshold"] = min_cases
+        out.append(row)
+    return out
 
 
 def _row_validation(row: EvaluationCaseResult) -> dict[str, Any]:

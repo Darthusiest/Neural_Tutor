@@ -47,6 +47,7 @@ class EvalCase:
     note: str | None = None
     mode: str = "auto"
     mode_override: str = ""
+    coverage_concept: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -79,6 +80,7 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
         if mode_override and mode_override not in ("auto", "chat", "quiz", "compare", "summary"):
             mode_override = ""
         critical = bool(item.get("critical"))
+        coverage_concept = (item.get("coverage_concept") or "").strip().lower()
         cases.append(
             EvalCase(
                 id=case_id,
@@ -95,6 +97,7 @@ def load_eval_dataset(path: Path) -> tuple[dict[str, Any], list[EvalCase]]:
                 note=(item.get("note") or None),
                 mode=mode,
                 mode_override=mode_override,
+                coverage_concept=coverage_concept,
                 raw=dict(item),
             )
         )
@@ -115,6 +118,7 @@ def case_expected_behavior_dict(case: EvalCase) -> dict[str, Any]:
         "critical": case.critical,
         "mode": case.mode,
         "mode_override": case.mode_override,
+        "coverage_concept": case.coverage_concept,
     }
 
 

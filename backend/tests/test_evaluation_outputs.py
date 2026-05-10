@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from app.eval.evaluation_outputs import (
-    _low_n_warning,
+    _bucket_rate_label,
     _flatten_answer_for_csv,
     derive_case_scores,
     generate_evaluation_outputs,
@@ -209,23 +209,13 @@ def test_question_type_chart(app, tmp_path) -> None:
         assert _png_header_ok(out)
 
 
-def test_question_type_chart_low_n_warning(app, tmp_path) -> None:
-    with app.app_context():
-        run = _run()
-        _case(run, test_id="a", intent="definition", pass_bool=True)
-        _case(run, test_id="b", intent="compare", pass_bool=False)
-        _case(run, test_id="c", intent="step_by_step", pass_bool=True)
-        cases = EvaluationCaseResult.query.filter_by(evaluation_run_id=run.id).all()
-
-        write_question_type_chart(cases, tmp_path)
-        out = tmp_path / "question_type_breakdown.png"
-        assert out.exists()
-        assert out.stat().st_size > 0
-        assert _png_header_ok(out)
-        assert _low_n_warning(1) == "n too small"
+def test_bucket_rate_label_n1_perfect() -> None:
+    assert _bucket_rate_label(1.0, 1) == "n=1"
+    assert _bucket_rate_label(0.0, 1) == "0%"
+    assert _bucket_rate_label(0.75, 4) == "75% (n=4)"
 
 
-def test_retrieval_accuracy_split_views(app, tmp_path) -> None:
+def test_retrieval_accuracy_content_intents_only(app, tmp_path) -> None:
     with app.app_context():
         chunk = LectureChunk(
             chunk_key="retrieval-split-test",
@@ -398,12 +388,12 @@ def test_generate_evaluation_outputs_smoke(app, tmp_path) -> None:
             "question_type_breakdown.png",
             "pipeline_diagram.png",
             "report_dashboard.png",
-            "coverage_by_concept.png",
             "failure_modes.png",
             "example_answers.csv",
             "error_analysis.csv",
         ):
             assert (tmp_path / name).exists(), f"missing {name}"
+        assert not (tmp_path / "coverage_by_concept.png").exists()
 
 
 def test_legacy_plot_module_removed() -> None:
@@ -461,9 +451,14 @@ def test_regression_comparison_no_movement_notice(app, tmp_path) -> None:
 def test_coverage_by_concept_chart(app, tmp_path) -> None:
     with app.app_context():
         run = _run()
-        _case(run, test_id="c1", intent="definition", pass_bool=True, must_include=["softmax"])
-        _case(run, test_id="c2", intent="definition", pass_bool=False, must_include=["softmax"])
-        _case(run, test_id="c3", intent="compare", pass_bool=False, must_include=["cnn"])
+        for i in range(30):
+            _case(
+                run,
+                test_id=f"c{i:02d}",
+                intent="definition",
+                pass_bool=(i % 2 == 0),
+                must_include=["softmax"] if i % 2 == 0 else ["cnn"],
+            )
         cases = EvaluationCaseResult.query.filter_by(evaluation_run_id=run.id).all()
 
         write_coverage_by_concept_chart(cases, tmp_path)
@@ -471,6 +466,21 @@ def test_coverage_by_concept_chart(app, tmp_path) -> None:
         assert out.exists()
         assert out.stat().st_size > 0
         assert _png_header_ok(out)
+
+
+def test_coverage_by_concept_chart_omitted_when_suite_small(app, tmp_path) -> None:
+    with app.app_context():
+        run = _run()
+        _case(run, test_id="c1", intent="definition", pass_bool=True, must_include=["softmax"])
+        _case(run, test_id="c2", intent="definition", pass_bool=False, must_include=["softmax"])
+        cases = EvaluationCaseResult.query.filter_by(evaluation_run_id=run.id).all()
+
+        stale = tmp_path / "coverage_by_concept.png"
+        stale.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde")
+
+        write_coverage_by_concept_chart(cases, tmp_path)
+
+        assert not stale.exists()
 
 
 def test_failure_modes_chart(app, tmp_path) -> None:

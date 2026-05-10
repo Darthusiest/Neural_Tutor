@@ -14,11 +14,13 @@ All callers that previously used ``retrieve_chunks`` can switch to
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from flask import g, has_request_context
 
+import app.services.retrieval as retrieval_core
 from app.config import Config
 from app.services.knowledge.domain_knowledge import (
     CONCEPT_FAMILIES,
@@ -37,12 +39,62 @@ from app.services.retrieval import (
     ChunkHitDiag,
     RetrievalDiagnostics,
     RetrievalResult,
-    _row_cache,
     format_course_answer,
     retrieve_chunks,
 )
 
 logger = logging.getLogger(__name__)
+
+# Cap extra alias words appended to retrieval queries (stress-test / sparse concepts).
+_KB_ALIAS_AUGMENT_MAX_WORDS = 12
+
+
+def _kb_alias_augment_for_retrieval(expanded_q: str) -> str:
+    """Append KB concept names/aliases not already present in ``expanded_q``.
+
+    Improves lexical hit rate for short acronyms (RVQ, QKV) and late-lecture terms
+    where the student query names one surface form but chunks use another.
+    """
+    q = (expanded_q or "").strip()
+    if not q:
+        return expanded_q
+    try:
+        from app.services.knowledge.concept_kb import get_kb
+    except Exception:  # pragma: no cover - defensive
+        return expanded_q
+    kb = get_kb()
+    tokens = [t for t in re.split(r"[^\w]+", q) if t]
+    matched = kb.find_concepts_in_text(tokens)
+    if not matched:
+        matched = kb.find_concepts_in_text(q.split())
+
+    q_norm = re.sub(r"\s+", " ", q.lower())
+    words_in_q = set(re.findall(r"[a-z0-9]+", q_norm))
+    extras: list[str] = []
+    extra_word_count = 0
+
+    for c in matched:
+        for phrase in [c.name, *c.aliases]:
+            p = phrase.strip()
+            if len(p) < 2:
+                continue
+            pl = p.lower()
+            if pl in q_norm:
+                continue
+            phrase_words = re.findall(r"[a-z0-9]+", pl)
+            if phrase_words and all(w in words_in_q for w in phrase_words):
+                continue
+            extras.append(p)
+            extra_word_count += len(phrase_words) or 1
+            words_in_q.update(phrase_words)
+            if extra_word_count >= _KB_ALIAS_AUGMENT_MAX_WORDS:
+                break
+        if extra_word_count >= _KB_ALIAS_AUGMENT_MAX_WORDS:
+            break
+
+    if not extras:
+        return expanded_q
+    return q + " " + " ".join(extras)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +139,7 @@ def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
         confs: list[float] = []
         diag: RetrievalDiagnostics | None = None
         for ent in intent.compare_entities[:8]:
-            sub_q = f"{lec_hint}{ent.strip()}".strip()
+            sub_q = _kb_alias_augment_for_retrieval(f"{lec_hint}{ent.strip()}".strip())
             r = retrieve_chunks(sub_q, top_k=max(top_k, 4))
             if diag is None:
                 diag = r.diagnostics
@@ -116,8 +168,8 @@ def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
         if intent.lecture_numbers:
             lec_hint = f"lecture {intent.lecture_numbers[0]} "
         # Side-specific subqueries avoid sharing the full expanded query on both sides (cross-talk).
-        a_q = f"{lec_hint}{ca}".strip()
-        b_q = f"{lec_hint}{cb}".strip()
+        a_q = _kb_alias_augment_for_retrieval(f"{lec_hint}{ca}".strip())
+        b_q = _kb_alias_augment_for_retrieval(f"{lec_hint}{cb}".strip())
         ra = retrieve_chunks(a_q, top_k=max(top_k, 3))
         rb = retrieve_chunks(b_q, top_k=max(top_k, 3))
         merged = _merge_two_sides(ra.chunks, rb.chunks, top_k)
@@ -145,7 +197,7 @@ def _handle_summary(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
     """Single-lecture summary: lexical rank within that lecture (capped); else broad retrieval."""
     if intent.lecture_numbers and len(intent.lecture_numbers) == 1:
         lec = intent.lecture_numbers[0]
-        lec_rows = [r for r in _row_cache if r["lecture_number"] == lec]
+        lec_rows = [r for r in retrieval_core._row_cache if r["lecture_number"] == lec]
         if lec_rows:
             cap = min(Config.SUMMARY_MAX_CHUNKS, max(top_k, 20))
             # Narrow query keeps the student's topic terms; explicit "lecture N" drives lecture bonus.
@@ -305,7 +357,14 @@ def retrieve_enhanced(
         len(intent.expanded_tokens) - len(intent.query_tokens),
     )
 
-    out = handler(intent.expanded_query, intent, top_k)
+    # Full-query KB alias augment helps sparse definitions but can reorder compare
+    # retrieval when many concepts match one expanded string; side queries augment separately.
+    q_for_handler = (
+        intent.expanded_query
+        if intent.query_type == QueryType.COMPARE
+        else _kb_alias_augment_for_retrieval(intent.expanded_query)
+    )
+    out = handler(q_for_handler, intent, top_k)
     out.mode_routing = mode_routing
     if has_request_context() and cache_key is not None:
         g._retrieval_enhanced_cache[cache_key] = out
@@ -508,7 +567,7 @@ def _gather_supporting(
     target_lecs -= {c.get("lecture_number") for c in primary}
 
     supporting: list[dict[str, Any]] = []
-    for row in _row_cache:
+    for row in retrieval_core._row_cache:
         if row["id"] in primary_ids:
             continue
         if row["lecture_number"] in target_lecs:

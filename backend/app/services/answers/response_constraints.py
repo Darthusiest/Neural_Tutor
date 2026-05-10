@@ -71,6 +71,15 @@ _WITHOUT_MENTIONING_RE = re.compile(
     r"\bwithout\s+mentioning\s+(.+?)(?:\.|$)",
     re.IGNORECASE | re.DOTALL,
 )
+# "Explain X without Y discussion" / "without Y mentioning …"
+_WITHOUT_TOPIC_DETAIL_RE = re.compile(
+    r"\bwithout\s+(.+?)\s+(?:discussion|mentioning|details?|coverage)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLAIN_WITHOUT_TAIL_RE = re.compile(
+    r"\bexplain\b.+?\bwithout\s+(.+?)(?:\.|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _EXCLUDE_TOPICS_RE = re.compile(
     r"\bexclude\s+(.+?)(?:\.|$)",
     re.IGNORECASE | re.DOTALL,
@@ -109,6 +118,11 @@ def _collect_forbidden_topics(query: str) -> list[str]:
     for rx in (_DO_NOT_MENTION_RE, _WITHOUT_MENTIONING_RE, _EXCLUDE_TOPICS_RE):
         for m in rx.finditer(query):
             add_many(_split_topic_clause(m.group(1)))
+
+    for m in _WITHOUT_TOPIC_DETAIL_RE.finditer(query):
+        add_many(_split_topic_clause(m.group(1)))
+    for m in _EXPLAIN_WITHOUT_TAIL_RE.finditer(query):
+        add_many(_split_topic_clause(m.group(1)))
 
     if _NO_MENTION_NEURAL_NETS_RE.search(query):
         add_many(["neural networks", "neural network"])

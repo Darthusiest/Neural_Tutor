@@ -4,35 +4,35 @@ Called once per eval run, after the capability report is written. Outputs to
 ``evaluation_outputs/`` at the repo root. All scoring derives from existing
 persisted columns on :class:`EvaluationCaseResult` (no schema change).
 
-The chart generators are tuned for inclusion in a research paper:
+    
+Chart style is **debug-first** (spot regressions, avoid over-claiming): compact
+titles, at most one footer line with dataset size, no per-bar ``low n`` / ``n
+too small`` callouts, full-opacity bars, and no deliberately faded bars. Figures
+still use serif typography at 220 DPI, dashed grids, hidden top/right spines,
+the Okabe-Ito palette, and plain-English intent labels where categories appear.
 
-* Serif typography, 220 DPI, restrained dashed gridlines, hidden top/right
-  spines.
-* Color-blind safe Okabe-Ito palette.
-* Plain-English query intent labels (``compare`` → "Compare two concepts" …)
-  so a reader unfamiliar with the codebase can interpret the figures
-  without surrounding prose.
-* Value labels on every bar plus per-figure italic captions explaining
-  what the metric measures.
-
-Eight PNGs may be produced in ``out_dir`` after a run:
+Eight PNGs may be produced in ``out_dir`` after a run (some are conditional on
+suite size or prior runs):
 
 1. ``pipeline_diagram.png`` — static architecture diagram of the answer
    pipeline.
-2. ``question_type_breakdown.png`` — case count + pass rate per query
-   intent.
+2. ``question_type_breakdown.png`` — pass rate per query intent, sorted by
+   sample count; bar labels include ``n``.
 3. ``retrieval_accuracy.png`` — share of cases whose top-k retrieval
-   contained the expected lecture chunk, broken down by query intent.
-4. ``evaluation_summary.png`` — scorecard with explicit small-sample-size
-   caveats.
+   contained the expected lecture chunk, for standard content-retrieval
+   intents only (definition / fact lookup / multi-concept synthesis).
+4. ``evaluation_summary.png`` — dashboard-style pass/fail summary with donut,
+   stat tiles, dataset line, and small-``n`` caution when ``n < 50``.
 5. ``regression_comparison.png`` — previous vs current run on three
-   regression metrics (or a no-movement notice image).
-6. ``report_dashboard.png`` — structure compliance, retrieval diagnostics,
-   and dataset-health status.
-7. ``coverage_by_concept.png`` — concept-level pass/fail coverage counts.
-8. ``failure_modes.png`` — failure-type counts with example test IDs.
+   regression metrics, or a single-line notice when no metric changed.
+6. ``report_dashboard.png`` — compact debug dashboard: structure compliance
+   (short intent labels on the breakdown) + retrieval bars; title + “for debugging only” subtitle.
+7. ``coverage_by_concept.png`` — only when ``total_cases >= 30``: side-by-side
+   pass/fail counts per concept (not stacked); omitted otherwise and any stale
+   file in ``out_dir`` is removed.
+8. ``failure_modes.png`` — failure-type counts (sorted by frequency; details in ``error_analysis.csv``).
 
-Two CSVs are also produced for paper-side analysis:
+Two CSVs are also produced for analysis:
 
 * ``example_answers.csv`` — top and bottom scoring cases: one **physical row
   per example**, metadata first, flat ``course_answer_one_line`` last
@@ -54,7 +54,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Patch  # noqa: E402
 
 from app.eval.analytics_common import parse_expected_behavior, parse_json_list  # noqa: E402,F401
 from app.eval.capability_analytics import (  # noqa: E402
@@ -90,8 +90,19 @@ _COLOR_BOX_SHADOW = "#B7C9DD"
 _COLOR_TEXT = "#102A43"
 _COLOR_TEXT_MUTED = "#555"
 _COLOR_TEXT_SOFT = "#334E68"
+_COLOR_CARD_BG = "#F8FAFC"
+_COLOR_CARD_EDGE = "#E2E8F0"
+_COLOR_STAT_TILE_EDGE = "#CBD5E0"
+_COLOR_CAUTION_BG = "#FFFBEB"
+_COLOR_CAUTION_EDGE = "#D97706"
+_COLOR_CAUTION_TITLE = "#78350F"
+_COLOR_CAUTION_NOTE = "#92400E"
 
 _FIG_DPI = 220  # crisp for print without bloating file size
+
+# Evaluation summary donut: ring thickness as a fraction of pie radius. Lower value
+# yields a wider inner hole so center labels are not cramped against the ring.
+_EVAL_SUMMARY_DONUT_RING_WIDTH = 0.22
 
 _NUMBERED_LIST_RE = re.compile(r"^\s*\d+[\.\)]", re.MULTILINE)
 
@@ -108,10 +119,11 @@ _INTENT_DISPLAY = {
 
 _LOW_N_THRESHOLD = 5
 _SMALL_DATASET_THRESHOLD = 50
-_LOW_N_CAPTION_SUFFIX = "Percentages are descriptive only when bucket sizes are small."
+
+# Per-concept coverage chart is omitted below this total suite size (misleading buckets).
+_COVERAGE_BY_CONCEPT_MIN_TOTAL_CASES = 30
 
 _NORMAL_RETRIEVAL_INTENTS = {"definition", "retrieval_grounded", "synthesis"}
-_MODE_CLARIFICATION_INTENTS = {"compare", "step_by_step"}
 _UNDERSPECIFIED_PATTERNS = (
     re.compile(r"^\s*compare\s+(this|these|it|that)\b", re.IGNORECASE),
     re.compile(r"^\s*summarize\s+(this|these|it|that)\b", re.IGNORECASE),
@@ -133,22 +145,36 @@ def _intent_label_csv(intent: str) -> str:
     return _format_intent(intent).replace("\n", " ").strip()
 
 
-def _low_n_warning(n: int) -> str:
-    if n <= 2:
-        return "n too small"
-    if n < _LOW_N_THRESHOLD:
-        return "low n"
-    return ""
+def _debug_dataset_footer(fig: Any, n: int, *, y: float = 0.012) -> None:
+    """Single bottom line: consistent small-set wording + total ``n``."""
+    if n < 0:
+        return
+    line = (
+        f"Small evaluation set (n={n})"
+        if n < _SMALL_DATASET_THRESHOLD
+        else f"Evaluation set (n={n})"
+    )
+    fig.text(
+        0.5,
+        y,
+        line,
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color=_COLOR_TEXT_MUTED,
+        style="italic",
+    )
 
 
-def _fade_alpha(n: int) -> float:
-    return 1.0 if n >= _LOW_N_THRESHOLD else 0.35
-
-
-def _intent_n_label(intent: str, n: int) -> str:
-    warning = _low_n_warning(n)
-    suffix = f"  {warning}" if warning else ""
-    return f"{_format_intent(intent)}\n(n={n}{suffix})"
+def _bucket_rate_label(rate: float, n: int) -> str:
+    """Bar annotation: a lone ``100%`` with ``n==1`` over-claims; use ``n=1`` instead."""
+    if n <= 0:
+        return "—"
+    if n == 1 and rate >= 1.0 - 1e-9:
+        return "n=1"
+    if n == 1:
+        return f"{rate * 100:.0f}%"
+    return f"{rate * 100:.0f}% (n={n})"
 
 
 def _is_underspecified_query(query: str | None) -> bool:
@@ -163,36 +189,6 @@ def _is_underspecified_query(query: str | None) -> bool:
     if len(words) < 4 and any(token in {"this", "these", "that", "it"} for token in words):
         return True
     return False
-
-
-def _dataset_size_note(total_cases: int) -> str:
-    if total_cases < _SMALL_DATASET_THRESHOLD:
-        return (
-            f"Small evaluation set (n={total_cases}): use this as a debugging snapshot, "
-            "not a final benchmark."
-        )
-    return (
-        f"Evaluation set size (n={total_cases}) supports descriptive comparisons, "
-        "but confidence intervals are still recommended."
-    )
-
-
-def _strongest_weakest(cases: list[EvaluationCaseResult]) -> tuple[str, str]:
-    capability = summarize_capability(cases)
-    rows: list[tuple[str, int, float]] = []
-    for intent, stats in capability.get("by_intent", {}).items():
-        n = int(stats.get("total_cases", 0))
-        if n < _LOW_N_THRESHOLD:
-            continue
-        rows.append((intent, n, float(stats.get("accuracy", 0.0))))
-    if not rows:
-        return "insufficient data", "insufficient data"
-    strongest = max(rows, key=lambda item: item[2])
-    weakest = min(rows, key=lambda item: item[2])
-    return (
-        f"{_intent_label_csv(strongest[0])} ({strongest[2] * 100:.0f}%, n={strongest[1]})",
-        f"{_intent_label_csv(weakest[0])} ({weakest[2] * 100:.0f}%, n={weakest[1]})",
-    )
 
 
 def _dataset_health(
@@ -270,20 +266,6 @@ def _paper_style() -> Iterator[None]:
         yield
 
 
-def _figure_caption(fig, text: str) -> None:
-    """Add an italic figure caption pinned to the bottom of the figure."""
-    fig.text(
-        0.5,
-        0.005,
-        text,
-        ha="center",
-        va="bottom",
-        fontsize=9,
-        color=_COLOR_TEXT_MUTED,
-        style="italic",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
@@ -354,121 +336,87 @@ def derive_case_scores(row: EvaluationCaseResult) -> dict[str, int | float]:
 def write_retrieval_accuracy_chart(
     cases: list[EvaluationCaseResult], out_dir: Path
 ) -> None:
-    """Two-panel retrieval view: normal content prompts vs mode/clarification."""
-    normal_grouped: dict[str, list[EvaluationCaseResult]] = defaultdict(list)
-    special_grouped: dict[str, list[EvaluationCaseResult]] = defaultdict(list)
+    """Bar chart: top-k chunk hit rate for standard content-retrieval query types only.
+
+    Includes ``definition``, ``retrieval_grounded``, and ``synthesis`` when the
+    query is not underspecified. Omits compare / step-by-step / quiz / summary
+    routing and underspecified prompts so the figure does not mix retrieval
+    metrics with mode or clarification behavior.
+    """
+    grouped: dict[str, list[EvaluationCaseResult]] = defaultdict(list)
     for row in cases:
         intent = _row_intent(row)
-        underspecified = _is_underspecified_query(row.query_text)
-        if intent in _NORMAL_RETRIEVAL_INTENTS and not underspecified:
-            normal_grouped[intent].append(row)
+        if intent not in _NORMAL_RETRIEVAL_INTENTS:
             continue
-        if underspecified:
-            special_grouped["underspecified"].append(row)
+        if _is_underspecified_query(row.query_text):
             continue
-        if intent in _MODE_CLARIFICATION_INTENTS:
-            special_grouped[intent].append(row)
-            continue
-        # Keep any remaining intents out of the "normal retrieval" panel.
-        special_grouped[intent].append(row)
+        grouped[intent].append(row)
+
+    total_eval_cases = len(cases)
 
     with _paper_style():
-        fig, (ax_normal, ax_special) = plt.subplots(1, 2, figsize=(13.0, 5.6), sharey=True)
+        fig, ax = plt.subplots(figsize=(8.2, 5.4))
 
-        def _draw_panel(
-            ax: Any,
-            grouped_cases: dict[str, list[EvaluationCaseResult]],
-            *,
-            title: str,
-            color: str,
-        ) -> None:
-            rows: list[tuple[str, float, int]] = []
-            for intent, bucket in grouped_cases.items():
-                diags = retrieval_diagnostics(bucket)
-                total = len(diags)
-                correct = sum(1 for d in diags if d.top_k_contains_correct)
-                rows.append((intent, _round_rate(correct, total), total))
-            rows.sort(key=lambda item: item[2], reverse=True)
-            if not rows:
-                ax.axis("off")
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No cases in this split",
-                    ha="center",
-                    va="center",
-                    fontsize=11,
-                    color=_COLOR_TEXT_MUTED,
-                    style="italic",
-                    transform=ax.transAxes,
-                )
-                ax.set_title(title)
-                return
+        rows: list[tuple[str, float, int]] = []
+        for intent, bucket in grouped.items():
+            diags = retrieval_diagnostics(bucket)
+            total = len(diags)
+            correct = sum(1 for d in diags if d.top_k_contains_correct)
+            rows.append((intent, _round_rate(correct, total), total))
+        rows.sort(key=lambda item: item[2], reverse=True)
 
+        if not rows:
+            ax.axis("off")
+            ax.text(
+                0.5,
+                0.5,
+                "No qualifying content-retrieval cases",
+                ha="center",
+                va="center",
+                fontsize=11,
+                color=_COLOR_TEXT_MUTED,
+                style="italic",
+                transform=ax.transAxes,
+            )
+        else:
             xs = list(range(len(rows)))
             bars = ax.bar(
                 xs,
                 [row[1] for row in rows],
-                color=color,
+                color=_COLOR_PRIMARY,
                 edgecolor="white",
                 linewidth=0.8,
                 width=0.62,
                 zorder=3,
             )
-            for bar, (_, _, n) in zip(bars, rows):
-                bar.set_alpha(_fade_alpha(n))
-
             ax.axhline(0, color=_COLOR_NEUTRAL_LINE, linewidth=0.6, zorder=2)
             ax.set_xticks(xs)
-            ax.set_xticklabels([_intent_n_label(intent, n) for intent, _, n in rows])
+            ax.set_xticklabels([_format_intent(intent) for intent, _, _ in rows])
             ax.set_ylim(0, 1.08)
             ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
             ax.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
             ax.set_axisbelow(True)
             ax.xaxis.grid(False)
-            ax.set_title(title)
-            for bar, (_, acc, n) in zip(bars, rows):
-                warning = _low_n_warning(n)
-                label = f"{acc * 100:.0f}%"
-                if warning:
-                    label = f"{label}\n{warning}"
+            for bar, (_, acc, n_bucket) in zip(bars, rows):
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.02,
-                    label,
+                    _bucket_rate_label(acc, n_bucket),
                     ha="center",
                     va="bottom",
-                    fontsize=8.7,
+                    fontsize=9.5,
                     color="#222",
                 )
+            ax.set_ylabel("Share with correct chunk in top-k retrieval")
 
-        _draw_panel(
-            ax_normal,
-            normal_grouped,
-            title="A) Normal content retrieval cases",
-            color=_COLOR_PRIMARY,
+        fig.suptitle(
+            "Retrieval: top-k hit rate (debug)",
+            fontsize=13,
+            fontweight="bold",
+            color=_COLOR_TEXT,
         )
-        _draw_panel(
-            ax_special,
-            special_grouped,
-            title="B) Mode / clarification / quiz / summary cases",
-            color=_COLOR_SECONDARY,
-        )
-        ax_normal.set_ylabel(
-            "Share of cases where the correct lecture chunk\n"
-            "appeared in the top-5 retrieved candidates"
-        )
-
-        fig.suptitle("Did the Tutor Retrieve the Right Material?", fontsize=14, fontweight="bold")
-        _figure_caption(
-            fig,
-            "Left panel measures retrieval accuracy on standard content questions. "
-            "Right panel isolates mode and clarification prompts so underspecified requests "
-            "(for example, 'Compare these') are not treated as normal retrieval failures. "
-            f"{_dataset_size_note(len(cases))} {_LOW_N_CAPTION_SUFFIX}",
-        )
-
-        fig.tight_layout(rect=(0, 0.07, 1, 0.94))
+        _debug_dataset_footer(fig, total_eval_cases)
+        fig.tight_layout(rect=(0, 0.065, 1, 0.92))
         fig.savefig(out_dir / "retrieval_accuracy.png")
         plt.close(fig)
 
@@ -476,7 +424,7 @@ def write_retrieval_accuracy_chart(
 def write_question_type_chart(
     cases: list[EvaluationCaseResult], out_dir: Path
 ) -> None:
-    """Grouped bars: case count and pass rate per intent on a shared figure."""
+    """Pass rate (scoring rubric) per query intent, sorted by sample count (desc)."""
     capability = summarize_capability(cases)
     by_intent = capability.get("by_intent", {})
     rows: list[tuple[str, int, float]] = []
@@ -489,102 +437,70 @@ def write_question_type_chart(
             )
         )
     rows.sort(key=lambda item: item[1], reverse=True)
-    intents = [row[0] for row in rows]
-    totals = [row[1] for row in rows]
-    accuracies = [row[2] for row in rows]
-    overall_acc = float(capability.get("overall_accuracy", 0.0))
+
+    n_total = len(cases)
 
     with _paper_style():
-        fig, ax_count = plt.subplots(figsize=(11.0, 5.6))
-        xs = list(range(len(intents)))
-        width = 0.38
+        fig, ax = plt.subplots(figsize=(10.0, 5.5))
 
-        max_total = max(totals + [1])
-        count_top = max(max_total + 1, 2)
-
-        count_bars = ax_count.bar(
-            [x - width / 2 for x in xs],
-            totals,
-            width=width,
-            color=_COLOR_PRIMARY,
-            edgecolor="white",
-            linewidth=0.8,
-            label="Number of evaluation questions",
-            zorder=3,
-        )
-        for bar, n in zip(count_bars, totals):
-            bar.set_alpha(_fade_alpha(n))
-
-        ax_count.set_xticks(xs)
-        ax_count.set_xticklabels([_intent_n_label(i, n) for i, n in zip(intents, totals)], rotation=0)
-        ax_count.set_ylim(0, count_top)
-        ax_count.set_yticks(range(0, count_top + 1, max(1, count_top // 5)))
-        ax_count.set_ylabel("Number of evaluation questions", color=_COLOR_PRIMARY)
-        ax_count.tick_params(axis="y", labelcolor=_COLOR_PRIMARY)
-        ax_count.set_axisbelow(True)
-        ax_count.xaxis.grid(False)
-
-        ax_acc = ax_count.twinx()
-        ax_acc.spines["top"].set_visible(False)
-        acc_bars = ax_acc.bar(
-            [x + width / 2 for x in xs],
-            accuracies,
-            width=width,
-            color=_COLOR_SECONDARY,
-            edgecolor="white",
-            linewidth=0.8,
-            label="Share that passed scoring",
-            zorder=3,
-        )
-        for bar, n in zip(acc_bars, totals):
-            bar.set_alpha(_fade_alpha(n))
-        ax_acc.set_ylim(0, 1.08)
-        ax_acc.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-        ax_acc.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
-        ax_acc.set_ylabel("Share that passed scoring", color=_COLOR_SECONDARY)
-        ax_acc.tick_params(axis="y", labelcolor=_COLOR_SECONDARY)
-        ax_acc.grid(False)
-
-        for bar, total in zip(count_bars, totals):
-            warning = _low_n_warning(total)
-            text = str(total) if not warning else f"{total}\n{warning}"
-            ax_count.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + count_top * 0.02,
-                text,
+        if not rows:
+            ax.axis("off")
+            ax.text(
+                0.5,
+                0.5,
+                "No cases",
                 ha="center",
-                va="bottom",
-                fontsize=8.7,
+                va="center",
+                fontsize=11,
+                color=_COLOR_TEXT_MUTED,
+                style="italic",
+                transform=ax.transAxes,
+            )
+        else:
+            xs = list(range(len(rows)))
+            intents = [row[0] for row in rows]
+            totals = [row[1] for row in rows]
+            accuracies = [row[2] for row in rows]
+
+            bars = ax.bar(
+                xs,
+                accuracies,
                 color=_COLOR_PRIMARY,
+                edgecolor="white",
+                linewidth=0.8,
+                width=0.62,
+                zorder=3,
             )
-        for bar, acc, total in zip(acc_bars, accuracies, totals):
-            warning = _low_n_warning(total)
-            text = f"{acc * 100:.0f}%" if not warning else f"{acc * 100:.0f}%\n{warning}"
-            ax_acc.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.025,
-                text,
-                ha="center",
-                va="bottom",
-                fontsize=8.7,
-                color=_COLOR_SECONDARY,
-            )
+            ax.axhline(0, color=_COLOR_NEUTRAL_LINE, linewidth=0.6, zorder=2)
+            ax.set_xticks(xs)
+            ax.set_xticklabels([_format_intent(i) for i in intents])
+            ax.set_ylim(0, 1.08)
+            ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+            ax.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
+            ax.set_ylabel("Pass rate")
+            ax.set_axisbelow(True)
+            ax.xaxis.grid(False)
 
-        ax_count.set_title("How the Tutor Performs on Different Kinds of Questions")
-        _figure_caption(
-            fig,
-            "Blue bars (left axis) count the evaluation questions in each category. "
-            "Orange bars (right axis) show what share of those\nquestions passed the scoring rubric. "
-            f"Overall pass rate across all categories: {overall_acc * 100:.1f}%. "
-            "Compare and synthesis buckets are unstable when n is small. "
-            f"{_dataset_size_note(len(cases))} {_LOW_N_CAPTION_SUFFIX}",
+            for bar, acc, n in zip(bars, accuracies, totals):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.02,
+                    _bucket_rate_label(acc, n),
+                    ha="center",
+                    va="bottom",
+                    fontsize=9.5,
+                    color="#222",
+                )
+
+        fig.suptitle(
+            "Pass rate by question type (debug)",
+            fontsize=13,
+            fontweight="bold",
+            color=_COLOR_TEXT,
         )
 
-        handles = [count_bars, acc_bars]
-        labels = [h.get_label() for h in handles]
-        ax_count.legend(handles, labels, loc="upper left", bbox_to_anchor=(0.0, 1.0))
-
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
+        _debug_dataset_footer(fig, n_total)
+        fig.tight_layout(rect=(0, 0.065, 1, 0.9))
         fig.savefig(out_dir / "question_type_breakdown.png")
         plt.close(fig)
 
@@ -747,19 +663,17 @@ def write_pipeline_diagram(out_dir: Path) -> None:
         ax.text(
             total_w / 2,
             y + box_h + 0.55,
-            "Neural Tutor Answer Pipeline",
+            "Answer pipeline (reference)",
             ha="center",
             va="center",
-            fontsize=14,
+            fontsize=13,
             fontweight="bold",
             color=_COLOR_TEXT,
         )
         ax.text(
             total_w / 2,
             y - 0.42,
-            "End-to-end flow for a single chat turn: deterministic mode routing, "
-            "rule-based answer composition, and an optional LLM boost.\n"
-            "Sample size does not apply here; use the metric charts for empirical claims.",
+            "Schematic only (not eval metrics).",
             ha="center",
             va="center",
             fontsize=9,
@@ -771,150 +685,239 @@ def write_pipeline_diagram(out_dir: Path) -> None:
         plt.close(fig)
 
 
+def _summary_stat_grid(ax: Any, stats: list[tuple[str, str]]) -> None:
+    """Four metric tiles in a 2×2 grid (axes coordinates)."""
+    ax.set_axis_off()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    positions = [
+        (0.02, 0.52, 0.45, 0.46),
+        (0.53, 0.52, 0.45, 0.46),
+        (0.02, 0.02, 0.45, 0.46),
+        (0.53, 0.02, 0.45, 0.46),
+    ]
+    for (x, y, w, h), (label, val) in zip(positions, stats):
+        tile = FancyBboxPatch(
+            (x, y),
+            w,
+            h,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            transform=ax.transAxes,
+            facecolor="#FFFFFF",
+            edgecolor=_COLOR_STAT_TILE_EDGE,
+            linewidth=1.0,
+            zorder=1,
+        )
+        ax.add_patch(tile)
+        ax.text(
+            x + w / 2,
+            y + h * 0.66,
+            label,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=9.5,
+            color=_COLOR_TEXT_SOFT,
+        )
+        ax.text(
+            x + w / 2,
+            y + h * 0.34,
+            val,
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=16,
+            fontweight="bold",
+            color=_COLOR_TEXT,
+        )
+
+
 def write_evaluation_summary_chart(
     run: EvaluationRun,
     cases: list[EvaluationCaseResult],
     out_dir: Path,
     *,
     health: dict[str, Any] | None = None,
+    debug: bool = False,
 ) -> None:
-    """At-a-glance scorecard with low-sample-size caveats."""
+    """Dashboard-style pass/fail summary for one run.
+
+    ``health`` is accepted for backwards compatibility; it is not used.
+
+    Set ``debug=True`` to append ``(debug)`` to the title (e.g. internal QA).
+    """
+    _ = health
     total = len(cases)
     passed = sum(1 for c in cases if c.pass_bool)
     failed = total - passed
     mean_score = float(run.overall_score) if run.overall_score is not None else 0.0
-    pass_rate = passed / total if total else 0.0
-    git_short = (run.git_commit or "")[:7]
-    strongest, weakest = _strongest_weakest(cases)
-    health_data = health or _dataset_health(cases, regression_meaningful=False)
-    under_tested_categories = len(health_data.get("low_n_intents", []))
+    pct_passed = int(round(100 * passed / total)) if total else 0
+
+    title = "Evaluation summary (debug)" if debug else "Evaluation summary"
+    stat_rows = [
+        ("Total questions", str(total)),
+        ("Passed", str(passed)),
+        ("Failed", str(failed)),
+        ("Mean score (0–1)", f"{mean_score:.2f}"),
+    ]
 
     with _paper_style():
-        fig = plt.figure(figsize=(12.2, 5.5), constrained_layout=False)
-        gs = fig.add_gridspec(
-            1, 2, width_ratios=[0.9, 1.95], wspace=0.05,
-            left=0.04, right=0.97, top=0.9, bottom=0.12,
-        )
-        ax_donut = fig.add_subplot(gs[0])
-        ax_text = fig.add_subplot(gs[1])
+        fig = plt.figure(figsize=(10.0, 5.15))
+        fig.patch.set_facecolor("white")
 
-        sizes = [passed, failed] if total else [1, 0]
-        colors = [_COLOR_GOOD, _COLOR_BAD]
-        ax_donut.pie(
-            sizes,
-            colors=colors,
-            startangle=90,
-            counterclock=False,
-            wedgeprops={"width": 0.34, "edgecolor": "white", "linewidth": 2},
+        outer = FancyBboxPatch(
+            (0.045, 0.035),
+            0.91,
+            0.885,
+            boxstyle="round,pad=0.006,rounding_size=0.02",
+            transform=fig.transFigure,
+            facecolor=_COLOR_CARD_BG,
+            edgecolor=_COLOR_CARD_EDGE,
+            linewidth=1.1,
+            zorder=0,
         )
-        ax_donut.text(
-            0,
-            0.06,
-            f"{pass_rate * 100:.0f}%",
-            ha="center",
-            va="center",
-            fontsize=26,
+        fig.add_artist(outer)
+
+        fig.text(
+            0.065,
+            0.91,
+            title,
+            ha="left",
+            va="top",
+            fontsize=15.5,
             fontweight="bold",
             color=_COLOR_TEXT,
-        )
-        ax_donut.text(
-            0,
-            -0.22,
-            "passed",
-            ha="center",
-            va="center",
-            fontsize=12,
-            color=_COLOR_TEXT_SOFT,
-        )
-        ax_donut.set_aspect("equal")
-        ax_donut.grid(False)
-        ax_donut.axis("off")
-
-        legend_handles = [
-            plt.Line2D(
-                [0], [0], marker="s", linestyle="",
-                markerfacecolor=_COLOR_GOOD, markeredgecolor=_COLOR_GOOD,
-                markersize=11, label=f"Passed ({passed})",
-            ),
-            plt.Line2D(
-                [0], [0], marker="s", linestyle="",
-                markerfacecolor=_COLOR_BAD, markeredgecolor=_COLOR_BAD,
-                markersize=11, label=f"Failed ({failed})",
-            ),
-        ]
-        ax_donut.legend(
-            handles=legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.12),
-            ncol=2,
-            frameon=False,
-            fontsize=10,
+            zorder=2,
         )
 
-        ax_text.axis("off")
-        ax_text.set_xlim(0, 1)
-        ax_text.set_ylim(0, 1)
+        gs = fig.add_gridspec(
+            1,
+            2,
+            left=0.075,
+            right=0.94,
+            top=0.795,
+            bottom=0.245,
+            width_ratios=[1.12, 1.0],
+            wspace=0.18,
+        )
+        ax_d = fig.add_subplot(gs[0, 0])
+        ax_stats = fig.add_subplot(gs[0, 1])
 
-        rows = [
-            ("Total questions", str(total)),
-            ("Passed", f"{passed}"),
-            ("Failed", f"{failed}"),
-            ("Mean score (0–1)", f"{mean_score:.3f}"),
-            ("Pass rate", f"{pass_rate * 100:.1f}%"),
-            ("Under-tested categories (n<5)", str(under_tested_categories)),
-            ("Strongest capability", strongest),
-            ("Weakest capability", weakest),
-        ]
-        for i, (label, value) in enumerate(rows):
-            yp = 0.94 - i * 0.11
-            ax_text.text(
-                0.04, yp, label,
-                ha="left", va="center",
-                fontsize=11, color=_COLOR_TEXT_SOFT,
+        if total > 0:
+            ax_d.pie(
+                [passed, failed],
+                colors=[_COLOR_GOOD, _COLOR_BAD],
+                startangle=90,
+                counterclock=False,
+                radius=1.0,
+                wedgeprops={
+                    "width": _EVAL_SUMMARY_DONUT_RING_WIDTH,
+                    "edgecolor": "white",
+                    "linewidth": 2.0,
+                },
             )
-            ax_text.text(
-                0.96, yp, value,
-                ha="right", va="center",
-                fontsize=13 if i >= 6 else 16,
+            ax_d.text(
+                0,
+                0.08,
+                f"{pct_passed}% passed",
+                ha="center",
+                va="center",
+                fontsize=20,
                 fontweight="bold",
                 color=_COLOR_TEXT,
             )
-
-        if total < _SMALL_DATASET_THRESHOLD:
-            fig.text(
-                0.5,
-                0.965,
-                (
-                    f"Small evaluation set (n={total}): use this as a debugging snapshot, "
-                    "not a final benchmark."
-                ),
+            ax_d.text(
+                0,
+                -0.26,
+                f"{passed}/{total} questions",
                 ha="center",
                 va="center",
-                fontsize=10.5,
-                color="#523f00",
-                bbox={
-                    "boxstyle": "round,pad=0.35",
-                    "facecolor": "#FFF3BF",
-                    "edgecolor": "#B08900",
-                    "linewidth": 1.0,
-                },
+                fontsize=11,
+                color=_COLOR_TEXT_SOFT,
+            )
+            ax_d.legend(
+                handles=[
+                    Patch(facecolor=_COLOR_GOOD, edgecolor="white", linewidth=0.8, label="Passed"),
+                    Patch(facecolor=_COLOR_BAD, edgecolor="white", linewidth=0.8, label="Failed"),
+                ],
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                frameon=False,
+                fontsize=10,
+            )
+        else:
+            ax_d.text(
+                0,
+                0,
+                "No cases",
+                ha="center",
+                va="center",
+                fontsize=12,
+                color=_COLOR_TEXT_MUTED,
+                style="italic",
+            )
+        ax_d.set_aspect("equal")
+        ax_d.axis("off")
+
+        _summary_stat_grid(ax_stats, stat_rows)
+
+        fig.text(
+            0.065,
+            0.198,
+            f"Dataset: {run.dataset_name}",
+            ha="left",
+            va="top",
+            fontsize=10,
+            color=_COLOR_TEXT_MUTED,
+            zorder=2,
+        )
+
+        if total < _SMALL_DATASET_THRESHOLD:
+            bx, by, bw, bh = 0.36, 0.052, 0.575, 0.105
+            badge = FancyBboxPatch(
+                (bx, by),
+                bw,
+                bh,
+                boxstyle="round,pad=0.012,rounding_size=0.014",
+                transform=fig.transFigure,
+                facecolor=_COLOR_CAUTION_BG,
+                edgecolor=_COLOR_CAUTION_EDGE,
+                linewidth=1.0,
+                zorder=1,
+            )
+            fig.add_artist(badge)
+            fig.text(
+                bx + bw / 2,
+                by + bh * 0.62,
+                f"Small evaluation set (n={total})",
+                ha="center",
+                va="center",
+                fontsize=10,
+                fontweight="bold",
+                color=_COLOR_CAUTION_TITLE,
+            )
+            fig.text(
+                bx + bw / 2,
+                by + bh * 0.30,
+                "Interpret trends carefully with small n.",
+                ha="center",
+                va="center",
+                fontsize=8.8,
+                color=_COLOR_CAUTION_NOTE,
+                style="italic",
+            )
+        else:
+            fig.text(
+                0.36,
+                0.115,
+                f"Evaluation set (n={total}). Estimates are descriptive, not inferential.",
+                ha="left",
+                va="center",
+                fontsize=9,
+                color=_COLOR_TEXT_MUTED,
+                style="italic",
             )
 
-        ax_text.text(
-            0.04, 0.02,
-            f"Run: {run.run_name}   ·   Dataset: {run.dataset_name}   ·   "
-            f"Branch: {run.branch_name or '?'}   ·   Commit: {git_short or '?'}",
-            ha="left", va="bottom",
-            fontsize=9, color=_COLOR_TEXT_MUTED, style="italic",
-        )
-
-        fig.suptitle("Evaluation Run Scorecard", fontsize=14, fontweight="bold")
-        _figure_caption(
-            fig,
-            "This scorecard summarizes pass/fail totals, mean score, and which capabilities are strongest or weakest. "
-            "It is intended for debugging triage and prioritization. "
-            f"{_dataset_size_note(total)} {_LOW_N_CAPTION_SUFFIX}",
-        )
         fig.savefig(out_dir / "evaluation_summary.png")
         plt.close(fig)
 
@@ -1004,31 +1007,20 @@ def write_regression_comparison_chart(
 
     with _paper_style():
         if not _regression_has_movement(metrics):
-            fig, ax = plt.subplots(figsize=(10.0, 4.6))
+            fig, ax = plt.subplots(figsize=(8.0, 2.35))
             ax.axis("off")
-            lines = [
-                "No regression movement detected between current and previous run.",
-                "",
-            ]
-            for label, prev_v, curr_v, _ in metrics:
-                lines.append(f"{label.replace(chr(10), ' ')}: prev={prev_v:.3f}, curr={curr_v:.3f}")
             ax.text(
                 0.5,
-                0.58,
-                "\n".join(lines),
+                0.55,
+                "No measurable change between runs.",
                 ha="center",
                 va="center",
-                fontsize=11,
+                fontsize=12,
                 color=_COLOR_TEXT,
+                transform=ax.transAxes,
             )
-            ax.set_title("Regression Check", fontsize=14, fontweight="bold")
-            _figure_caption(
-                fig,
-                "Regression chart omitted because all tracked metrics are unchanged. "
-                "This prevents visual noise from implying movement where none occurred. "
-                f"{_dataset_size_note(len(curr_cases))}",
-            )
-            fig.tight_layout(rect=(0, 0.06, 1, 1))
+            _debug_dataset_footer(fig, len(curr_cases), y=0.04)
+            fig.subplots_adjust(bottom=0.18)
             fig.savefig(out_dir / "regression_comparison.png")
             plt.close(fig)
             return
@@ -1068,13 +1060,13 @@ def write_regression_comparison_chart(
         ax.set_ylabel("Metric value (0–1)")
         ax.set_axisbelow(True)
         ax.xaxis.grid(False)
-        ax.set_title("Regression Check: Previous vs Current Run")
+        ax.set_title("Regression (debug)", fontsize=12)
 
         for bar, val in list(zip(prev_bars, prev_vals)) + list(zip(curr_bars, curr_vals)):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + 0.015,
-                f"{val:.3f}",
+                f"{val:.2f}",
                 ha="center",
                 va="bottom",
                 fontsize=9,
@@ -1084,37 +1076,54 @@ def write_regression_comparison_chart(
         legend_handles = [
             plt.Line2D([0], [0], marker="s", linestyle="",
                        markerfacecolor=_COLOR_NEUTRAL_BAR, markeredgecolor=_COLOR_NEUTRAL_BAR,
-                       markersize=11, label=f"Previous run (id={prev_run.id})"),
+                       markersize=10, label=f"Previous (id={prev_run.id})"),
             plt.Line2D([0], [0], marker="s", linestyle="",
                        markerfacecolor=_COLOR_GOOD, markeredgecolor=_COLOR_GOOD,
-                       markersize=11, label="Current — improved"),
+                       markersize=10, label="Current — better"),
             plt.Line2D([0], [0], marker="s", linestyle="",
                        markerfacecolor=_COLOR_NEUTRAL_BAR, markeredgecolor=_COLOR_NEUTRAL_BAR,
-                       markersize=11, label="Current — unchanged"),
+                       markersize=10, label="Current — same"),
             plt.Line2D([0], [0], marker="s", linestyle="",
                        markerfacecolor=_COLOR_BAD, markeredgecolor=_COLOR_BAD,
-                       markersize=11, label="Current — regressed"),
+                       markersize=10, label="Current — worse"),
         ]
-        ax.legend(handles=legend_handles, loc="upper right", ncol=2)
+        ax.legend(handles=legend_handles, loc="upper right", ncol=2, fontsize=9)
 
-        _figure_caption(
-            fig,
-            "Same numbers as regression_report.md, color-coded so readers can see direction at a glance. "
-            "Mean score should rise; leakage and misroute rates should fall. "
-            f"{_dataset_size_note(len(curr_cases))}",
-        )
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
+        _debug_dataset_footer(fig, len(curr_cases))
+        fig.tight_layout(rect=(0, 0.07, 1, 0.98))
         fig.savefig(out_dir / "regression_comparison.png")
         plt.close(fig)
+
+
+# Shorter y-axis labels for report_dashboard structure breakdown (2 lines max).
+_REPORT_DASHBOARD_INTENT_SHORT: dict[str, str] = {
+    "definition": "Define a concept",
+    "step_by_step": "Walkthrough / summary\n/ quiz",
+    "compare": "Compare concepts",
+    "retrieval_grounded": "Specific fact lookup",
+    "synthesis": "Connect multiple concepts",
+    "underspecified": "Underspecified\nprompt",
+}
+
+
+def _report_dashboard_intent_label(intent: str) -> str:
+    if intent in _REPORT_DASHBOARD_INTENT_SHORT:
+        return _REPORT_DASHBOARD_INTENT_SHORT[intent]
+    return intent.replace("_", " ").strip().title()
+
+
+def _report_dashboard_value_label(rate: float, n: int) -> str:
+    """Consistent ``pct (n=k)`` for dashboard bars (including n=1)."""
+    if n <= 0:
+        return "—"
+    return f"{rate * 100:.0f}% (n={n})"
 
 
 def write_report_dashboard_chart(
     cases: list[EvaluationCaseResult],
     out_dir: Path,
-    *,
-    health: dict[str, Any] | None = None,
 ) -> None:
-    """Three-panel summary: structure, retrieval diagnostics, and dataset health."""
+    """Two-panel debug snapshot: aggregate structure compliance + retrieval diagnostics."""
     structure = summarize_structure(cases)
     by_intent = structure.get("by_intent", {})
     intent_rows: list[tuple[str, int, float]] = []
@@ -1128,58 +1137,135 @@ def write_report_dashboard_chart(
         )
     intent_rows.sort(key=lambda item: item[1], reverse=True)
     intents = [row[0] for row in intent_rows]
-    intent_n = [row[1] for row in intent_rows]
+    intent_ns = [row[1] for row in intent_rows]
     compliance = [row[2] for row in intent_rows]
 
+    total = len(cases)
+    compliant_total = sum(int(b.get("compliant_cases", 0)) for b in by_intent.values())
+    overall_rate = (compliant_total / total) if total else 0.0
+
     retrieval = summarize_retrieval(cases)
+    diags_all = retrieval_diagnostics(cases)
+    evaluable_d = [d for d in diags_all if d.concept and d.concept != "unknown"]
+    n_ret_eval = len(evaluable_d)
+    n_ret_all = len(diags_all)
     retrieval_metrics = [
-        ("First retrieved\nchunk is correct", float(retrieval.get("top_1_accuracy", 0.0)), "higher"),
-        ("Correct chunk in\ntop-k retrieved", float(retrieval.get("top_k_recall", 0.0)), "higher"),
-        ("Retrieval noise\n(off-topic chunks)", float(retrieval.get("retrieval_noise_rate", 0.0)), "lower"),
+        ("First chunk\ncorrect", float(retrieval.get("top_1_accuracy", 0.0))),
+        ("Correct chunk\nin top-k", float(retrieval.get("top_k_recall", 0.0))),
+        ("Retrieval\nnoise", float(retrieval.get("retrieval_noise_rate", 0.0))),
     ]
-    health_data = health or _dataset_health(cases, regression_meaningful=False)
+    retrieval_bar_ns = (n_ret_eval, n_ret_eval, n_ret_all)
 
     with _paper_style():
-        fig, (ax_struct, ax_ret, ax_health) = plt.subplots(
-            1, 3, figsize=(17.0, 5.8), gridspec_kw={"width_ratios": [1.35, 1.15, 1.1]}
+        fig = plt.figure(figsize=(10.35, 5.28), layout="constrained")
+        fig.text(
+            0.5,
+            0.965,
+            f"Debug dashboard (n={total})",
+            ha="center",
+            va="top",
+            fontsize=11,
+            fontweight="bold",
+            color=_COLOR_TEXT,
+        )
+        fig.text(
+            0.5,
+            0.938,
+            "For debugging only",
+            ha="center",
+            va="top",
+            fontsize=8,
+            color=_COLOR_TEXT_MUTED,
+            style="italic",
         )
 
-        # Left: structure compliance per intent
-        sx = list(range(len(intents)))
-        struct_bars = ax_struct.bar(
-            sx,
-            compliance,
-            color=_COLOR_PRIMARY,
-            edgecolor="white",
-            linewidth=0.8,
-            width=0.62,
-            zorder=3,
-        )
-        for bar, n in zip(struct_bars, intent_n):
-            bar.set_alpha(_fade_alpha(n))
-        ax_struct.axhline(0, color=_COLOR_NEUTRAL_LINE, linewidth=0.6, zorder=2)
-        ax_struct.set_xticks(sx)
-        ax_struct.set_xticklabels(
-            [_intent_n_label(i, n) for i, n in zip(intents, intent_n)]
-        )
-        ax_struct.set_ylim(0, 1.08)
-        ax_struct.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-        ax_struct.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
-        ax_struct.set_ylabel("Share of answers in expected format")
-        ax_struct.set_title("Answer-Structure Compliance by Question Type")
-        ax_struct.set_axisbelow(True)
-        ax_struct.xaxis.grid(False)
-        for bar, v, n in zip(struct_bars, compliance, intent_n):
-            warning = _low_n_warning(n)
-            text = f"{v * 100:.0f}%" if not warning else f"{v * 100:.0f}%\n{warning}"
-            ax_struct.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.025,
-                text,
-                ha="center", va="bottom", fontsize=8.7, color="#222",
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.18, 1.0], wspace=0.30)
+        if len(intent_rows) <= 1:
+            gs_left = gs[0].subgridspec(1, 1)
+            ax_overall = fig.add_subplot(gs_left[0])
+            ax_break = None
+        else:
+            gs_left = gs[0].subgridspec(2, 1, height_ratios=[1.02, 1.45], hspace=0.50)
+            ax_overall = fig.add_subplot(gs_left[0])
+            ax_break = fig.add_subplot(gs_left[1])
+        ax_ret = fig.add_subplot(gs[1])
+
+        ax_overall.axis("off")
+        if total == 0:
+            ax_overall.text(
+                0.5,
+                0.5,
+                "—",
+                fontsize=22,
+                ha="center",
+                va="center",
+                color=_COLOR_TEXT_MUTED,
+            )
+        else:
+            overall_lbl = (
+                "n=1"
+                if total == 1 and overall_rate >= 1.0 - 1e-9
+                else (f"{overall_rate * 100:.0f}%" if total else "—")
+            )
+            ax_overall.text(
+                0.5,
+                0.62,
+                overall_lbl,
+                fontsize=24,
+                ha="center",
+                va="center",
+                color=_COLOR_TEXT,
+                fontweight="bold",
+            )
+            ax_overall.text(
+                0.5,
+                0.14,
+                "Structure compliance (aggregated)",
+                ha="center",
+                va="center",
+                fontsize=9,
+                color=_COLOR_TEXT_SOFT,
             )
 
-        # Right: retrieval diagnostics
+        if ax_break is not None:
+            y = list(range(len(intents)))
+            break_bars = ax_break.barh(
+                y,
+                compliance,
+                color=_COLOR_PRIMARY,
+                edgecolor="white",
+                linewidth=0.65,
+                height=0.58,
+                zorder=3,
+            )
+            ax_break.set_yticks(y)
+            ax_break.set_yticklabels(
+                [_report_dashboard_intent_label(i) for i in intents],
+                fontsize=7.8,
+            )
+            ax_break.tick_params(axis="y", which="major", pad=8, length=0)
+            ax_break.invert_yaxis()
+            ax_break.set_xlim(0, 1.14)
+            ax_break.set_xticks([0.0, 0.25, 0.5, 0.75, 1.0])
+            ax_break.set_xticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=8)
+            ax_break.set_xlabel("By question type", fontsize=8.5, color=_COLOR_TEXT_SOFT, labelpad=5)
+            ax_break.set_axisbelow(True)
+            ax_break.yaxis.grid(False)
+            _ann_fs = 7.4
+            _x_txt_pad = 0.014
+            xmax_txt = 1.10
+            for bar, v, n_i in zip(break_bars, compliance, intent_ns):
+                tx = min(bar.get_width() + _x_txt_pad, xmax_txt)
+                ax_break.text(
+                    tx,
+                    bar.get_y() + bar.get_height() / 2,
+                    _report_dashboard_value_label(v, n_i),
+                    va="center",
+                    ha="left",
+                    fontsize=_ann_fs,
+                    color="#333333",
+                )
+
         rx = list(range(len(retrieval_metrics)))
         ret_colors = [_COLOR_PRIMARY, _COLOR_PRIMARY, _COLOR_SECONDARY]
         ret_bars = ax_ret.bar(
@@ -1187,84 +1273,38 @@ def write_report_dashboard_chart(
             [m[1] for m in retrieval_metrics],
             color=ret_colors,
             edgecolor="white",
-            linewidth=0.8,
-            width=0.62,
+            linewidth=0.75,
+            width=0.58,
             zorder=3,
         )
         ax_ret.axhline(0, color=_COLOR_NEUTRAL_LINE, linewidth=0.6, zorder=2)
         ax_ret.set_xticks(rx)
-        ax_ret.set_xticklabels([m[0] for m in retrieval_metrics])
-        ax_ret.set_ylim(0, 1.08)
+        ax_ret.set_xticklabels(
+            [m[0] for m in retrieval_metrics],
+            fontsize=7.8,
+            linespacing=0.95,
+        )
+        ax_ret.tick_params(axis="x", which="major", pad=7)
+        ax_ret.set_ylim(0, 1.12)
         ax_ret.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
-        ax_ret.set_yticklabels(["0%", "25%", "50%", "75%", "100%"])
-        ax_ret.set_ylabel("Share of cases")
-        ax_ret.set_title("Overall Retrieval Diagnostics")
+        ax_ret.set_yticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=8)
+        ax_ret.set_ylabel("Share of cases", fontsize=9, color=_COLOR_TEXT_SOFT, labelpad=6)
         ax_ret.set_axisbelow(True)
         ax_ret.xaxis.grid(False)
-        for bar, (_, v, _) in zip(ret_bars, retrieval_metrics):
+        _ret_ann_fs = 7.2
+        _ret_dy = 0.018
+        for bar, (_, v), n_basis in zip(ret_bars, retrieval_metrics, retrieval_bar_ns):
             ax_ret.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.025,
-                f"{v * 100:.0f}%",
-                ha="center", va="bottom", fontsize=9, color="#222",
+                bar.get_height() + _ret_dy,
+                _report_dashboard_value_label(v, n_basis),
+                ha="center",
+                va="bottom",
+                fontsize=_ret_ann_fs,
+                color="#333333",
             )
 
-        ax_health.axis("off")
-        ax_health.set_title("Dataset Health", fontsize=12, fontweight="bold")
-        under_tested_concepts = list(health_data.get("under_tested_concepts", []))
-        low_n_intents = list(health_data.get("low_n_intents", []))
-        concept_preview = ", ".join(under_tested_concepts[:4])
-        if len(under_tested_concepts) > 4:
-            concept_preview += ", ..."
-        if not concept_preview:
-            concept_preview = "(none)"
-        intent_preview = ", ".join(_intent_label_csv(i) for i in low_n_intents[:3])
-        if len(low_n_intents) > 3:
-            intent_preview += ", ..."
-        if not intent_preview:
-            intent_preview = "(none)"
-        health_lines = [
-            f"Total cases: {health_data.get('total_cases', len(cases))}",
-            f"Under-tested concepts: {len(under_tested_concepts)}",
-            f"  {concept_preview}",
-            f"Categories with n<{_LOW_N_THRESHOLD}: {len(low_n_intents)}",
-            f"  {intent_preview}",
-            (
-                "Regression chart meaningful: "
-                f"{'yes' if health_data.get('regression_meaningful') else 'no'}"
-            ),
-            (
-                "Paired boost data exists: "
-                f"{'yes' if health_data.get('paired_boost_present') else 'no'}"
-            ),
-        ]
-        ax_health.text(
-            0.02,
-            0.98,
-            "\n".join(health_lines),
-            ha="left",
-            va="top",
-            fontsize=10,
-            color=_COLOR_TEXT,
-            linespacing=1.35,
-            transform=ax_health.transAxes,
-            bbox={
-                "boxstyle": "round,pad=0.4",
-                "facecolor": "#F7FAFC",
-                "edgecolor": "#CBD5E0",
-                "linewidth": 0.9,
-            },
-        )
-
-        fig.suptitle("Evaluation Report at a Glance", fontsize=14, fontweight="bold")
-        _figure_caption(
-            fig,
-            "Left: how often the tutor's answer for each question type came back in the expected structure "
-            "(higher is better).\nRight: aggregate retrieval diagnostics across all questions. "
-            "Blue = higher is better, orange = lower is better. "
-            f"{_dataset_size_note(len(cases))} {_LOW_N_CAPTION_SUFFIX}",
-        )
-        fig.tight_layout(rect=(0, 0.06, 1, 0.94))
+        fig.get_layout_engine().set(rect=(0, 0.03, 1, 0.905))
         fig.savefig(out_dir / "report_dashboard.png")
         plt.close(fig)
 
@@ -1272,7 +1312,18 @@ def write_report_dashboard_chart(
 def write_coverage_by_concept_chart(
     cases: list[EvaluationCaseResult], out_dir: Path
 ) -> None:
-    """Stacked pass/fail coverage by concept."""
+    """Side-by-side pass/fail counts per concept; only if suite is large enough.
+
+    Below :data:`_COVERAGE_BY_CONCEPT_MIN_TOTAL_CASES`, writes nothing and
+    removes ``coverage_by_concept.png`` from ``out_dir`` if present (avoids
+    stale charts from larger runs).
+    """
+    out_path = out_dir / "coverage_by_concept.png"
+    if len(cases) < _COVERAGE_BY_CONCEPT_MIN_TOTAL_CASES:
+        if out_path.exists():
+            out_path.unlink()
+        return
+
     concept_rows: dict[str, dict[str, int]] = defaultdict(lambda: {"passed": 0, "failed": 0})
     for row in cases:
         concept = _case_concept(row)
@@ -1305,78 +1356,70 @@ def write_coverage_by_concept_chart(
             concepts = [name for name, _ in ordered]
             passed = [stats["passed"] for _, stats in ordered]
             failed = [stats["failed"] for _, stats in ordered]
-            totals = [p + f for p, f in zip(passed, failed)]
-            ys = list(range(len(concepts)))
-            pass_bars = ax.barh(
-                ys,
+            n_con = len(concepts)
+            y_idx = list(range(n_con))
+            offset = 0.2
+            bar_h = 0.35
+            y_pass = [i - offset for i in y_idx]
+            y_fail = [i + offset for i in y_idx]
+
+            ax.barh(
+                y_pass,
                 passed,
+                height=bar_h,
                 color=_COLOR_GOOD,
                 edgecolor="white",
                 linewidth=0.8,
                 zorder=3,
                 label="Passed",
             )
-            fail_bars = ax.barh(
-                ys,
+            ax.barh(
+                y_fail,
                 failed,
-                left=passed,
+                height=bar_h,
                 color=_COLOR_BAD,
                 edgecolor="white",
                 linewidth=0.8,
                 zorder=3,
                 label="Failed",
             )
-            for pb, fb, n in zip(pass_bars, fail_bars, totals):
-                pb.set_alpha(_fade_alpha(n))
-                fb.set_alpha(_fade_alpha(n))
 
-            ax.set_yticks(ys)
+            ax.set_yticks(y_idx)
             ax.set_yticklabels(concepts)
             ax.invert_yaxis()
-            ax.set_xlabel("Number of evaluation cases")
-            ax.set_title("Coverage by Concept (Pass/Fail Counts)")
+            ax.set_xlabel("Cases")
+            ax.set_title("Coverage by concept (debug)")
             ax.set_axisbelow(True)
             ax.yaxis.grid(False)
-            for y, n in zip(ys, totals):
-                warning = _low_n_warning(n)
-                label = f"n={n}" if not warning else f"n={n} ({warning})"
-                ax.text(
-                    n + 0.08,
-                    y,
-                    label,
-                    va="center",
-                    ha="left",
-                    fontsize=9,
-                    color=_COLOR_TEXT,
-                )
             ax.legend(loc="lower right")
 
-        _figure_caption(
-            fig,
-            "This chart measures per-concept evaluation coverage and outcomes (passed vs failed). "
-            "It highlights whether quality claims are supported by enough examples per concept. "
-            f"{_dataset_size_note(len(cases))} {_LOW_N_CAPTION_SUFFIX}",
-        )
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
-        fig.savefig(out_dir / "coverage_by_concept.png")
+        _debug_dataset_footer(fig, len(cases))
+        fig.tight_layout(rect=(0, 0.065, 1, 0.96))
+        fig.savefig(out_path)
         plt.close(fig)
+
+
+_FAILURE_MODE_AXIS_LABELS: dict[str, str] = {
+    "missing_required_concept": "missing concept",
+    "compare_asymmetry": "compare asymmetry",
+    "compare_entity_collapse": "entity collapse",
+    "validation_missed_error": "missed validation error",
+    "retrieval_miss": "retrieval miss",
+    "structure_failure": "structure failure",
+}
+
+
+def _failure_mode_yticklabel(tag: str) -> str:
+    return _FAILURE_MODE_AXIS_LABELS.get(tag, tag.replace("_", " "))
 
 
 def write_failure_modes_chart(
     cases: list[EvaluationCaseResult], out_dir: Path
 ) -> None:
-    """Failure-mode counts with one example test ID per mode."""
+    """Horizontal bar chart of failure-mode counts (descending by count)."""
     from app.eval.case_result_tags import canonical_failure_tags_for_row
 
-    priority = [
-        "missing_required_concept",
-        "compare_asymmetry",
-        "compare_entity_collapse",
-        "validation_missed_error",
-    ]
-
     counts: Counter[str] = Counter()
-    first_example: dict[str, str] = {}
     for row in cases:
         if row.pass_bool:
             continue
@@ -1388,16 +1431,12 @@ def write_failure_modes_chart(
             tags.add("unknown_failure")
         for tag in tags:
             counts[tag] += 1
-            if tag not in first_example:
-                first_example[tag] = row.test_id or "(missing test_id)"
 
-    ordered_keys = [tag for tag in priority if tag in counts]
-    ordered_keys.extend(
-        sorted((tag for tag in counts if tag not in priority), key=lambda tag: counts[tag], reverse=True)
-    )
+    ordered_keys = sorted(counts.keys(), key=lambda tag: (-counts[tag], tag))
+    yticklabels = [_failure_mode_yticklabel(k) for k in ordered_keys]
 
     with _paper_style():
-        fig, ax = plt.subplots(figsize=(11.0, 0.6 * max(4, len(ordered_keys)) + 1.8))
+        fig, ax = plt.subplots(figsize=(10.0, 0.55 * max(4, len(ordered_keys)) + 1.5))
         if not ordered_keys:
             ax.axis("off")
             ax.text(
@@ -1423,30 +1462,16 @@ def write_failure_modes_chart(
                 zorder=3,
             )
             ax.set_yticks(ys)
-            ax.set_yticklabels(ordered_keys)
+            ax.set_yticklabels(yticklabels)
             ax.invert_yaxis()
-            ax.set_xlabel("Count of failed cases")
-            ax.set_title("Failure Modes and Example Test IDs")
+            ax.set_xlabel("Count")
+            ax.set_title("Failure modes (debug)")
             ax.set_axisbelow(True)
             ax.yaxis.grid(False)
-            for bar, key in zip(bars, ordered_keys):
-                ax.text(
-                    bar.get_width() + 0.08,
-                    bar.get_y() + bar.get_height() / 2,
-                    f"{int(bar.get_width())}  (e.g. {first_example.get(key, '?')})",
-                    va="center",
-                    ha="left",
-                    fontsize=9,
-                    color=_COLOR_TEXT,
-                )
+            ax.margins(y=0.02)
 
-        _figure_caption(
-            fig,
-            "This chart counts concrete failure modes and links each to an example test case ID. "
-            "It is intended to prioritize debugging targets instead of over-reading aggregate pass rates. "
-            f"{_dataset_size_note(len(cases))}",
-        )
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
+        _debug_dataset_footer(fig, len(cases))
+        fig.tight_layout(rect=(0, 0.065, 1, 0.96))
         fig.savefig(out_dir / "failure_modes.png")
         plt.close(fig)
 
@@ -1604,7 +1629,7 @@ def generate_evaluation_outputs(
         ("retrieval_accuracy.png", lambda: write_retrieval_accuracy_chart(cases, out_dir)),
         ("question_type_breakdown.png", lambda: write_question_type_chart(cases, out_dir)),
         ("pipeline_diagram.png", lambda: write_pipeline_diagram(out_dir)),
-        ("report_dashboard.png", lambda: write_report_dashboard_chart(cases, out_dir, health=health)),
+        ("report_dashboard.png", lambda: write_report_dashboard_chart(cases, out_dir)),
         ("coverage_by_concept.png", lambda: write_coverage_by_concept_chart(cases, out_dir)),
         ("failure_modes.png", lambda: write_failure_modes_chart(cases, out_dir)),
         ("example_answers.csv", lambda: write_example_answers_csv(cases, out_dir)),

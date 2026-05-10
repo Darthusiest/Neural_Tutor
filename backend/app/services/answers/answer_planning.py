@@ -10,9 +10,9 @@ from flask import has_app_context
 
 from app.services.answers.concept_constraints import ConceptConstraints
 from app.services.answers.entity_retrieval import (
-    ConceptEvidenceBundle,
     ConceptEvidenceBundleV2,
     EvidenceBundleLike,
+    build_bundles_for_compare,
     build_bundles_for_compare_v2,
     build_bundles_multi_v2,
     score_chunk_for_entity,
@@ -76,6 +76,8 @@ class AnswerPlan:
     # definition sentence). When set, the chat / definition renderers prefer
     # this string over the legacy "first bullet of the first chunk" heuristic.
     direct_answer: str | None = None
+    #: Soft analytics / diagnostics tags (e.g. ``compare_v1_fallback``).
+    pipeline_tags: list[str] = field(default_factory=list)
     # Strict composer guardrail: when ``True`` the renderer should not attempt a
     # normal answer and should return a clarification prompt instead.
     requires_clarification: bool = False
@@ -96,6 +98,7 @@ class AnswerPlan:
             "section_specs": [s.to_dict() for s in self.section_specs],
             "evidence_bundles": {k: v.to_dict() for k, v in self.evidence_bundles.items()},
             "direct_answer": self.direct_answer,
+            "pipeline_tags": list(self.pipeline_tags),
             "requires_clarification": self.requires_clarification,
             "clarification_reason": self.clarification_reason,
         }
@@ -278,6 +281,24 @@ def _bundles_share_core_lines(
     return left_norm == right_norm
 
 
+def _should_use_compare_v1_fallback(
+    left_bundle: EvidenceBundleLike,
+    right_bundle: EvidenceBundleLike,
+    *,
+    min_support: float = 0.15,
+) -> bool:
+    """Prefer legacy bundle assembly when V2 has empty cores or collapsed/low support."""
+    if _bundles_share_core_lines(left_bundle, right_bundle):
+        return True
+    left_lines = list(getattr(left_bundle, "core_lines", []) or [])
+    right_lines = list(getattr(right_bundle, "core_lines", []) or [])
+    if not left_lines or not right_lines:
+        return True
+    sa = float(getattr(left_bundle, "support_score", 0.0) or 0.0)
+    sb = float(getattr(right_bundle, "support_score", 0.0) or 0.0)
+    return sa < min_support or sb < min_support
+
+
 def build_answer_plan(
     sq: StructuredQuery,
     chunks: list[dict[str, Any]],
@@ -405,25 +426,23 @@ def build_answer_plan(
         bundle_a, bundle_b = build_bundles_for_compare_v2(chunks, ca_id, cb_id, kb)
         evidence_bundles[ca_id] = bundle_a
         evidence_bundles[cb_id] = bundle_b
-        if _bundles_share_core_lines(bundle_a, bundle_b):
-            merged_primary = _ranked_chunk_ids(chunks, [ca_id, cb_id], kb, max_n=8)
-            return AnswerPlan(
-                answer_mode=mode,
-                sections=[],
-                primary_chunk_ids=merged_primary or primary_ids,
-                supporting_chunk_ids=sup_ids,
-                include_example=include_example,
-                include_analogy=False,
-                include_prerequisites=include_prereq,
-                include_related_concepts=related_names,
-                comparison_axes=comparison_axes or ["role", "computation", "typical use"],
-                lecture_scope=list(sq.lecture_scope),
-                section_specs=[],
-                evidence_bundles=evidence_bundles,
-                direct_answer=None,
-                requires_clarification=True,
-                clarification_reason="compare_shared_evidence",
+        compare_pipeline_tags: list[str] = []
+        if _should_use_compare_v1_fallback(bundle_a, bundle_b):
+            leg_a, leg_b = build_bundles_for_compare(chunks, ca_id, cb_id, kb)
+            by_id = {int(c["id"]): c for c in chunks if c.get("id") is not None}
+            bundle_a = ConceptEvidenceBundleV2.from_legacy_bundle(
+                leg_a,
+                kb=kb,
+                evidence_chunks=[by_id[i] for i in leg_a.chunk_ids if i in by_id],
             )
+            bundle_b = ConceptEvidenceBundleV2.from_legacy_bundle(
+                leg_b,
+                kb=kb,
+                evidence_chunks=[by_id[i] for i in leg_b.chunk_ids if i in by_id],
+            )
+            evidence_bundles[ca_id] = bundle_a
+            evidence_bundles[cb_id] = bundle_b
+            compare_pipeline_tags.append("compare_v1_fallback")
 
         def _safe(ids: list[int]) -> list[int]:
             return ids if ids else primary_ids[:1]
@@ -517,6 +536,7 @@ def build_answer_plan(
             section_specs=section_specs,
             evidence_bundles=evidence_bundles,
             direct_answer=direct_answer_text,
+            pipeline_tags=compare_pipeline_tags,
         )
 
     sections = []

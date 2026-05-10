@@ -25,6 +25,7 @@ from app.eval.capability_analytics import (
     summarize_boost,
     summarize_capability,
     summarize_coverage,
+    summarize_coverage_phase_buckets,
     summarize_errors,
     summarize_structure,
 )
@@ -339,6 +340,18 @@ def export_coverage(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
     ]
 
 
+def export_coverage_phase_plan(
+    cases: list[EvaluationCaseResult],
+    *,
+    min_cases: int = 3,
+    sort_mode: str = "failure_first",
+) -> list[dict[str, Any]]:
+    """Ordered remediation phases: one row per coverage bucket (see :func:`summarize_coverage_phase_buckets`)."""
+    return summarize_coverage_phase_buckets(
+        cases, min_cases=min_cases, sort_mode=sort_mode
+    )
+
+
 def export_boost_effectiveness(cases: list[EvaluationCaseResult]) -> list[dict[str, Any]]:
     boost = summarize_boost(cases)
     if not boost:
@@ -386,6 +399,21 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=20,
         help="Per-run worst queries to include (by ascending score)",
+    )
+    parser.add_argument(
+        "--coverage-phase-sort",
+        choices=("failure_first", "chart_volume"),
+        default="failure_first",
+        help=(
+            "Ordering for coverage_phase_plan.csv: failure_first (default) or "
+            "chart_volume (matches coverage_by_concept.png bucket order)."
+        ),
+    )
+    parser.add_argument(
+        "--coverage-min-cases",
+        type=int,
+        default=3,
+        help="Minimum cases before a bucket is treated as adequately sampled in coverage_phase_plan.csv.",
     )
     args = parser.parse_args(argv)
 
@@ -535,6 +563,25 @@ def main(argv: list[str] | None = None) -> int:
             out_dir / "coverage.csv",
             export_coverage(cases),
             ["concept", "case_count", "accuracy", "under_tested"],
+        )
+        _write_csv(
+            out_dir / "coverage_phase_plan.csv",
+            export_coverage_phase_plan(
+                cases,
+                min_cases=max(1, args.coverage_min_cases),
+                sort_mode=args.coverage_phase_sort,
+            ),
+            [
+                "phase_rank",
+                "concept_label",
+                "case_count",
+                "passed",
+                "failed",
+                "accuracy",
+                "under_tested",
+                "sort_mode",
+                "min_cases_threshold",
+            ],
         )
         boost_rows = export_boost_effectiveness(cases)
         if boost_rows:

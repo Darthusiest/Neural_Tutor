@@ -26,6 +26,8 @@ import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.answers.entity_retrieval import display_heading_for_primary_topic
+from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import StructuredQuery
 
 
@@ -118,17 +120,21 @@ def _select_evidence(
 def _quiz_header(structured_query: StructuredQuery, evidence: list[dict[str, Any]]) -> str:
     """`Quiz: Lecture N` for single-lecture queries, otherwise `Quiz: <topic>`."""
     lecture_numbers = list(structured_query.intent.lecture_numbers or [])
+    probe = display_heading_for_primary_topic(structured_query, get_kb())
+    suffix = f" — {probe}" if probe else ""
+
     if len(lecture_numbers) == 1:
-        return f"Quiz: Lecture {lecture_numbers[0]}"
+        return f"Quiz: Lecture {lecture_numbers[0]}{suffix}"
     intent = structured_query.intent
     if intent.detected_concepts:
-        return f"Quiz: {str(intent.detected_concepts[0]).strip()}"
+        return f"Quiz: {str(intent.detected_concepts[0]).strip()}{suffix}"
     if evidence:
         head = _topic_head(evidence[0].get("topic"))
         if head:
-            return f"Quiz: {head}"
+            return f"Quiz: {head}{suffix}"
     raw = (intent.original_query or "").strip()
-    return f"Quiz: {raw[:60] if raw else 'course topic'}"
+    base = f"Quiz: {raw[:60] if raw else 'course topic'}"
+    return f"{base}{suffix}"
 
 
 def _topic_for_question(chunk: dict[str, Any], default: str) -> str:

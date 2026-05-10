@@ -101,3 +101,10 @@ class TestLectureDetection:
     def test_no_lecture(self):
         intent = analyze_query("what is softmax")
         assert intent.lecture_numbers == []
+
+
+class TestAccentFold:
+    def test_latin_accent_fold_in_expanded_query(self):
+        intent = analyze_query("Définir softmax avec résumé court")
+        ex = intent.expanded_query.lower()
+        assert "definir" in ex or "resume" in ex

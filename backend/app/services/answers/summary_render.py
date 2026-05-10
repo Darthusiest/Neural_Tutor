@@ -39,6 +39,7 @@ import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.answers.entity_retrieval import display_heading_for_primary_topic
 from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.domain_knowledge import (
     get_concept_family_for_lecture,
@@ -84,6 +85,11 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
         seen.add(key)
         out.append(item.strip())
     return out
+
+
+def _normalize_summary_dedupe_key(text: str) -> str:
+    """Sentence-ish normalization so recap bullets don't repeat the core paragraph verbatim."""
+    return re.sub(r"\s+", " ", (text or "").strip().lower().rstrip("."))
 
 
 def _topic_label(structured_query: StructuredQuery, fallback_chunks: list[dict[str, Any]]) -> str:
@@ -229,9 +235,18 @@ def _format_lecture_summary(
 
     connect_sentence = _connect_sentence(lecture_number, key_topics)
     study_focus = _study_focus_lines(key_topics)
+    main_norm = _normalize_summary_dedupe_key(main_idea)
+    study_focus = [
+        ln for ln in study_focus if _normalize_summary_dedupe_key(ln) != main_norm
+    ]
+
+    title = f"Summary: Lecture {lecture_number}"
+    probe = display_heading_for_primary_topic(structured_query, get_kb())
+    if probe:
+        title = f"{title} — {probe}"
 
     parts: list[str] = [
-        f"Summary: Lecture {lecture_number}",
+        title,
         "",
         "### Main idea",
         "",
@@ -376,6 +391,11 @@ def _format_topic_summary(
     if not core_idea:
         core_idea = f"{topic_label} appears across the listed sections of the course notes."
 
+    topic_banner = topic_label
+    probe = display_heading_for_primary_topic(structured_query, kb)
+    if probe:
+        topic_banner = f"{topic_label} — {probe}"
+
     key_points: list[str] = []
     seen_heads: set[str] = set()
     for chunk in scoped:
@@ -395,7 +415,7 @@ def _format_topic_summary(
             break
 
     parts: list[str] = [
-        f"Summary: {topic_label}",
+        f"Summary: {topic_banner}",
         "",
         "### Core idea",
         "",
@@ -412,15 +432,18 @@ def _format_topic_summary(
             "for a deeper breakdown."
         )
 
-    parts.extend(
-        [
-            "",
-            "### Study focus",
-            "",
-            f"- Be able to define **{topic_label}** without looking at the slides, then walk through "
-            "one example from the notes.",
-        ]
+    study_bullet = (
+        f"- Be able to define **{topic_label}** without looking at the slides, then walk through "
+        "one example from the notes."
     )
+    parts.extend(["", "### Study focus", ""])
+    if _normalize_summary_dedupe_key(study_bullet) != _normalize_summary_dedupe_key(core_idea):
+        parts.append(study_bullet)
+    else:
+        parts.append(
+            f"- Trace **{topic_label}** through one worked passage from the notes until you can "
+            "explain it aloud."
+        )
     return "\n".join(parts).rstrip()
 
 

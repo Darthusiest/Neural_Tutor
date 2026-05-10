@@ -31,6 +31,7 @@ ERROR_CATEGORY_TAGS: frozenset[str] = frozenset(
         "scaffold_leakage",
         "generic_filler",
         "validation_missed_error",
+        "structure_failure",
     }
 )
 
@@ -46,12 +47,37 @@ _VALIDATION_CHECK_TO_TAG: dict[str, str] = {
     "must_cover_both_sides": "compare_asymmetry",
     "must_have_each_side_evidence_or_note": "compare_asymmetry",
     "must_include_comparison_axis": "compare_asymmetry",
+    "must_cover_compare_multi": "compare_asymmetry",
     "must_direct_answer_match_target": "wrong_direct_answer",
     "must_direct_answer_mention_target_concept": "wrong_direct_answer",
     "must_not_have_section_duplication": "duplicated_content",
     "must_not_leak_forbidden_terms": "forbidden_topic_leakage",
     "must_be_concept_pure": "forbidden_topic_leakage",
+    "must_be_course_grounded": "missing_required_concept",
+    "must_define_primary_concept": "missing_required_concept",
+    "must_not_have_examples_when_blocked": "scaffold_leakage",
+    "must_not_have_technical_when_intuition_only": "scaffold_leakage",
+    "must_include_multiple_lectures": "summary_wrong_scope",
+    "must_name_connecting_concepts": "missing_required_concept",
+    "must_answer_how_or_why": "generic_filler",
 }
+
+
+def _answer_contains_mode_clarification(answer: str) -> bool:
+    """True when the assistant reply matches orchestrator / pipeline clarification templates."""
+    a = (answer or "").lower()
+    needles = (
+        "tell me which two concepts to compare",
+        "tell me which lecture or topic to summarize",
+        "tell me which topic or lecture to quiz",
+        "tell me which course topic or lecture you'd like help with",
+        "tell me which course topic or lecture you\u2019d like help with",
+        "don't have enough clean lecture evidence to compare",
+        "don't have enough lecture-grounded evidence",
+        "couldn't pull enough course material to compare",
+        "narrower question with one explicit class concept",
+    )
+    return any(n in a for n in needles)
 
 
 def load_eval_suite(path: Path) -> dict[str, Any]:
@@ -122,7 +148,7 @@ def failure_tags_for_case(case: dict[str, Any], pr: PipelineResult, *, pass_bool
 
     for sub in case.get("expected_sections") or []:
         if sub and sub not in answer:
-            tags.add("missing_required_concept")
+            tags.add("structure_failure")
 
     must_not = [s for s in (case.get("must_not_include") or []) if s]
     for s in must_not:
@@ -156,10 +182,8 @@ def failure_tags_for_case(case: dict[str, Any], pr: PipelineResult, *, pass_bool
         tags.add("generic_filler")
 
     if case.get("category") == "clarification":
-        tags.add("clarification_missing")
-
-    if val.severity == "pass" and not val.checks_failed:
-        tags.add("validation_missed_error")
+        if not _answer_contains_mode_clarification(answer):
+            tags.add("clarification_missing")
 
     tags = {t for t in tags if t in ERROR_CATEGORY_TAGS}
 

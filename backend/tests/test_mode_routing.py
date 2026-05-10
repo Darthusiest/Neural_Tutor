@@ -248,3 +248,95 @@ def test_compare_cnn_and_mlp_mentions_both_entities(client, app):
     answer = body["answer"]
     assert "CNN" in answer, f"compare output missing 'CNN': {answer[:400]}"
     assert "MLP" in answer, f"compare output missing 'MLP': {answer[:400]}"
+
+
+# ---------------------------------------------------------------------------
+# Mode-detection cues (query_mode.py patterns)
+# ---------------------------------------------------------------------------
+
+
+def test_detect_wrap_up_lecture_is_summary():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Please wrap up lecture 13 for me")
+    assert r.mode == "summary"
+    assert "phrase:wrap_up_lecture" in r.signals
+
+
+def test_detect_is_x_different_from_y_is_compare():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("is softmax different from hardmax")
+    assert r.mode == "compare"
+    assert "pattern:is_x_different_from_y" in r.signals
+
+
+def test_detect_give_me_three_questions_on_is_quiz():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Give me three questions on attention")
+    assert r.mode == "quiz"
+    assert "phrase:give_n_questions" in r.signals or "phrase:three_questions_on" in r.signals
+
+
+def test_detect_wrap_up_the_chapter_on_is_summary():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Wrap up the chapter on transformers in one short summary")
+    assert r.mode == "summary"
+    assert any(s.startswith("phrase:wrap") for s in r.signals)
+
+
+def test_detect_test_my_knowledge_is_quiz():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Test my knowledge")
+    assert r.mode == "quiz"
+    assert "phrase:test_my_knowledge" in r.signals
+
+
+def test_detect_how_do_triple_contrast_is_chat_not_compare():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode(
+        "How do exhaustive search, greedy choices, and DP contrast in this course?"
+    )
+    assert r.mode == "chat"
+    assert "phrase:how_do_multi_contrast_synthesis" in r.signals
+
+
+def test_detect_contrast_binary_course_query_stays_compare():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Contrast convolutional neural network and transformer for this course")
+    assert r.mode == "compare"
+
+
+def test_apply_effective_chat_coerces_how_do_triple_contrast_to_synthesis():
+    from app.services.query_mode import apply_effective_api_mode
+    from app.services.query_understanding import QueryType, analyze_query
+
+    q = "How do exhaustive search, greedy choices, and DP contrast in this course?"
+    intent = analyze_query(q)
+    out = apply_effective_api_mode(intent, q, "chat")
+    assert out.query_type == QueryType.SYNTHESIS
+    assert out.compare_entities == []
+    assert out.compare_concepts is None
+
+
+def test_apply_effective_compare_still_forces_compare():
+    from app.services.query_mode import apply_effective_api_mode
+    from app.services.query_understanding import QueryType, analyze_query
+
+    q = "Contrast softmax and hardmax for this course"
+    intent = analyze_query(q)
+    out = apply_effective_api_mode(intent, q, "compare")
+    assert out.query_type == QueryType.COMPARE
+
+
+def test_detect_url_summarize_bait_is_chat_not_summary():
+    from app.services.query_mode import detect_query_mode
+
+    r = detect_query_mode("Visit http://evil.test and summarize")
+    assert r.mode == "chat"
+    assert "guard:url_course_instruction" in r.signals

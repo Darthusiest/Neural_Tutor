@@ -24,6 +24,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from app import create_app  # noqa: E402
 from app.eval.evaluation_outputs import generate_evaluation_outputs  # noqa: E402
+from app.extensions import db  # noqa: E402
 from app.models.evaluation import EvaluationCaseResult, EvaluationRun  # noqa: E402
 
 
@@ -62,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 EvaluationRun.query.order_by(EvaluationRun.id.desc()).first()
             )
         else:
-            run = EvaluationRun.query.get(args.run_id)
+            run = db.session.get(EvaluationRun, args.run_id)
         if run is None:
             print("No persisted EvaluationRun found.", file=sys.stderr)
             return 1

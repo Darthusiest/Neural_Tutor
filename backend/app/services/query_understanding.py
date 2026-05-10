@@ -7,6 +7,7 @@ Maps raw user text to a :class:`QueryIntent` that controls retrieval strategy
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -86,6 +87,14 @@ _SYNTHESIS_RE = re.compile(
 )
 
 
+def _accent_fold_latin(s: str) -> str:
+    """Strip combining marks so retrieval matches ASCII chunks on accented queries."""
+    if not s:
+        return ""
+    nk = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in nk if unicodedata.category(ch) != "Mn")
+
+
 # ---------------------------------------------------------------------------
 # Compare concept extraction
 # ---------------------------------------------------------------------------
@@ -130,6 +139,17 @@ def extract_compare_entities(query: str) -> list[str] | None:
         bits = [b.strip() for b in bits if b.strip()]
         if len(bits) >= 3:
             return _normalize_entity_labels(bits)
+
+    m_how = re.search(
+        r"\bhow\s+is\s+(.+?)\s+different\s+from\s+(.+?)\s*$",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m_how:
+        a = m_how.group(1).strip().rstrip("?.,")
+        b = m_how.group(2).strip().rstrip("?.,")
+        if a and b:
+            return _normalize_entity_labels([a, b])
 
     pair = _extract_compare_concepts(query)
     if pair:
@@ -265,6 +285,9 @@ def analyze_query(query: str) -> QueryIntent:
     for orig, fixed in typo_map.items():
         if fixed not in query.lower():
             expanded_query = expanded_query + " " + fixed
+    folded = _accent_fold_latin(query).strip()
+    if folded and folded.lower() != (query or "").strip().lower():
+        expanded_query = (expanded_query + " " + folded).strip()
 
     detected = _detect_concepts(corrected)
     compare_entities: list[str] = []

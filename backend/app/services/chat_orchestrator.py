@@ -276,6 +276,25 @@ def handle_chat_turn(
     diag = r.diagnostics
 
     low_confidence = r.confidence < threshold
+    if (
+        pr is not None
+        and pr.structured_query.answer_intent == "direct_definition"
+        and pr.structured_query.concept_ids
+        and r.chunks
+    ):
+        kb_lc = get_kb()
+        cid0 = pr.structured_query.concept_ids[0]
+        meta0 = kb_lc.get_concept_by_id(cid0)
+        if meta0:
+            blob = " ".join(
+                str(c.get(k) or "")
+                for c in r.chunks[:12]
+                for k in ("topic", "keywords", "clean_explanation", "source_excerpt")
+            ).lower()
+            aliases_lc = [meta0.name.lower(), *[a.lower() for a in meta0.aliases[:18]]]
+            if any(a and len(a) > 2 and a in blob for a in aliases_lc):
+                low_confidence = r.confidence < (threshold * 0.55)
+
     qt = r.query_intent.query_type if getattr(r, "query_intent", None) else None
     if pr:
         answer_intent = pr.structured_query.answer_intent

@@ -138,6 +138,11 @@ _GENERIC_FILLER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"essence of sound", re.IGNORECASE),
     re.compile(r"compact representation", re.IGNORECASE),
     re.compile(r"fingerprint of sound", re.IGNORECASE),
+    re.compile(r"high-level picture", re.IGNORECASE),
+    re.compile(r"\bbig picture\b", re.IGNORECASE),
+    re.compile(r"\bstay(s)?\s+high.level\b", re.IGNORECASE),
+    re.compile(r"in the materials you already have", re.IGNORECASE),
+    re.compile(r"building blocks for later topics", re.IGNORECASE),
     re.compile(r"clear intuition for this topic", re.IGNORECASE),
 )
 
@@ -152,6 +157,23 @@ _COMPARE_LIMITATION_PHRASES: tuple[str, ...] = (
     "no scoped line in retrieved notes",
     "limited evidence in retrieved chunks",
 )
+
+# Trailing scope text sometimes captured on the second compare entity by regex
+# (e.g. "... and convolutional neural network in this class.").
+_COMPARE_ENTITY_TRAILER = re.compile(
+    r"""
+    \s+in\s+this\s+class\.?\s*$
+    |\s+for\s+this\s+course\.?\s*$
+    |\s+for\s+ling\s+487\.?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _normalize_compare_entity_phrase(raw: str) -> str:
+    s = raw.strip().rstrip("?.,")
+    s = _COMPARE_ENTITY_TRAILER.sub("", s).strip().rstrip("?.,")
+    return s
 
 
 def _mentions_term(text: str, term: str) -> bool:
@@ -186,26 +208,47 @@ def _must_define_primary_concept(answer: str, sq: StructuredQuery, kb: ConceptKB
     return _mentions_term(answer, c0.name) or any(_mentions_term(answer, a) for a in c0.aliases[:6])
 
 
+def _answer_covers_compare_entity(answer: str, entity_raw: str, kb: ConceptKB) -> bool:
+    """True if the answer visibly references this side: literal entity phrase or KB name/alias."""
+    if not entity_raw or not entity_raw.strip():
+        return False
+    part = _normalize_compare_entity_phrase(entity_raw)
+    if _mentions_term(answer, entity_raw) or _mentions_term(answer, part):
+        return True
+    if not part:
+        return False
+    c = kb.get_concept(part) or kb.get_concept(part.split()[0])
+    if not c:
+        return False
+    if _mentions_term(answer, c.name):
+        return True
+    for al in c.aliases[:16]:
+        if len(al.strip()) > 1 and _mentions_term(answer, al):
+            return True
+    return False
+
+
 def _must_cover_both_sides(answer: str, sq: StructuredQuery, kb: ConceptKB) -> bool:
     if len(sq.intent.compare_entities) >= 2:
         a, b = sq.intent.compare_entities[0], sq.intent.compare_entities[1]
-        return _mentions_term(answer, a) and _mentions_term(answer, b)
+        return _answer_covers_compare_entity(answer, a, kb) and _answer_covers_compare_entity(
+            answer, b, kb
+        )
     if sq.intent.compare_concepts:
         a, b = sq.intent.compare_concepts
-        return _mentions_term(answer, a) and _mentions_term(answer, b)
+        return _answer_covers_compare_entity(answer, a, kb) and _answer_covers_compare_entity(
+            answer, b, kb
+        )
     return True
 
 
-def _must_cover_compare_multi(answer: str, sq: StructuredQuery) -> bool:
+def _must_cover_compare_multi(answer: str, sq: StructuredQuery, kb: ConceptKB) -> bool:
     if sq.answer_intent != "compare_multi":
         return True
     ents = sq.intent.compare_entities
     if len(ents) < 3:
         return True
-    hits = 0
-    for e in ents:
-        if _mentions_term(answer, e):
-            hits += 1
+    hits = sum(1 for e in ents if _answer_covers_compare_entity(answer, e, kb))
     return hits >= min(len(ents), 4)
 
 
@@ -337,26 +380,35 @@ def _must_respect_lecture_scope(answer: str, plan: AnswerPlan, chunks_lectures: 
 
 
 def _must_be_concept_pure(answer: str, constraints: "ConceptConstraints") -> bool:
-    """Soft-warn when the answer drifts away from the target concept's vocabulary.
+    """Reject answers where a KB-forbidden peer appears without the target in the same span.
 
-    Hard fail (returns ``False``) only for full topic drift — a forbidden
-    term appears in the answer and *no* target alias does. When both appear,
-    the line is ambiguous (e.g. CNN answer touches transformers in passing);
-    we treat that as borderline-pass via the dedicated ``ambiguous_concept_bleed``
-    flag rather than blocking the whole answer.
-
-    Always returns ``True`` for relational queries — *Compare A and B* and
-    *How does X relate to Y?* legitimately require both sides' vocabulary.
+    Per-sentence check blocks same-lecture bleed (e.g. MFCC sentences in a formants answer).
+    Relational queries skip — *Compare A and B* legitimately mixes vocabulary.
     """
     if constraints.is_relational:
         return True
     if not constraints.forbidden_terms:
         return True
+    targets = [t for t in constraints.target_aliases if len(t) > 2]
+    forb = [t for t in constraints.forbidden_terms if len(t) > 2]
+    if not forb:
+        return True
+    parts = re.split(r"(?<=[.!?])\s+|\n+", answer)
+    for part in parts:
+        sl = part.lower().strip()
+        if len(sl) < 4:
+            continue
+        has_forb = any(t in sl for t in forb)
+        if not has_forb:
+            continue
+        has_tgt = any(t in sl for t in targets)
+        if not has_tgt:
+            return False
     al = answer.lower()
-    forbidden_hit = any(t in al for t in constraints.forbidden_terms if len(t) > 2)
+    forbidden_hit = any(t in al for t in forb)
     if not forbidden_hit:
         return True
-    target_hit = any(t in al for t in constraints.target_aliases if len(t) > 2)
+    target_hit = any(t in al for t in targets)
     if target_hit:
         return True
     return False
@@ -379,9 +431,12 @@ def _direct_answer_text(plan: AnswerPlan) -> str:
 def _compare_entity_labels(sq: StructuredQuery, kb: ConceptKB) -> list[str]:
     """Best-effort list of compared entity labels for compare / compare_multi.
 
-    Pulls from ``intent.compare_entities`` first (preserves original
-    casing), then falls back to ``intent.compare_concepts`` and KB lookups
-    by ``concept_ids``. Empty list when nothing nameable is available.
+    For two-way ``compare``, KB canonical names for the first two
+    ``concept_ids`` are queued **before** raw ``compare_entities`` strings.
+    That keeps :func:`_must_match_compare_contract` aligned with the paired
+    concepts :func:`build_answer_plan` uses even when
+    :func:`extract_compare_entities` splits a trailing qualifier into a bogus
+    second entity (e.g. ``variance with respect to overfitting``).
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -397,6 +452,12 @@ def _compare_entity_labels(sq: StructuredQuery, kb: ConceptKB) -> list[str]:
             return
         seen.add(key)
         out.append(clean)
+
+    if sq.answer_intent == "compare" and len(sq.concept_ids) >= 2:
+        for cid in sq.concept_ids[:2]:
+            meta = kb.get_concept_by_id(cid)
+            if meta:
+                _add(meta.name)
 
     for ent in sq.intent.compare_entities or []:
         _add(ent)
@@ -660,7 +721,7 @@ def validate_answer(
         run("must_cover_both_sides", _must_cover_both_sides(answer, sq, kb))
         run("must_include_comparison_axis", _must_include_comparison_axis(answer, plan))
     if ai == "compare_multi":
-        run("must_cover_compare_multi", _must_cover_compare_multi(answer, sq))
+        run("must_cover_compare_multi", _must_cover_compare_multi(answer, sq, kb))
         run("must_include_comparison_axis", _must_include_comparison_axis(answer, plan))
     if ai == "lecture_summary":
         run("must_stay_in_scope", _must_stay_in_scope(answer, sq, plan))
@@ -724,7 +785,7 @@ def validate_answer(
     if ai == "compare":
         missing_side = not _must_cover_both_sides(answer, sq, kb)
     elif ai == "compare_multi":
-        missing_side = not _must_cover_compare_multi(answer, sq)
+        missing_side = not _must_cover_compare_multi(answer, sq, kb)
 
     generic_filler = _has_generic_filler(answer, plan)
 

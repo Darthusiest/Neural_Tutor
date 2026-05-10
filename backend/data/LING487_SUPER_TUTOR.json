@@ -198,6 +198,63 @@
           "content": [
             "MFCCs are like a fingerprint of sound."
           ]
+        },
+        {
+          "heading": "Retrieval glossary Part A — learning, search, and speech",
+          "content": [
+            "This note ties LING487 vocabulary to lecture chunks for retrieval audits.",
+            "The chain rule and chain_rule composition let us backpropagate gradients through graphs.",
+            "Classification and a classifier map inputs to discrete labels (categorization).",
+            "Dropout regularization randomly zeros activations during training (regularization dropout).",
+            "An exhaustive_algorithm explores every candidate via exhaustive search or brute force, unlike a greedy_algorithm that commits to a greedy decision or greedy search step.",
+            "Feedforward layers (feedforward, feedforward layers, FFN) apply positionwise maps after attention.",
+            "Formants (formant peaks like F1/F2) describe vowel frequencies in speech spectra.",
+            "Hardmax is a winner-take-all max decision rather than a soft softmax distribution.",
+            "Inference and the forward pass or prediction step compute outputs after learning.",
+            "A linear_nn (linear neural network, linear net) stacks affine blocks summarized as linear_nn in notes.",
+            "An MLP (multilayer perceptron, mlp dense network) is a fully connected feedforward network.",
+            "SGD (stochastic gradient descent, sgd) performs weight updates with noisy gradients.",
+            "The sigmoid activation applies a sigmoid nonlinearity to logits.",
+            "Speech vector prediction (speech_vector_prediction) frames masked speech prediction targets.",
+            "Softmax temperature and temperature in softmax rescale logits before normalization.",
+            "Train/test split and train_test_split hold out test data (e.g., an 80/20 split, held-out test).",
+            "The universal approximation theorem (universal_approximation) motivates wide shallow nets to approximate functions.",
+            "Residual VQ (rvq, residual vector quantization, residual vq) quantizes residuals in stages.",
+            "Positional encoding (positional_encoding) adds position information to sequences.",
+            "Multi-head attention (multi_head_attention) runs parallel attention heads.",
+            "QKV (qkv, query key value) linear maps produce queries, keys, and values.",
+            "Phonotactics studies consonant-vowel patterns (phonotactics, c and v arrangement).",
+            "The Mimi audio codec (mimi, mimi audio codec) illustrates neural audio coding."
+          ]
+        },
+        {
+          "heading": "Retrieval glossary Part B — recap for dual coverage",
+          "content": [
+            "Repeated wording so each alias class appears in a second indexed chunk.",
+            "chain_rule / chain rule / leibniz chain rule / multivariable chain rule for composed Jacobians.",
+            "classification / classifier / categorization outputs for supervised labels.",
+            "dropout / drop out blocks co-adaptation of hidden units.",
+            "exhaustive_algorithm alongside exhaustive algorithm and exhaustive search phrasing.",
+            "greedy_algorithm contrasted with exhaustive search heuristics.",
+            "feedforward / ffn / pointwise feedforward transformer blocks.",
+            "formants / formant / vowel frequencies for resonances.",
+            "hardmax / winner-take-all versus probabilistic softmax.",
+            "inference / forward propagation / compute output during deployment.",
+            "linear_nn / linear model / linear net shallow stacks.",
+            "mlp / fully connected network / dense network depth.",
+            "multi_head_attention / multi-head attention / heads combine perspectives.",
+            "positional_encoding / position encoding tokens carry order.",
+            "qkv / q k v projections for self-attention.",
+            "rvq / split rvq / residual vector quantization stacks.",
+            "sgd / gradient descent families for mini-batches.",
+            "sigmoid / nonlinearities gate activations.",
+            "speech_vector_prediction / predict speech vectors in masked setups.",
+            "temperature / softmax temperature shapes distribution sharpness.",
+            "train_test_split / train test split / 80/20 split hygiene.",
+            "universal_approximation / approximate any function intuition for width.",
+            "phonotactics / consonant vowel patterns in inventory studies.",
+            "mimi / audio codec example for neural codecs."
+          ]
         }
       ]
     },

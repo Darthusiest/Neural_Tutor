@@ -302,6 +302,19 @@ def _hard_filter_chunks_for_purity(
         if constraints.target_aliases:
             if not any(_term_hits(blob, term) > 0 for term in constraints.target_aliases):
                 continue
+        # Same-lecture peers: drop chunks whose topic emphasizes a KB forbidden peer
+        # without naming the target in the topic line (reduces MFCC→formant bleed).
+        if constraints.target_aliases and constraints.forbidden_terms and not constraints.is_relational:
+            t_hit_topic = any(_term_hits(topic_only, term) > 0 for term in constraints.target_aliases)
+            f_hit_topic = False
+            for term in constraints.forbidden_terms:
+                if term in constraints.user_forbidden_terms:
+                    continue
+                if _term_hits(topic_only, term) > 0:
+                    f_hit_topic = True
+                    break
+            if f_hit_topic and not t_hit_topic:
+                continue
         out.append(chunk)
     return out
 

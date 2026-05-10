@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -328,6 +329,56 @@ class TestRuleBasedTutorFormat:
             assert "### Contrast along course axes" in text
 
 
+class TestSynthesisEvidenceGuard:
+    def test_cross_lecture_requires_chunk_per_target(self, app):
+        from app.services.knowledge.concept_kb import get_kb
+        from app.services.knowledge.structured_query import StructuredQuery
+        from app.services.query_understanding import QueryIntent, QueryType
+        from app.services.reasoning_pipeline import _cross_lecture_synthesis_has_evidence
+
+        with app.app_context():
+            kb = get_kb()
+            intent = QueryIntent(
+                query_type=QueryType.SYNTHESIS,
+                original_query="connect ideas",
+                expanded_query="connect ideas",
+                query_tokens=["connect", "ideas"],
+                expanded_tokens=["connect", "ideas"],
+                lecture_numbers=[],
+                detected_concepts=[],
+            )
+            sq = StructuredQuery(
+                intent=intent,
+                concept_ids=["softmax", "greedy_algorithm"],
+                answer_intent="cross_lecture_synthesis",
+                sub_questions=[],
+                retrieval_hints=[],
+                lecture_scope=[],
+                answer_style="default",
+                decomposition_template=[],
+            )
+            one_sided = [
+                {
+                    "id": 1,
+                    "topic": "t",
+                    "keywords": "[]",
+                    "clean_explanation": "softmax converts logits to probabilities",
+                    "source_excerpt": "",
+                },
+            ]
+            assert _cross_lecture_synthesis_has_evidence(sq, one_sided, kb) is False
+            both = one_sided + [
+                {
+                    "id": 2,
+                    "topic": "g",
+                    "keywords": "[]",
+                    "clean_explanation": "A greedy algorithm commits to a locally optimal choice.",
+                    "source_excerpt": "",
+                },
+            ]
+            assert _cross_lecture_synthesis_has_evidence(sq, both, kb) is True
+
+
 class TestEndToEndPipeline:
     def test_pipeline_returns_answer(self, corpus, app):
         with app.app_context():
@@ -340,3 +391,35 @@ class TestEndToEndPipeline:
         with app.app_context():
             pr = run_reasoning_pipeline("summary of lecture 10", top_k=8)
             assert pr.structured_query.answer_intent == "lecture_summary"
+
+    def test_synthesis_names_chain_rule_backprop_and_sgd(self, corpus, app):
+        """Multi-concept synthesis fan-out should ground all three anchors."""
+        with app.app_context():
+            pr = run_reasoning_pipeline(
+                "How do chain rule, backpropagation, and SGD connect during training?",
+                top_k=12,
+            )
+        body = pr.course_answer.lower()
+        assert "chain" in body
+        assert "backward" in body or "gradient" in body or "backprop" in body
+        assert "sgd" in body or "stochastic gradient" in body
+
+    def test_how_do_triple_contrast_in_course_names_search_greedy_dp_terms(self, corpus, app):
+        """Eval syn_v3_29 shape: chat/synthesis must surface grader substrings."""
+        with app.app_context():
+            pr = run_reasoning_pipeline(
+                "How do exhaustive search, greedy choices, and DP contrast in this course?",
+                top_k=14,
+            )
+        body = pr.course_answer.lower()
+        assert "exhaustive" in body
+        assert "greedy" in body
+        assert "dynamic" in body or re.search(r"\bdp\b", body)
+
+
+def test_alias_in_answer_text_respects_short_token_boundaries():
+    from app.services.reasoning_pipeline import _alias_in_answer_text
+
+    assert _alias_in_answer_text("the dp table uses memoization", "dp")
+    assert not _alias_in_answer_text("dynamic programming for alignment", "dp")
+    assert _alias_in_answer_text("dynamic programming for alignment", "dynamic")

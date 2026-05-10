@@ -267,7 +267,7 @@
     {
       "id": "greedy_algorithm",
       "name": "greedy algorithm",
-      "aliases": ["greedy search", "greedy decision"],
+      "aliases": ["greedy search", "greedy decision", "greedy choices"],
       "lecture_scope": [7],
       "summary": "A greedy algorithm chooses what looks best now, without fully accounting for future consequences.",
       "prerequisites": [],
@@ -515,6 +515,19 @@
       "common_subquestions": ["What do feedforward layers do after attention?"]
     },
     {
+      "id": "mlp",
+      "name": "multilayer perceptron",
+      "aliases": ["mlp", "fully connected network", "feedforward network", "dense network"],
+      "lecture_scope": [15],
+      "summary": "An MLP stacks fully connected layers so each unit connects to every unit in the next layer, building flexible nonlinear maps from fixed-size vectors.",
+      "prerequisites": ["representations"],
+      "builds_on": [],
+      "related": ["feedforward", "cnn"],
+      "compare_with": ["cnn"],
+      "retrieval_hints": ["fully connected layers", "dense stack", "no weight sharing across positions"],
+      "common_subquestions": ["How is an MLP different from a CNN?"]
+    },
+    {
       "id": "cnn",
       "allow_external_clarification": true,
       "name": "convolutional neural network",
@@ -745,6 +758,7 @@
     "mfcc__formants": ["what each represents", "how each is derived", "typical use", "role in speech recognition", "connection to spectra"],
     "softmax__hardmax": ["output type", "uncertainty", "decision style", "information retained"],
     "attention__cnn": ["what relation each captures", "local vs flexible context", "where used in course architecture"],
+    "cnn__mlp": ["connectivity pattern", "local structure vs global mixing", "parameter sharing", "typical feature extraction role", "input geometry"],
     "autoencoder__vector_quantization": ["continuous vs discrete code", "main goal", "compression method", "link through Mimi"],
     "greedy_algorithm__dynamic_programming": ["decision basis", "use of future information", "efficiency", "risk of bad local choices"],
     "linear_nn__sigmoid": ["function flexibility", "decision boundaries", "ability to model complex categories"]

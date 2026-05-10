@@ -18,6 +18,16 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from app.extensions import db
+from app.services.knowledge.concept_kb import reset_kb_for_tests
+from app.services.lectures.lecture_loader import import_lecture_json
+from app.services.reasoning_pipeline import run_reasoning_pipeline
+from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
+
 from app.services.answers.answer_planning import AnswerPlan
 from app.services.answers.compare_evidence import scoped_lines_from_chunks
 from app.services.answers.compare_render import (
@@ -33,6 +43,20 @@ from app.services.answers.entity_retrieval import (
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import StructuredQuery, build_structured_query
 from app.services.query_understanding import analyze_query
+
+_DATA = Path(__file__).resolve().parent.parent / "data" / "LING487_SUPER_TUTOR.json"
+
+
+@pytest.fixture
+def corpus(app):
+    with app.app_context():
+        db.drop_all()
+        db.create_all()
+        import_lecture_json(_DATA, upsert=False)
+        invalidate_lecture_cache()
+        load_lecture_cache()
+    yield
+    reset_kb_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -492,3 +516,17 @@ def test_concept_evidence_bundle_v2_legacy_adapter_roundtrip(app):
         assert roundtripped.support_score == legacy.support_score
         assert roundtripped.chunk_ids == legacy.chunk_ids
         assert roundtripped.gap_flags == legacy.gap_flags
+
+
+def test_compare_bias_variance_overfitting_emits_real_compare_layout(corpus, app):
+    """Regression: shared-core V1 fallback + audit must not collapse to compare clarification."""
+    with app.app_context():
+        pr = run_reasoning_pipeline(
+            "Compare bias and variance with respect to overfitting",
+            top_k=10,
+            user_mode="compare",
+        )
+    assert not pr.answer_plan.requires_clarification
+    low = pr.course_answer.lower()
+    assert "don't have enough clean lecture evidence to compare" not in low
+    assert "### contrast along course axes" in low or "in one line:" in low

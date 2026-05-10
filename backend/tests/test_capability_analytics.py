@@ -10,6 +10,7 @@ from app.eval.capability_analytics import (
     summarize_boost,
     summarize_capability,
     summarize_coverage,
+    summarize_coverage_phase_buckets,
     summarize_retrieval,
     summarize_structure,
     top_three_issues,
@@ -42,11 +43,19 @@ def _case(
     pass_bool: bool,
     actual_response: str = "Course Answer:\n\nThe key idea: softmax maps scores to probabilities.",
     must_include: list[str] | None = None,
+    coverage_concept: str | None = None,
     errors: list[str] | None = None,
     primary_error_type: str | None = None,
     chunk_ids: list[int] | None = None,
     boost_metrics: dict | None = None,
 ) -> EvaluationCaseResult:
+    beh: dict = {
+        "category": "definitions",
+        "intent": intent,
+        "must_include": must_include or ["softmax"],
+    }
+    if coverage_concept:
+        beh["coverage_concept"] = coverage_concept
     row = EvaluationCaseResult(
         evaluation_run_id=run.id,
         test_id=test_id,
@@ -54,13 +63,7 @@ def _case(
         expected_mode="chat",
         detected_mode="chat",
         effective_mode="chat",
-        expected_behavior_json=json.dumps(
-            {
-                "category": "definitions",
-                "intent": intent,
-                "must_include": must_include or ["softmax"],
-            }
-        ),
+        expected_behavior_json=json.dumps(beh),
         actual_response=actual_response,
         pass_bool=pass_bool,
         score=1.0 if pass_bool else 0.5,
@@ -213,3 +216,37 @@ def test_retrieval_structure_coverage_and_boost(app):
         assert "softmax" in summarize_coverage(cases)["under_tested_concepts"]
         assert summarize_boost(cases)["boost_added_value_rate"] == 1.0
         assert primary_error_type_for_row(cases[1]) == "missing_steps"
+
+
+def test_coverage_phase_buckets_failure_first(app):
+    with app.app_context():
+        run = _run()
+        for i in range(3):
+            _case(run, test_id=f"a{i}", intent="definition", pass_bool=False, must_include=["alpha"])
+        for i in range(5):
+            _case(run, test_id=f"b{i}", intent="definition", pass_bool=True, must_include=["beta"])
+        for i in range(2):
+            _case(run, test_id=f"bf{i}", intent="definition", pass_bool=False, must_include=["beta"])
+        cases = EvaluationCaseResult.query.filter_by(evaluation_run_id=run.id).all()
+        rows = summarize_coverage_phase_buckets(cases, min_cases=3, sort_mode="failure_first")
+        assert rows[0]["concept_label"] == "alpha"
+        assert rows[0]["failed"] == 3
+        assert rows[1]["concept_label"] == "beta"
+
+
+def test_case_concept_prefers_coverage_concept(app):
+    with app.app_context():
+        run = _run()
+        _case(
+            run,
+            test_id="x",
+            intent="definition",
+            pass_bool=True,
+            must_include=["softmax"],
+            coverage_concept="probe_z",
+        )
+        cases = EvaluationCaseResult.query.filter_by(evaluation_run_id=run.id).all()
+        rows = summarize_coverage_phase_buckets(cases, min_cases=1)
+        labels = {r["concept_label"] for r in rows}
+        assert "probe_z" in labels
+        assert "softmax" not in labels
