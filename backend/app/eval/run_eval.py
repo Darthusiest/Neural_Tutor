@@ -290,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
                     retrieval_chunk_ids_json=None,
                     boost_metrics_json=None,
                     latency_ms=None,
+                    assistant_message_id=None,
                 )
                 db.session.add(ecr)
                 db.session.commit()
@@ -369,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
                 retrieval_chunk_ids_json=json.dumps(one.get("chunk_ids") or []),
                 boost_metrics_json=json.dumps(boost_metrics) if boost_metrics is not None else None,
                 latency_ms=one.get("latency_ms"),
+                assistant_message_id=int(out["assistant_message_id"]),
             )
             db.session.add(ecr)
             db.session.flush()

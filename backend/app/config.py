@@ -77,10 +77,24 @@ def _resolve_frontend_origins(raw: str | None) -> list[str]:
     return out
 
 
+def _parse_admin_allowlist(raw: str | None) -> frozenset[str]:
+    """Comma-separated emails → lowercase set (for ``User.is_admin`` sync on register/login)."""
+    s = (raw or "").strip()
+    if not s:
+        return frozenset()
+    return frozenset(p.strip().lower() for p in s.split(",") if p.strip())
+
+
 class Config:
     SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _DEFAULT_SQLITE
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # SQLite file DB: allow the Gemini critic background thread to open connections (default driver is per-thread).
+    SQLALCHEMY_ENGINE_OPTIONS = (
+        {"connect_args": {"check_same_thread": False}}
+        if str(os.getenv("DATABASE_URL") or _DEFAULT_SQLITE).startswith("sqlite:")
+        else {}
+    )
 
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
@@ -154,6 +168,8 @@ class Config:
     EMAIL_VERIFICATION_REQUIRED = os.getenv("EMAIL_VERIFICATION_REQUIRED", "0") == "1"
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "8"))
     LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
+    # Comma-separated. Matched users get is_admin=True on register and on each successful login (and demoted if removed).
+    ADMIN_EMAILS: frozenset[str] = _parse_admin_allowlist(os.getenv("ADMIN_EMAILS"))
 
     # Production safety: never expose dev_reset_token in JSON unless explicitly allowed (dev/QA only).
     ALLOW_DEV_RESET_TOKEN_IN_JSON = os.getenv("ALLOW_DEV_RESET_TOKEN_IN_JSON", "0") == "1"
@@ -229,10 +245,38 @@ class Config:
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    # Default must match a model returned by ListModels with generateContent (1.5 IDs often 404 on new keys).
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     GEMINI_TIMEOUT_SEC = int(os.getenv("GEMINI_TIMEOUT_SEC", "60"))
     GEMINI_TEMPERATURE_BOOST = float(os.getenv("GEMINI_TEMPERATURE_BOOST", "0.4"))
     GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
+
+    # --- Gemini admin critic (LLM-as-judge on eval runs) ---
+    CRITIC_MODEL = os.getenv("CRITIC_MODEL", "gemini-2.5-flash")
+    CRITIC_TEMPERATURE = float(os.getenv("CRITIC_TEMPERATURE", "0.1"))
+    CRITIC_TIMEOUT_SEC = int(os.getenv("CRITIC_TIMEOUT_SEC", "60"))
+    CRITIC_MAX_OUTPUT_TOKENS = int(os.getenv("CRITIC_MAX_OUTPUT_TOKENS", "4096"))
+    CRITIC_USE_RESPONSE_SCHEMA = os.getenv("CRITIC_USE_RESPONSE_SCHEMA", "1") == "1"
+    # Cap stored chatbot answer length in the critic prompt (full eval payloads can exceed model context).
+    CRITIC_ANSWER_CHAR_CAP = int(os.getenv("CRITIC_ANSWER_CHAR_CAP", "14000"))
+    # Frozen prompt / schema version string stored on critic rows for auditability.
+    CRITIC_PROMPT_VERSION = os.getenv("CRITIC_PROMPT_VERSION", "v1")
+    CRITIC_PASS_THRESHOLD = float(os.getenv("CRITIC_PASS_THRESHOLD", "0.7"))
+    # Comma-separated effective modes scored by the Gemini critic when POST body omits ``modes``.
+    CRITIC_CASE_MODES = os.getenv("CRITIC_CASE_MODES", "chat,compare,summary")
+    # Optional safety cap on estimated prompt+output tokens per admin critic batch (0 = unlimited).
+    CRITIC_MAX_TOKENS_PER_BATCH = int(os.getenv("CRITIC_MAX_TOKENS_PER_BATCH", "0"))
+    # Transient HTTP (429/503/500): retries per generateContent call before trying the next MIME/schema attempt.
+    CRITIC_HTTP_MAX_RETRIES = int(os.getenv("CRITIC_HTTP_MAX_RETRIES", "8"))
+    CRITIC_HTTP_RETRY_BASE_SEC = float(os.getenv("CRITIC_HTTP_RETRY_BASE_SEC", "2"))
+    CRITIC_HTTP_RETRY_MAX_DELAY_SEC = float(os.getenv("CRITIC_HTTP_RETRY_MAX_DELAY_SEC", "120"))
+    # Pause between eval cases to stay under Gemini RPM / burst limits (0 = no pause).
+    CRITIC_INTER_CASE_DELAY_SEC = float(os.getenv("CRITIC_INTER_CASE_DELAY_SEC", "0.4"))
+    # Minimum seconds between each critic generateContent HTTP call (retries count). Use ~12+ on AI Studio
+    # free tier (~5 RPM) if billing is off; RPD caps still limit total calls per day across all Gemini usage.
+    CRITIC_MIN_INTERVAL_BETWEEN_REQUESTS_SEC = float(
+        os.getenv("CRITIC_MIN_INTERVAL_BETWEEN_REQUESTS_SEC", "0")
+    )
 
 
 class TestConfig(Config):
@@ -247,6 +291,7 @@ class TestConfig(Config):
     LLM_ANSWER_GENERATION = False
     GEMINI_API_KEY = ""
     GOOGLE_API_KEY = ""
+    CRITIC_MODEL = "gemini-2.5-flash"
     OPENAI_BOOST_FALLBACK = False
     BOOST_PRIMARY_PROVIDER = "openai"
     BOOST_FALLBACK_PROVIDER = "gemini"
@@ -260,3 +305,10 @@ class TestConfig(Config):
     EMAIL_VERIFICATION_REQUIRED = False
     ALLOW_DEV_RESET_TOKEN_IN_JSON = False
     PRODUCTION_LIKE = False
+    ADMIN_EMAILS: frozenset[str] = frozenset()
+    # Avoid long sleeps in critic HTTP tests when mocking 429.
+    CRITIC_HTTP_MAX_RETRIES = 0
+    CRITIC_INTER_CASE_DELAY_SEC = 0.0
+    CRITIC_MIN_INTERVAL_BETWEEN_REQUESTS_SEC = 0.0
+    CRITIC_CASE_MODES = "chat,compare,summary"
+    SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}

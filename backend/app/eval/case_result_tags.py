@@ -46,6 +46,19 @@ def case_raw_from_evaluation_row(row: EvaluationCaseResult) -> dict[str, Any]:
 
 def canonical_failure_tags_for_row(row: EvaluationCaseResult) -> list[str]:
     """Canonical tags for analytics/regression; empty when the suite marked the case as passing."""
+    # Critic chart rows (_CriticEvalRowProxy): pass_bool reflects the critic verdict, not the rule
+    # eval. Do not re-run chatbot failure heuristics here — that double-counts "shallow" etc.
+    if getattr(row, "is_critic_eval_overlay", False):
+        if row.pass_bool:
+            return []
+        try:
+            data = json.loads(row.error_categories_json or "[]")
+        except json.JSONDecodeError:
+            data = []
+        if not isinstance(data, list):
+            return []
+        return [str(x).strip() for x in data if str(x).strip()]
+
     if row.pass_bool:
         return []
     case_raw = case_raw_from_evaluation_row(row)

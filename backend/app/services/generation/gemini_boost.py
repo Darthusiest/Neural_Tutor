@@ -59,7 +59,7 @@ def generate_gemini_constrained_boost(
     if not api_key:
         return None, {}
 
-    model = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
+    model = current_app.config.get("GEMINI_MODEL", "gemini-2.5-flash")
     timeout = int(current_app.config.get("BOOST_TIMEOUT_SEC", 2))
     g_temp = float(current_app.config.get("GEMINI_TEMPERATURE_BOOST", 0.4))
     g_max_tokens = int(current_app.config.get("GEMINI_MAX_OUTPUT_TOKENS", 2048))
@@ -148,7 +148,7 @@ def generate_gemini_boosted_explanation(
     if not api_key:
         return None, {}
 
-    model = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
+    model = current_app.config.get("GEMINI_MODEL", "gemini-2.5-flash")
     timeout = int(current_app.config.get("GEMINI_TIMEOUT_SEC", 60))
     g_temp = float(current_app.config.get("GEMINI_TEMPERATURE_BOOST", 0.4))
     g_max_tokens = int(current_app.config.get("GEMINI_MAX_OUTPUT_TOKENS", 2048))

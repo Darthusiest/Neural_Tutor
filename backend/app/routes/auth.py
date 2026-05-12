@@ -66,6 +66,8 @@ def register():
 
     user = User(email=email)
     user.set_password(password)
+    admin_set = current_app.config.get("ADMIN_EMAILS", frozenset())
+    user.is_admin = bool(admin_set) and email in admin_set
     if not verify_required or not resend_ok:
         user.email_verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -161,6 +163,9 @@ def login():
 
     user.failed_login_attempts = 0
     user.locked_until = None
+    admin_set = current_app.config.get("ADMIN_EMAILS", frozenset())
+    if admin_set:
+        user.is_admin = email in admin_set
     try:
         db.session.commit()
     except SQLAlchemyError:

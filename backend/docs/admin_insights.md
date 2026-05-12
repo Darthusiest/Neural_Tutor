@@ -25,6 +25,10 @@ On **PostgreSQL**, use your SQL client, e.g. `psql` with the same `UPDATE` again
 | GET | `/api/admin/insights/tokens-by-day` | `days` (1–365, default 7) | Per **UTC calendar day**: **`response_variants`** count, estimated sum of primary+boost tokens (same rules as dashboard rollups), count of variants with nonzero usage. Oldest → newest. 60/min. |
 | GET | `/api/admin/insights/cost-summary` | `days` | Token totals vs optional **`LLM_MONTHLY_TOKEN_CAP`** / warn threshold; optional USD via **`LLM_COST_USD_PER_MTOKENS`**; spike note. 60/min. |
 | GET | `/api/admin/insights/content-quality` | `days` | Heuristic **weak chunks** (low-confidence hit counts) + thumbs-down count. 60/min. |
+| POST | `/api/admin/eval/runs/<id>/critic` | JSON `{ "force"?: bool, "modes"?: ["chat","compare","summary"] }` — **`modes`** optional (default from **`CRITIC_CASE_MODES`**). Subset batches write **`manifest.json`** next to charts; **`422`** if no cases match. | Run **Gemini critic** on in-scope cases; writes **`evaluation_critic_results`** and **`evaluation_outputs/critic/<batch>/`**. **6/min** (slow). |
+| GET | `/api/admin/eval/runs/<id>/critic` | — | Latest critic batch summary (`critic_pass_rate`, `critic_mean_score`, `artifact_urls`, …). **60/min**. |
+| GET | `/api/admin/eval/runs/<id>/critic/cases` | `group_by` (`query_type_v2` \| `category` \| `answer_mode`), optional `category` | Grouped + flat case list (chatbot vs critic, disagreement flag). **60/min**. |
+| GET | `/api/admin/eval/critic-image/<run_id>/<filename>` | `batch` (optional; defaults to latest critic batch) | Whitelisted PNG/CSV artifacts only. **120/min**. |
 
 All filters use **`created_at`** in **UTC** (naive timestamps stored as UTC in typical setups).
 

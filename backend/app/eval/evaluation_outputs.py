@@ -1603,27 +1603,35 @@ def _resolve_previous_run(
 
 
 def generate_evaluation_outputs(
-    cases: list[EvaluationCaseResult],
+    cases: list[Any],
     out_dir: Path,
     current_run: EvaluationRun | None = None,
+    *,
+    include_regression: bool = True,
+    summary_run: Any | None = None,
 ) -> None:
     """Generate all evaluation artifacts; chart failures never crash the run.
 
     ``current_run`` is optional purely for backwards compatibility with
-    older callers (and the existing test suite). When provided, the
-    summary scorecard and (if a prior run exists on the same dataset) the
-    regression-comparison chart are written too.
+    older callers (and the existing test suite). When provided with
+    ``include_regression=True`` (default), a regression-comparison chart is
+    written when a prior run exists on the same dataset.
+
+    ``summary_run`` overrides the object used for ``evaluation_summary.png``
+    (defaults to ``current_run``). Use a :class:`types.SimpleNamespace` with
+    ``dataset_name`` and ``overall_score`` for critic-only summaries.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     prev_pair: tuple[EvaluationRun, list[EvaluationCaseResult]] | None = None
     regression_meaningful = False
-    if current_run is not None:
+    if current_run is not None and include_regression:
         prev_pair = _resolve_previous_run(current_run)
         if prev_pair is not None:
             prev_run, prev_cases = prev_pair
             metrics = _regression_metrics(prev_run, prev_cases, current_run, cases)
             regression_meaningful = _regression_has_movement(metrics)
     health = _dataset_health(cases, regression_meaningful=regression_meaningful)
+    summary_source = summary_run if summary_run is not None else current_run
 
     generators: list[tuple[str, Any]] = [
         ("retrieval_accuracy.png", lambda: write_retrieval_accuracy_chart(cases, out_dir)),
@@ -1635,23 +1643,25 @@ def generate_evaluation_outputs(
         ("example_answers.csv", lambda: write_example_answers_csv(cases, out_dir)),
         ("error_analysis.csv", lambda: write_error_analysis_csv(cases, out_dir)),
     ]
-    if current_run is not None:
+    if summary_source is not None:
         generators.append(
             (
                 "evaluation_summary.png",
-                lambda: write_evaluation_summary_chart(current_run, cases, out_dir, health=health),
+                lambda: write_evaluation_summary_chart(
+                    summary_source, cases, out_dir, health=health
+                ),
             )
         )
-        if prev_pair is not None:
-            prev_run, prev_cases = prev_pair
-            generators.append(
-                (
-                    "regression_comparison.png",
-                    lambda: write_regression_comparison_chart(
-                        prev_run, prev_cases, current_run, cases, out_dir
-                    ),
-                )
+    if include_regression and prev_pair is not None:
+        prev_run, prev_cases = prev_pair
+        generators.append(
+            (
+                "regression_comparison.png",
+                lambda: write_regression_comparison_chart(
+                    prev_run, prev_cases, current_run, cases, out_dir
+                ),
             )
+        )
 
     for name, fn in generators:
         try:

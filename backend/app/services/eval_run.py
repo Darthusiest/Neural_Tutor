@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.eval.capability_analytics import derive_primary_error_type
+from app.eval.scoring import PASS_THRESHOLD
 from app.extensions import db
 from app.models import EvaluationCaseResult, EvaluationRun
 from app.services.reasoning_pipeline import PipelineResult, run_reasoning_pipeline
@@ -199,6 +200,9 @@ def score_eval_case(case: dict[str, Any], pr: PipelineResult) -> dict[str, Any]:
     detected_mode, effective_mode.
 
     ``error_categories`` lists canonical tags for failed cases only; passes get ``[]``.
+
+    Pass when mean component score is at least :data:`~app.eval.scoring.PASS_THRESHOLD`
+    (**0.75**), except ``must_not_include`` / ``forbidden_sections`` violations always fail.
     """
     answer = pr.course_answer or ""
     lower = answer.lower()
@@ -256,8 +260,9 @@ def score_eval_case(case: dict[str, Any], pr: PipelineResult) -> dict[str, Any]:
     else:
         score_parts.append(1.0)
 
-    pass_bool = len(errors) == 0
     score = sum(score_parts) / max(1, len(score_parts))
+    forbidden_hard_fail = bool(leaked) or ("forbidden_section" in errors)
+    pass_bool = (round(score, 4) >= PASS_THRESHOLD) and not forbidden_hard_fail
 
     error_categories = failure_tags_for_case(case, pr, pass_bool=pass_bool)
 

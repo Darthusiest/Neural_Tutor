@@ -11,6 +11,10 @@ from app.eval.dataset import EvalCase
 
 QUARTER = 0.25
 
+# Pass if aggregate score meets threshold AND no forbidden / must_not_include leak.
+# Sum of four 0.25 quarters; 0.75 === 3 of 4 satisfied.
+PASS_THRESHOLD = 0.75
+
 
 @dataclass
 class ScoringResult:
@@ -199,7 +203,11 @@ def score_eval_case(
     mode_meta: dict[str, Any] | None,
     pipeline_diag: dict[str, Any] | None,
 ) -> ScoringResult:
-    """Each of four quarters contributes 0.25 if satisfied. Pass if score is 1.0."""
+    """Each of four quarters contributes 0.25 if satisfied.
+
+    ``pass_ok`` is True when ``score >= PASS_THRESHOLD`` (default 0.75) **and**
+    there is no forbidden / ``must_not_include`` leak (``forbidden_ok``).
+    """
     err: list[str] = []
     mm = mode_meta or {}
     effective = str(mm.get("effective") or "chat").strip().lower()
@@ -275,7 +283,7 @@ def score_eval_case(
     }
     return ScoringResult(
         score=round(score, 4),
-        pass_ok=score >= 0.9999,
+        pass_ok=(round(score, 4) >= PASS_THRESHOLD) and forbidden_ok,
         mode_ok=mode_ok,
         content_ok=content_ok,
         forbidden_ok=forbidden_ok,

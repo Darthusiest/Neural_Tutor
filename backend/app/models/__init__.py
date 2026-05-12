@@ -7,7 +7,7 @@ Layout by domain:
 - **Course content:** :class:`LectureChunk`
 - **Analytics / pipeline (per assistant turn):** :class:`RetrievalLog`, :class:`RetrievalChunkHit`,
   :class:`ResponseVariant`, :class:`Feedback`, :class:`MessageOutcome`
-- **Batch eval (suites / regression):** :class:`EvaluationRun`, :class:`EvaluationCaseResult`
+- **Batch eval (suites / regression):** :class:`EvaluationRun`, :class:`EvaluationCaseResult`, :class:`EvaluationCriticResult`
 - **Security event log (DB table ``audit_events``):** :class:`SecurityLogEntry` in :mod:`app.models.security_log`
 
 ``__all__`` lists symbols intended for external imports; keep it in sync when adding models.
@@ -20,7 +20,7 @@ from app.models.analytics import (
     RetrievalChunkHit,
     RetrievalLog,
 )
-from app.models.evaluation import EvaluationCaseResult, EvaluationRun
+from app.models.evaluation import EvaluationCaseResult, EvaluationCriticResult, EvaluationRun
 from app.models.security_log import SecurityLogEntry
 from app.models.chat import ChatSession, Message
 from app.models.content import LectureChunk
@@ -47,6 +47,7 @@ __all__ = [
     # batch evaluation
     "EvaluationRun",
     "EvaluationCaseResult",
+    "EvaluationCriticResult",
     # security event log (audit_events table)
     "SecurityLogEntry",
 ]

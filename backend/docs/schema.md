@@ -277,5 +277,30 @@ Per test case in a run. ORM: [`EvaluationCaseResult`](../app/models/evaluation.p
 | validation_failures_json | Text nullable | `ValidationResult` dict or subset |
 | retrieval_chunk_ids_json | Text nullable | JSON list of chunk ids |
 | boost_metrics_json | Text nullable | Paired boost A/B metrics from `python -m app.eval.run_eval --paired-boost` (`score_without_boost`, `score_with_boost`, boost latency, trigger/improvement booleans). |
+| assistant_message_id | Integer FK → messages.id SET NULL nullable, indexed | Assistant turn used for this eval case; ``payload_json`` holds chunks and pipeline context for Gemini critic. Populated by `python -m app.eval.run_eval` (not by every eval path). |
 | latency_ms | Integer nullable | |
+| created_at | DateTime | server default now |
+
+## evaluation_critic_results
+
+Per-case **Gemini critic** verdict for an admin-triggered batch on an existing :class:`EvaluationRun`. ORM: [`EvaluationCriticResult`](../app/models/evaluation.py). Unique on ``(critic_batch_id, case_result_id)``.
+
+| Column | Type | Notes |
+|--------|------|--------|
+| id | Integer PK | |
+| evaluation_run_id | FK → evaluation_runs.id CASCADE | |
+| case_result_id | FK → evaluation_case_results.id CASCADE | |
+| critic_batch_id | String(64), indexed | One id per admin click / batch run |
+| critic_score | Float nullable | 0..1 |
+| critic_pass | Boolean | |
+| dimension_scores_json | Text nullable | JSON map of rubric dimension scores |
+| error_categories_json | Text nullable | JSON list (critic labels) |
+| rationale_text | Text nullable | Free-text from the model |
+| category | String(128) nullable, indexed | Copy from suite for filtering |
+| query_type_v2 | String(64) nullable, indexed | Pipeline answer intent when known |
+| answer_mode | String(64) nullable, indexed | Plan answer_mode when known |
+| model_name | String(128) nullable | |
+| latency_ms | Integer nullable | |
+| tokens_estimated | Integer nullable | |
+| critic_prompt_version | String(32) nullable | Frozen rubric version |
 | created_at | DateTime | server default now |

@@ -23,6 +23,7 @@ PRIMARY_ERROR_TYPES = frozenset(
         "shallow_explanation",
         "hallucination",
         "template_misuse",
+        "critic_pipeline_error",
     }
 )
 

@@ -33,6 +33,12 @@ class EvaluationRun(db.Model):
         lazy="dynamic",
         cascade="all, delete-orphan",
     )
+    critic_results = db.relationship(
+        "EvaluationCriticResult",
+        backref="run",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
 
 
 class EvaluationCaseResult(db.Model):
@@ -63,8 +69,69 @@ class EvaluationCaseResult(db.Model):
     retrieval_chunk_ids_json = db.Column(db.Text, nullable=True)
     boost_metrics_json = db.Column(db.Text, nullable=True)
     latency_ms = db.Column(db.Integer, nullable=True)
+    # Assistant turn whose ``payload_json`` reproduces retrieval chunks and pipeline context for critic.
+    assistant_message_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    critic_rows = db.relationship(
+        "EvaluationCriticResult",
+        backref="case_result",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         db.UniqueConstraint("evaluation_run_id", "test_id", name="uq_eval_run_test_id"),
+    )
+
+
+class EvaluationCriticResult(db.Model):
+    """Gemini critic verdict for one eval case (one batch groups rows via ``critic_batch_id``)."""
+
+    __tablename__ = "evaluation_critic_results"
+
+    id = db.Column(db.Integer, primary_key=True)
+    evaluation_run_id = db.Column(
+        db.Integer,
+        db.ForeignKey("evaluation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_result_id = db.Column(
+        db.Integer,
+        db.ForeignKey("evaluation_case_results.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    critic_batch_id = db.Column(db.String(64), nullable=False, index=True)
+
+    critic_score = db.Column(db.Float, nullable=True)
+    critic_pass = db.Column(db.Boolean, nullable=False, default=False)
+
+    dimension_scores_json = db.Column(db.Text, nullable=True)
+    error_categories_json = db.Column(db.Text, nullable=True)
+    rationale_text = db.Column(db.Text, nullable=True)
+
+    category = db.Column(db.String(128), nullable=True, index=True)
+    query_type_v2 = db.Column(db.String(64), nullable=True, index=True)
+    answer_mode = db.Column(db.String(64), nullable=True, index=True)
+
+    model_name = db.Column(db.String(128), nullable=True)
+    latency_ms = db.Column(db.Integer, nullable=True)
+    tokens_estimated = db.Column(db.Integer, nullable=True)
+    critic_prompt_version = db.Column(db.String(32), nullable=True)
+
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "critic_batch_id",
+            "case_result_id",
+            name="uq_critic_batch_case",
+        ),
     )

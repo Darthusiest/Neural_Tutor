@@ -47,6 +47,24 @@ def test_canonical_tags_empty_when_passed(app):
         assert canonical_failure_tags_for_row(row) == []
 
 
+def test_canonical_tags_critic_overlay_uses_stored_categories_only():
+    class _Overlay:
+        is_critic_eval_overlay = True
+        pass_bool = False
+        error_categories_json = json.dumps(["http_429"])
+
+    assert canonical_failure_tags_for_row(_Overlay()) == ["http_429"]
+
+
+def test_canonical_tags_critic_overlay_empty_when_critic_passed():
+    class _Overlay:
+        is_critic_eval_overlay = True
+        pass_bool = True
+        error_categories_json = json.dumps(["ignored"])
+
+    assert canonical_failure_tags_for_row(_Overlay()) == []
+
+
 def test_case_raw_merges_expected_behavior(app):
     with app.app_context():
         r = EvaluationRun(
