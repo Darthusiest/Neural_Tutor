@@ -10,7 +10,19 @@ import pytest
 
 from app import create_app
 from app.config import TestConfig
+from app.services.critic import gemini_critic as gemini_critic_mod
 from app.services.critic.gemini_critic import run_gemini_critic
+
+
+def test_critic_rubric_v2_guard_strings():
+    """Rubric text must keep generous calibration + suite nonsense carve-out (regression guard)."""
+    for blob in (gemini_critic_mod._CRITIC_RUBRIC_SCHEMA, gemini_critic_mod._CRITIC_RUBRIC_V1):
+        low = blob.lower()
+        assert "score generously" in low
+        assert "error_tags" in low
+        assert "nonsense" in low
+        assert "off_topic" in low
+        assert "adversarial" in low
 
 
 def _gemini_response_payload(text: str) -> dict:

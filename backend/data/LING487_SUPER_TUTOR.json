@@ -8,8 +8,10 @@
       "sections": [
         {
           "heading": "Core Idea",
+          "keywords": ["weights", "biases", "neural", "network", "parameters"],
           "content": [
             "Neural networks are systems of weights that learn patterns from data.",
+            "Biases shift neuron outputs so the network can represent richer functions alongside weights.",
             "Each weight controls how important an input is and how strongly it influences the output.",
             "Instead of storing rules explicitly, neural networks store knowledge implicitly in these weights."
           ]
@@ -23,11 +25,13 @@
         },
         {
           "heading": "Key Concepts",
+          "keywords": ["weights", "biases", "forward", "backward", "sgd"],
           "content": [
             "Forward pass: compute output by combining inputs with weights.",
             "Backward pass: compute error and determine how each weight contributed to that error.",
+            "A loss function measures how far predictions are from the targets you wanted.",
             "Update weights with SGD: slightly adjust weights to reduce error.",
-            "Important clarification: learning is gradual—small updates over many examples lead to strong performance."
+            "Learning is gradual: small updates over many examples accumulate into strong performance."
           ]
         }
       ]
@@ -94,22 +98,32 @@
         {
           "heading": "Core Idea",
           "content": [
-            "Dynamic Programming (DP) considers future outcomes when making decisions.",
-            "It solves problems by breaking them into smaller subproblems."
+            "Dynamic programming solves problems by reusing solutions to subproblems.",
+            "It is useful when many paths share the same subpath.",
+            "Instead of recalculating the same subpath many times, dynamic programming calculates it once.",
+            "The course example uses paths through states with different costs."
           ]
         },
         {
-          "heading": "Analogy",
+          "heading": "Greedy and Exhaustive Search",
           "content": [
-            "Choosing a route based on future traffic, not just the shortest current road.",
-            "Like playing chess—good players think several moves ahead."
+            "A greedy algorithm chooses the best local option at each step.",
+            "Greedy can work for some problems, but it is not guaranteed to find the global best path.",
+            "Greedy fails when an early cheap-looking decision leads to expensive later consequences.",
+            "Exhaustive search checks every possible path.",
+            "Exhaustive search can find the best answer but becomes inefficient when there are many paths.",
+            "Dynamic programming keeps the optimality of exhaustive search while avoiding repeated work."
           ]
         },
         {
-          "heading": "Clarification",
+          "heading": "How Dynamic Programming Works",
           "content": [
-            "DP stores intermediate results (values) to avoid recomputing.",
-            "This makes it efficient compared to brute-force search."
+            "It works backward from later states to earlier states.",
+            "At each step, it stores the best known cost from that state onward.",
+            "The decision rule is current cost plus the stored value of the next state.",
+            "The key idea is that subpaths are calculated once and reused.",
+            "In speech, dynamic programming can model sequential choices over states.",
+            "In learning, the same reuse idea appears when later gradient information informs updates to earlier layers."
           ]
         }
       ]
@@ -147,23 +161,32 @@
       "title": "NN Applications",
       "sections": [
         {
-          "heading": "Softmax Classifier",
+          "heading": "Classification",
           "content": [
-            "Outputs probabilities across categories.",
-            "Ensures outputs sum to 1, making them interpretable as probabilities."
+            "Classification means assigning an input to one of several categories.",
+            "Neural networks can be used for classification by producing output scores for categories.",
+            "Softmax converts those output scores into probabilities.",
+            "This lets the system express confidence instead of only making a hard choice."
           ]
         },
         {
           "heading": "Autoencoder",
           "content": [
-            "Compresses and reconstructs input.",
-            "Example: compressing an image into a small code, then reconstructing it."
+            "Autoencoders learn to compress and reconstruct data.",
+            "An autoencoder has an encoder, a bottleneck representation, and a decoder.",
+            "The bottleneck forces the system to represent the input compactly.",
+            "If reconstruction succeeds, the bottleneck has captured useful structure."
           ]
         },
         {
-          "heading": "Clarification",
+          "heading": "Tasks and Representations",
           "content": [
-            "Autoencoders learn important features by forcing compression."
+            "Classification and autoencoding are different learning tasks.",
+            "Classification predicts a label.",
+            "An autoencoder reconstructs the input; autoencoder models emphasize reconstruction.",
+            "Autoencoding reconstructs the input.",
+            "Both tasks use neural networks to learn useful representations.",
+            "In speech, representations help convert complex acoustic input into forms useful for later processing."
           ]
         }
       ]
@@ -174,7 +197,9 @@
       "sections": [
         {
           "heading": "Spectra",
+          "keywords": ["spectrum", "spectra", "spectral", "frequency"],
           "content": [
+            "A spectrum plots frequency content for a slice of sound; the notes often say spectra when summarizing many frames.",
             "Captures sound shape through averaging patterns across segments of a waveform.",
             "It extracts the 'essence' of sound."
           ]
@@ -265,22 +290,32 @@
         {
           "heading": "Bias",
           "content": [
-            "Too simple → underfitting.",
-            "Fails to capture patterns in data."
+            "Bias and variance are two different ways learning can go wrong.",
+            "Bias means the model is too inflexible to learn the real pattern.",
+            "A high-bias model makes systematic errors.",
+            "The course analogy is studying only multiple-choice questions when the exam is essay-based."
           ]
         },
         {
-          "heading": "Variance",
+          "heading": "Variance and Overfitting",
           "content": [
-            "Too complex → overfitting.",
-            "Memorizes noise instead of learning general patterns."
+            "Variance means the model memorizes one version of the data instead of learning the general pattern.",
+            "A high-variance model can do well on training data but poorly on new test data.",
+            "The course analogy is memorizing one practice exam instead of understanding the material.",
+            "Overfitting is closely tied to high variance.",
+            "A model overfits when it learns details of the training set that do not generalize.",
+            "Low variance often comes from simpler, more restricted models.",
+            "But very simple models may have high bias.",
+            "The goal is to reduce both bias and variance as much as possible."
           ]
         },
         {
-          "heading": "Analogy",
+          "heading": "Train and Test Split",
           "content": [
-            "Bias = studying only definitions.",
-            "Variance = memorizing answers without understanding."
+            "Train/test split helps diagnose the problem.",
+            "Training data is used to learn weights.",
+            "Test data is held out to see whether the learned weights generalize.",
+            "If training loss is low but test loss is high, that suggests overfitting or high variance."
           ]
         }
       ]
@@ -291,22 +326,33 @@
       "sections": [
         {
           "heading": "Core Idea",
+          "keywords": ["softmax", "probability", "logits", "distribution", "temperature"],
           "content": [
-            "Softmax converts outputs into probabilities.",
-            "It transforms arbitrary scores into a distribution."
+            "Softmax converts neural network logits into a probability distribution.",
+            "Logits are raw model output scores before probability normalization.",
+            "Winner-take-all simply picks the largest score.",
+            "The course also calls this hardmax when contrasting it with softmax.",
+            "The problem with winner-take-all is that it throws away information about other plausible choices.",
+            "Softmax preserves relative confidence across choices.",
+            "For example, scores [8, 10] both matter, even though 10 is larger.",
+            "Softmax exponentiates each score and divides by the sum of all exponentiated scores.",
+            "The outputs are positive and sum to 1.",
+            "This makes them interpretable as probabilities."
           ]
         },
         {
-          "heading": "Insight",
+          "heading": "Temperature",
           "content": [
-            "Represents uncertainty instead of hard decisions."
+            "Temperature controls how sharp or smooth the softmax distribution is.",
+            "Lower temperature makes the largest option dominate more strongly.",
+            "Higher temperature spreads probability more evenly."
           ]
         },
         {
-          "heading": "Example",
+          "heading": "Use in Models",
           "content": [
-            "[2,5] → softmax → [0.12, 0.88] (approx).",
-            "This shows confidence rather than a binary choice."
+            "Softmax is used at the final prediction stage of classification and language modeling.",
+            "In an LLM, the final logits are converted into probabilities over possible next tokens."
           ]
         }
       ]
@@ -318,20 +364,28 @@
         {
           "heading": "Core Idea",
           "content": [
-            "LLMs learn by predicting the next token in a sequence.",
-            "This is called autoregressive learning."
+            "A large language model is a neural sequence model trained on text so it performs next-token prediction at scale.",
+            "The course introduces LLMs through a simplified character-level language model.",
+            "The model learns from sequences such as Shakespeare text.",
+            "Each letter begins as a random vector.",
+            "The training task is next-letter prediction.",
+            "The model sees previous letters and learns to predict the next one.",
+            "Inference means using the trained model to generate new text one step at a time.",
+            "Training updates learned parameters; inference applies fixed parameters.",
+            "The model learns phonotactic patterns such as which sounds or letters tend to follow others.",
+            "A key course example is that consonants and vowels often alternate, with exceptions."
           ]
         },
         {
-          "heading": "Applications",
+          "heading": "Attention and Prediction",
+          "keywords": ["attention", "encoder", "softmax", "sequence"],
           "content": [
-            "ASR, TTS, summarization, dialogue"
-          ]
-        },
-        {
-          "heading": "Clarification",
-          "content": [
-            "Even complex tasks reduce to prediction at their core."
+            "Attention creates contextual representations by mixing information across positions.",
+            "At each encoder layer, a vector becomes a weighted combination of vectors from the previous layer.",
+            "Those normalized similarity scores are the attention weights.",
+            "Q, K, and V matrices are learned transformations used inside attention.",
+            "The model can process all positions in a sequence using matrix operations.",
+            "The final prediction comes from the last representation and a softmax output."
           ]
         }
       ]
@@ -343,9 +397,10 @@
         {
           "heading": "QKV",
           "content": [
-            "Query = what I need",
-            "Key = what I have",
-            "Value = what I give"
+            "Query vectors encode what information an attention position wants to gather from other positions.",
+            "Key vectors encode what each position advertises when matching queries.",
+            "Output vectors are formed by blending projected representations using softmax-normalized weights.",
+            "Informally: Query is what I am looking for; Key is how candidates describe themselves; Value is what I receive after weighting."
           ]
         },
         {
@@ -368,21 +423,33 @@
       "title": "Transformer Architecture",
       "sections": [
         {
+          "heading": "Sequence Processing",
+          "content": [
+            "An LLM processes a sequence by turning each input symbol into a vector.",
+            "Each layer updates every vector using information from the surrounding context."
+          ]
+        },
+        {
           "heading": "Multi-head Attention",
           "content": [
-            "Different heads capture different relationships (syntax, semantics, etc.)."
+            "Attention means each output vector becomes a weighted combination of value vectors.",
+            "The attention weights come from comparing query vectors with key vectors.",
+            "Each attention head has three learned matrices: WQ, WK, and WV.",
+            "WQ creates query vectors, WK creates key vectors, and WV creates value vectors.",
+            "Within one head, the model computes inner products between q and k vectors to decide which positions matter.",
+            "The attention output of one head is smaller, such as a 64-dimensional vector.",
+            "Many heads run in parallel so the model can capture different relationships at once.",
+            "The outputs of heads are concatenated back into a larger vector, such as 1024 dimensions."
           ]
         },
         {
-          "heading": "Feedforward",
+          "heading": "Feedforward and Depth",
           "content": [
-            "Expands → processes → compresses representations."
-          ]
-        },
-        {
-          "heading": "Clarification",
-          "content": [
-            "Transformers stack many layers to refine representations."
+            "After attention, feedforward networks process each vector independently.",
+            "The feedforward block expands the vector into a larger space and projects it back down.",
+            "A transformer layer is therefore attention plus feedforward processing.",
+            "Stacking layers lets information flow across positions and become more contextual.",
+            "At the end, the language model head predicts the next symbol using softmax."
           ]
         }
       ]
@@ -393,16 +460,29 @@
       "sections": [
         {
           "heading": "CNN",
+          "keywords": ["convolution", "cnn", "convolutional", "waveform", "speech"],
           "content": [
-            "Processes speech at multiple time scales.",
-            "Extracts local patterns first, then global patterns."
+            "A convolutional neural network (CNN) acts as speech preprocessing before the larger sequence model.",
+            "Speech begins as thousands of waveform samples at a very fine time scale.",
+            "The CNN converts very fine samples into coarser vectors, such as one 1024-vector every 30 ms.",
+            "This makes the CNN a multi-time-scale ladder.",
+            "Early CNN layers capture very local patterns over tiny windows of samples.",
+            "Later CNN layers combine those local patterns into broader speech representations.",
+            "Layer 1 can pair neighboring samples and produce vector representations for each pair.",
+            "Layer 2 can combine several previous vectors at a time to represent a longer time span.",
+            "After multiple layers, the system has fewer vectors, but each vector represents more context.",
+            "This is useful because later layers of the sequence model do not operate directly on raw waveform samples.",
+            "CNNs help bridge the gap between raw audio and vector representations used by the model."
           ]
         },
         {
           "heading": "Residuals",
           "content": [
-            "Preserve information across layers.",
-            "Help prevent vanishing gradients."
+            "Residual processing protects information as it moves through deep models.",
+            "Without residuals, repeated processing can make vectors lose their original identity.",
+            "A residual connection adds the input vector to the processed output.",
+            "If a layer receives x and produces y, the next layer receives x + y.",
+            "The key idea is that residuals let the model change a vector while still preserving part of the original."
           ]
         }
       ]
@@ -414,19 +494,32 @@
         {
           "heading": "Layer Norm",
           "content": [
-            "Stabilizes training by normalizing inputs."
+            "Layer normalization keeps vector values in a comparable numerical range.",
+            "The first stage of layer normalization uses no learned parameters.",
+            "For each vector, the model calculates the mean of its entries.",
+            "It subtracts that mean from each entry.",
+            "It then divides by the vector's magnitude or scale.",
+            "This prevents one vector from having values that are too large or too small compared with others.",
+            "The second stage of layer normalization uses learned parameters.",
+            "Each dimension gets a learned scale parameter gamma.",
+            "Each dimension also gets a learned shift parameter beta.",
+            "The normalized value is then scaled and shifted.",
+            "This lets the model normalize values while still learning useful dimension-specific adjustments."
           ]
         },
         {
           "heading": "Dropout",
           "content": [
-            "Prevents overfitting by randomly removing neurons."
+            "Dropout is a regularization method meant to stop only some weights from doing all the learning.",
+            "The motivation is that neural networks can become too dependent on particular weights or pathways.",
+            "Dropout forces the model to distribute learning more broadly."
           ]
         },
         {
           "heading": "Positional Encoding",
           "content": [
-            "Adds order information to sequences."
+            "Positional encoding gives the model information about order.",
+            "This matters because attention alone compares vectors but does not automatically know their sequence position."
           ]
         }
       ]
@@ -436,10 +529,25 @@
       "title": "LLM Continuation",
       "sections": [
         {
-          "heading": "Focus",
+          "heading": "Representations Across Layers",
           "content": [
-            "Continuation of LLM architecture and modeling concepts.",
-            "Focuses on refining representations and scaling models."
+            "LLMs build representations layer by layer.",
+            "Each layer transforms the vectors from the previous layer.",
+            "The representation of a token is not fixed; it changes as context is added.",
+            "A token vector becomes more contextual as it passes through attention layers.",
+            "Attention lets information flow between positions in the sequence.",
+            "Feedforward layers further transform each position after attention."
+          ]
+        },
+        {
+          "heading": "Prediction and Training",
+          "content": [
+            "The final vector carries information from earlier positions.",
+            "The model uses the final representation to predict the next token or symbol.",
+            "This prediction is made through logits followed by softmax.",
+            "Training improves the weights so these next-symbol predictions become more accurate.",
+            "The important idea is that LLMs learn by repeatedly predicting the next item from context.",
+            "Representations are useful because they compress contextual information into vectors."
           ]
         }
       ]
@@ -451,26 +559,32 @@
         {
           "heading": "Vector Quantization",
           "content": [
-            "Maps continuous vectors to discrete categories.",
-            "Example: reducing millions of colors to a small set."
+            "Vector quantization converts continuous vectors into discrete categories.",
+            "The motivation is that real-valued vectors can represent infinitely many possibilities.",
+            "The course intuition is that cognition often works with a finite number of useful categories.",
+            "In speech, there are limited phonemes, speaker categories, and perceptual states.",
+            "VQ replaces a vector with the nearest representative vector from a codebook.",
+            "A codebook is a set of representative centers.",
+            "This saves space but creates reconstruction error.",
+            "That error is called a residual."
           ]
         },
         {
           "heading": "Residual VQ",
           "content": [
-            "Encodes leftover error step-by-step."
+            "Residual vector quantization repeatedly quantizes the remaining error.",
+            "First, the original vector is approximated by a codebook entry.",
+            "Then the residual is computed.",
+            "A second codebook approximates that residual.",
+            "This can continue for multiple codebooks.",
+            "Mimi uses RVQ-style coding to compress speech into discrete codes."
           ]
         },
         {
           "heading": "Distillation",
           "content": [
-            "Teacher model trains smaller student model."
-          ]
-        },
-        {
-          "heading": "Diffusion",
-          "content": [
-            "Learn to reverse noise into structure."
+            "Knowledge distillation transfers behavior from a large teacher model to a smaller student model.",
+            "The goal of distillation is cheaper deployment while preserving useful task behavior."
           ]
         }
       ]
@@ -480,27 +594,29 @@
       "title": "Generative AI and Structure",
       "sections": [
         {
-          "heading": "Core Idea",
+          "heading": "Structure in Data",
           "content": [
-            "Generative models learn probability distributions."
+            "Generative AI aims to produce new examples that resemble the structure of training data.",
+            "Correlation means predictable dependence between parts of the data; structure is closely tied to correlation.",
+            "The model is not supposed to simply memorize examples.",
+            "Instead, it learns regularities or correlations in the data.",
+            "Structure means that parts of the data are not independent.",
+            "In images, nearby pixels are related; in speech, nearby time samples are related.",
+            "In language, words and sounds depend on surrounding context.",
+            "The key idea is that generation depends on learning patterns, not copying single examples."
           ]
         },
         {
-          "heading": "Analogy",
+          "heading": "Diffusion",
           "content": [
-            "Learning what makes a face, then generating a new one."
-          ]
-        },
-        {
-          "heading": "Correlation",
-          "content": [
-            "Real data has structure (not random)."
-          ]
-        },
-        {
-          "heading": "Insight",
-          "content": [
-            "Models succeed by learning structure, not memorizing."
+            "Diffusion models learn structure by adding noise and learning to remove it.",
+            "The forward process corrupts real data with noise.",
+            "The reverse process learns how to move from noisy data back toward structured data.",
+            "This teaches the model what real data tends to look or sound like.",
+            "For speech, diffusion must respect temporal structure.",
+            "For multimodal data, the model may learn relationships between text, audio, and visual signals.",
+            "Noise is useful because it creates a learning problem: recover structure from corruption.",
+            "A good explanation should avoid saying diffusion uses GAN-style negative examples."
           ]
         }
       ]

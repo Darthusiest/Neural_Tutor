@@ -692,6 +692,25 @@ _PROCESS_STEP_VERB_RE = re.compile(
 )
 
 
+_HARDMAX_PEER_RE = re.compile(r"\bhard-?max\b", re.IGNORECASE)
+
+
+def _strip_hardmax_peer_sentences(text: str) -> str:
+    """Remove sentences naming hardmax/hard-max from softmax-only tutor copy."""
+    body = (text or "").strip()
+    if not body or not _HARDMAX_PEER_RE.search(body):
+        return body
+    from app.services.answers import answer_generation as ag
+
+    kept: list[str] = []
+    for sent in ag._SENTENCE_SPLIT_PATTERN.split(body):
+        piece = sent.strip()
+        if not piece or _HARDMAX_PEER_RE.search(piece):
+            continue
+        kept.append(piece)
+    return " ".join(kept).strip()
+
+
 QueryTypeLabel = Literal[
     "definition",
     "mechanism",
@@ -939,7 +958,13 @@ def compose_concept_answer(
 
     raw_direct_answer, _skip = ag._direct_answer_and_skip(plan, primary)
     concept_label = ag._primary_concept_label(plan, primary, structured_query)
-    uf = ag._user_forbidden_set(structured_query)
+    uf = set(ag._user_forbidden_set(structured_query))
+    if constraints is not None and constraints.forbidden_terms:
+        uf.update(
+            t.strip().lower()
+            for t in constraints.forbidden_terms
+            if t and str(t).strip()
+        )
     if constraints is not None and raw_direct_answer and not constraints.is_relational:
         if constraints.target_aliases and not line_has_target(raw_direct_answer, constraints):
             raw_direct_answer = ""
@@ -1021,7 +1046,7 @@ def compose_concept_answer(
     explanation_para = ""
     numbered_steps: list[str] | None = None
     explanation_segment_norms: set[str] = set()
-    if query_type == "mechanism":
+    if query_type in {"mechanism"}:
         explanation_para, explanation_segment_norms = _build_coherent_explanation_paragraph(
             buckets,
             ordered,
@@ -1087,12 +1112,30 @@ def compose_concept_answer(
             example_text = ""
         if example_text:
             example_text = _drop_duplicate_example_sentences(example_text, opening_para, ag)
+        if example_text and constraints is not None and not constraints.is_relational:
+            if constraints.target_concepts == ["softmax"]:
+                example_text = _strip_hardmax_peer_sentences(example_text)
         if example_text:
             example_block_lines = ag._format_example_block(example_text)
 
     paragraphs = ag._dedupe_paragraphs([p for p in paragraphs if p])
+    if (
+        constraints is not None
+        and not constraints.is_relational
+        and constraints.target_concepts == ["softmax"]
+        and len(paragraphs) > 1
+    ):
+        paragraphs = [paragraphs[0]] + [
+            _strip_hardmax_peer_sentences(p) for p in paragraphs[1:]
+        ]
+        paragraphs = [p for p in paragraphs if (p or "").strip()]
     if uf:
         paragraphs = [p for p in paragraphs if not ag._line_contains_user_forbidden(p, uf)]
+
+    if rc and rc.one_sentence:
+        body = (paragraphs[0] if paragraphs else opening_para or "").strip()
+        single = ag._truncate_to_first_sentences(body, max_sentences=1)
+        return f"Course Answer:\n\n{single}".rstrip()
 
     rendered_lines: list[str] = ["Course Answer:", ""]
     for paragraph in paragraphs:
@@ -1149,6 +1192,13 @@ def compose_concept_answer(
             else "The anchor idea is the definition in your notes."
         )
 
+    if (
+        constraints is not None
+        and not constraints.is_relational
+        and constraints.target_concepts == ["softmax"]
+    ):
+        key_idea = _strip_hardmax_peer_sentences(key_idea) or key_idea
+
     rendered_lines.extend(["The key idea:", key_idea, ""])
 
     max_why = 2
@@ -1162,6 +1212,13 @@ def compose_concept_answer(
         why_it_matters = ag._truncate_to_first_sentences(why_it_matters, max_sentences=max_why)
     if why_it_matters.startswith("This matters because"):
         why_it_matters = "That matters because" + why_it_matters[len("This matters because") :]
+
+    if (
+        constraints is not None
+        and not constraints.is_relational
+        and constraints.target_concepts == ["softmax"]
+    ):
+        why_it_matters = _strip_hardmax_peer_sentences(why_it_matters)
 
     rendered_lines.append(why_it_matters)
     out = "\n".join(rendered_lines).rstrip()

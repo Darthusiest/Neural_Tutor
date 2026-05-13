@@ -20,6 +20,8 @@ class ResponseConstraints:
     pipeline_summary_requested: bool = False
     # User-requested topics to omit (e.g. "do not mention transformers").
     forbidden_topics: list[str] = field(default_factory=list)
+    #: "Define … in one sentence" — collapse output to a single grounded sentence.
+    one_sentence: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -32,6 +34,7 @@ class ResponseConstraints:
             "allow_incorrect_statements": self.allow_incorrect_statements,
             "pipeline_summary_requested": self.pipeline_summary_requested,
             "forbidden_topics": list(self.forbidden_topics),
+            "one_sentence": self.one_sentence,
         }
 
 
@@ -48,6 +51,7 @@ _INTUITION_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 _BRIEF_RE = re.compile(r"\b(?:brief|short answer|in one paragraph|tldr)\b", re.IGNORECASE)
+_ONE_SENTENCE_RE = re.compile(r"\bin one sentence\b", re.IGNORECASE)
 _EXACT_N_RE = re.compile(
     r"\b(?:give|write|provide)\s+(\d+)\s+(?:distinct\s+)?(?:explanation|explanations|ways)\b",
     re.IGNORECASE,
@@ -140,6 +144,9 @@ def parse_response_constraints(query: str) -> ResponseConstraints:
     if _INTUITION_ONLY_RE.search(query):
         rc.intuition_only = True
     if _BRIEF_RE.search(query):
+        rc.brief = True
+    if _ONE_SENTENCE_RE.search(query):
+        rc.one_sentence = True
         rc.brief = True
     m = _EXACT_N_RE.search(query)
     if m:

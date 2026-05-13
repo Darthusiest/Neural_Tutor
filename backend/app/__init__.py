@@ -145,6 +145,70 @@ def create_app(config_object: type | None = None) -> Flask:
             f"overall_score={er.overall_score}"
         )
 
+    @app.cli.command("seed-demo-eval")
+    @click.option(
+        "--runs",
+        default=2,
+        type=int,
+        show_default=True,
+        help="Append this many EvaluationRun rows (same dataset each time).",
+    )
+    @click.option(
+        "--suite",
+        type=click.Choice(["mini", "standard", "v3"], case_sensitive=False),
+        default="mini",
+        show_default=True,
+        help=(
+            "mini=fast structured 6-case smoke. standard=structured 100-case suite. "
+            "v3=structured 300-case stress. For Gemini critic parity with prod chat payloads, "
+            "prefer `PYTHONPATH=. python -m app.eval.run_eval …` (sets assistant_message_id); "
+            "these seeds skip handle_chat_turn."
+        ),
+    )
+    @click.option(
+        "--dataset",
+        "dataset_path",
+        type=click.Path(path_type=Path, exists=True, dir_okay=False),
+        default=None,
+        help="Explicit eval JSON (overrides --suite).",
+    )
+    def seed_demo_eval_cmd(runs: int, suite: str, dataset_path: Path | None):
+        """Persist EvaluationRun rows (structured pipeline shortcuts for dev / Admin wiring tests)."""
+
+        from datetime import datetime, timezone
+
+        from app.services.eval_run import run_eval_suite
+
+        if runs < 1:
+            raise click.ClickException("--runs must be at least 1")
+        backend_dir = Path(__file__).resolve().parent.parent
+        ev = backend_dir / "data" / "eval"
+        if dataset_path:
+            path = dataset_path
+            label_prefix = "seed-custom"
+        else:
+            key = suite.strip().lower()
+            mapping = {
+                "mini": (ev / "l487_eval_mini_admin.json", "seed-mini"),
+                "standard": (ev / "l487_eval_suite.json", "seed-suite"),
+                "v3": (ev / "l487_eval_suite_v3.json", "seed-v3"),
+            }
+            path, label_prefix = mapping[key]
+        if not path.exists():
+            raise click.ClickException(f"Dataset not found: {path}")
+        created_ids: list[int] = []
+        with app.app_context():
+            base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            for i in range(runs):
+                label = f"{label_prefix}-{base}-{i + 1}"
+                er = run_eval_suite(path, label, user_mode="auto", top_k=8)
+                created_ids.append(er.id)
+        joined = ", ".join(str(x) for x in created_ids)
+        print(
+            f"Persisted {runs} demo eval run(s) from {path.name}. ids=[{joined}] "
+            f"— open Admin → Evaluation runs / Gemini critic."
+        )
+
     with app.app_context():
         from sqlalchemy import inspect
         from sqlalchemy.exc import OperationalError

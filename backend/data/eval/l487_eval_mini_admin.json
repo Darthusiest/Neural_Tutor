@@ -1,0 +1,80 @@
+{
+  "name": "l487_eval_mini_admin",
+  "version": "1",
+  "description": "Tiny 6-case file for quick Gemini critic / Admin smoke tests only (no coverage chart; not representative of repo evaluation_outputs/ PNGs—use flask seed-demo-eval --suite standard instead). Mix of chat, compare, summary, synthesis, quiz.",
+  "cases": [
+    {
+      "id": "md_softmax_001",
+      "category": "mode_detection",
+      "intent": "definition",
+      "critical": true,
+      "query": "What is softmax?",
+      "expected_mode": "chat",
+      "must_include": ["softmax"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": ["Quiz:"],
+      "error_tags": ["mode", "definition"]
+    },
+    {
+      "id": "cmp_cnn_mlp_001",
+      "category": "compare",
+      "intent": "compare",
+      "query": "Compare CNN and MLP",
+      "expected_mode": "compare",
+      "must_include": ["CNN", "MLP"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["compare", "both_entities"]
+    },
+    {
+      "id": "sum_lec_001",
+      "category": "summary",
+      "intent": "step_by_step",
+      "query": "Summarize lecture 10",
+      "expected_mode": "summary",
+      "must_include": ["Summary:"],
+      "must_not_include": ["Course Answer:"],
+      "expected_sections": [],
+      "forbidden_sections": ["### Direct Answer"],
+      "error_tags": ["summary", "lecture_scoped"]
+    },
+    {
+      "id": "syn_bias_var_001",
+      "category": "synthesis",
+      "intent": "synthesis",
+      "query": "How do bias and variance relate to overfitting in this class?",
+      "expected_mode": "chat",
+      "must_include": ["bias", "variance"],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": ["Quiz:"],
+      "error_tags": ["synthesis", "concepts"]
+    },
+    {
+      "id": "def_dp_001",
+      "category": "definitions",
+      "intent": "definition",
+      "query": "What is dynamic programming in this context?",
+      "expected_mode": "chat",
+      "must_include": ["dynamic programming"],
+      "must_not_include": ["MFCC"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["definition", "dp"]
+    },
+    {
+      "id": "md_quiz_001",
+      "category": "mode_detection",
+      "intent": "step_by_step",
+      "query": "Test me on lecture 10",
+      "expected_mode": "quiz",
+      "must_include": ["Quiz:"],
+      "must_not_include": ["Course Answer:"],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": ["mode", "quiz", "lecture_scoped"]
+    }
+  ]
+}

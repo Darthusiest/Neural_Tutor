@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -138,6 +139,15 @@ def _resolve_kb_concepts(intent: QueryIntent, kb: ConceptKB) -> list[ConceptMeta
         if c.id not in seen:
             seen.add(c.id)
             out.append(c)
+    blob = re.sub(
+        r"\s+",
+        " ",
+        re.sub(r"[^\w\s]", " ", " ".join(intent.query_tokens + intent.expanded_tokens[:24])).lower(),
+    ).strip()
+    if "dynamic programming" in blob and re.search(r"\bvalues?\b", blob):
+        v = kb.get_concept_by_id("value")
+        if v:
+            out = [v]
     return out
 
 
@@ -332,7 +342,41 @@ def build_structured_query(
     kb = kb or get_kb()
     mr = mode_routing or {}
     concepts = _resolve_kb_concepts(intent, kb)
-    if intent.compare_entities:
+    if intent.query_type == QueryType.COMPARE and (intent.compare_entities or intent.compare_concepts):
+        entity_labels = intent.compare_entities or list(intent.compare_concepts or ())
+        compare_concepts: list[ConceptMeta] = []
+
+        compound_id: str | None = None
+        if len(entity_labels) >= 2:
+            for joined in (
+                f"{entity_labels[0]} and {entity_labels[1]}",
+                f"{entity_labels[0]}_{entity_labels[1]}",
+                f"{entity_labels[1]} and {entity_labels[0]}",
+                f"{entity_labels[1]}_{entity_labels[0]}",
+            ):
+                cid = kb.concepts_by_alias.get(joined.strip().lower())
+                if cid and kb.get_concept_by_id(cid):
+                    compound_id = cid
+                    break
+
+        for part in entity_labels:
+            c = kb.get_concept(part.strip()) or kb.get_concept(part.split()[0])
+            if c and all(c.id != x.id for x in compare_concepts):
+                compare_concepts.append(c)
+
+        if compound_id and len(compare_concepts) < 2:
+            compare_concepts = [
+                ConceptMeta(id=el.strip().lower().replace(" ", "_"), name=el.strip(), aliases=[], lecture_scope=[], summary="")
+                for el in entity_labels[:2]
+            ]
+
+        if len(compare_concepts) >= 2:
+            concepts = compare_concepts
+        else:
+            for c in compare_concepts:
+                if all(c.id != x.id for x in concepts):
+                    concepts.append(c)
+    elif intent.compare_entities:
         for part in intent.compare_entities:
             c = kb.get_concept(part.strip()) or kb.get_concept(part.split()[0])
             if c and all(c.id != x.id for x in concepts):

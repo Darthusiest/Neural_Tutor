@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections import Counter
 from typing import Any
 
 from app.services.answers.concept_constraints import ConceptConstraints, build_concept_constraints
@@ -82,7 +83,7 @@ def _first_sentence_or_line(text: str, max_len: int = 420) -> str:
     return first_line[:max_len] + ("…" if len(first_line) > max_len else "")
 
 
-def _dedupe_lines(lines: list[str], cap: int = 16) -> list[str]:
+def _dedupe_lines(lines: list[str], cap: int = 22) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for candidate in lines:
@@ -419,8 +420,14 @@ def _assert_section_disjoint(opening: str, explanation: str, key_idea: str, why:
             if norm[i] == norm[j]:
                 return False
             if len(norm[i]) > 24 and norm[i] in norm[j]:
+                # The key-idea line is often an intentional one-sentence recap of the mechanism
+                # paragraph; treating that as overlap should not force a clarification-only reply.
+                if i == 2 or j == 2:
+                    continue
                 return False
             if len(norm[j]) > 24 and norm[j] in norm[i]:
+                if i == 2 or j == 2:
+                    continue
                 return False
     return True
 
@@ -471,6 +478,14 @@ def audit_rendered_answer(
     if uf_global and _line_contains_user_forbidden(body, uf_global):
         return strict_clarification_answer(query_type)
 
+    if sq.response_constraints.one_sentence:
+        opening = _opening_line(body)
+        if not opening:
+            return strict_clarification_answer(query_type)
+        if not _mentions_target_in_opening(opening, sq, concept_constraints):
+            return strict_clarification_answer(query_type)
+        return body
+
     if query_type in {"definition", "mechanism", "step_by_step", "why", "limitation"}:
         if "The key idea:" not in body:
             return strict_clarification_answer(query_type)
@@ -492,6 +507,13 @@ def audit_rendered_answer(
         # Multi-entity compare uses a dedicated table layout (not tutor sections).
         if "### Compared architectures" in body:
             return body
+        sentence_counts: Counter[str] = Counter()
+        for raw in _SENTENCE_SPLIT_PATTERN.split(body):
+            t = raw.strip().lower()
+            if len(t) > 20:
+                sentence_counts[t] += 1
+        if any(c >= 3 for c in sentence_counts.values()):
+            return strict_clarification_answer(query_type)
 
     opening = _opening_line(body)
     key_idea = _key_idea_line(body)
@@ -578,7 +600,7 @@ def _primary_concept_label(
             for t in structured_query.response_constraints.forbidden_topics
             if t and str(t).strip()
         }
-    if structured_query and structured_query.concept_ids and uf:
+    if structured_query and structured_query.concept_ids:
         kb = get_kb()
         meta = kb.get_concept_by_id(structured_query.concept_ids[0])
         if meta and (meta.name or "").strip():
@@ -719,18 +741,22 @@ def _grounded_why_it_matters(
     )
     if related_ev:
         related_phrase = related_ev[0]
-        return (
+        out = (
             f"That matters because {name} keeps reappearing alongside {related_phrase}, "
             "so a clean grasp here makes the next idea easier to read."
         )
+        if not uf or not _line_contains_user_forbidden(out, uf):
+            return out
     if primary:
         topic_value = (primary[0].get("topic") or "").strip()
         if topic_value and topic_value.lower() != name.lower():
             head = re.split(r"\s+[—\-–:]\s+", topic_value, maxsplit=1)[0].strip()
-            return (
+            out = (
                 f"That matters because understanding {name} clearly frames how you interpret "
                 f"the ideas bundled under {head}."
             )
+            if not uf or not _line_contains_user_forbidden(out, uf):
+                return out
     return (
         f"That matters because clear intuition for {name} is what lets the next idea land "
         "without feeling arbitrary."

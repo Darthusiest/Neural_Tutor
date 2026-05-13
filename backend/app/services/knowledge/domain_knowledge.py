@@ -48,8 +48,10 @@ _ALIAS_GROUPS: list[tuple[str, ...]] = [
     ("bias", "underfitting", "underfit"),
     ("variance", "overfitting", "overfit"),
     ("generalization", "generalisation", "generalize", "generalise"),
+    ("learning", "learn", "learns", "training updates"),
     # Lecture 12 — Softmax
     ("softmax",),
+    ("hardmax", "winner-take-all", "winner take all"),
     ("probability", "probabilities"),
     ("distribution", "distributions"),
     # Lecture 13 — LLMs

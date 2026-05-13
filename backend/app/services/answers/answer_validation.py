@@ -394,6 +394,7 @@ def _must_be_concept_pure(answer: str, constraints: "ConceptConstraints") -> boo
     if not forb:
         return True
     parts = re.split(r"(?<=[.!?])\s+|\n+", answer)
+    impure_count = 0
     for part in parts:
         sl = part.lower().strip()
         if len(sl) < 4:
@@ -403,7 +404,9 @@ def _must_be_concept_pure(answer: str, constraints: "ConceptConstraints") -> boo
             continue
         has_tgt = any(t in sl for t in targets)
         if not has_tgt:
-            return False
+            impure_count += 1
+            if impure_count >= 2:
+                return False
     al = answer.lower()
     forbidden_hit = any(t in al for t in forb)
     if not forbidden_hit:

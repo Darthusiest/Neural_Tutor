@@ -22,7 +22,7 @@ All figure writers live in [`backend/app/eval/evaluation_outputs.py`](../app/eva
 - `regression_comparison.png`: previous vs current metrics when something moved; otherwise a short no-change PNG; footer with `n`.
 - `coverage_by_concept.png`: only when the suite has **at least 30** cases — pass vs fail counts per concept; footer with `n`.
 - `failure_modes.png`: failure-type counts; footer with `n`.
-- `pipeline_diagram.png`: static architecture schematic (no eval `n`).
+- `pipeline_diagram.png`: static architecture schematic (no eval `n`); live turn flow plus **Gemini Critic (admin)** on stored eval batches (does not block live responses).
 
 `example_answers.csv` and `error_analysis.csv` are still emitted for spreadsheet/report workflows.
 
@@ -40,6 +40,7 @@ All figure writers live in [`backend/app/eval/evaluation_outputs.py`](../app/eva
 |------|---------|
 | Full chat eval: timestamped **`reports/eval_runs/<ts>/`** plus refresh **`evaluation_outputs/`** at repo root | `PYTHONPATH=. python -m app.eval.run_eval --dataset data/eval/l487_eval_suite.json --run-name "<name>"` |
 | Fast pipeline eval: persist **`evaluation_runs`** only (no report folder, no `evaluation_outputs/`) | `flask --app wsgi run-eval` (optional: `--dataset`, `--run-name`, `--compare-last`, …) |
+| Admin Gemini critic (LLM judge) on persisted cases | Use **Admin → Gemini critic** (or **`POST /api/admin/eval/runs/<id>/critic`**). **Prep:** run **`PYTHONPATH=. python -m app.eval.run_eval …`** first so rows include **`assistant_message_id`**. Writes **`evaluation_outputs/critic/<batch>/`** (same chart names as rule-based). See **`progress/entries/2026-05-10-gemini-critic.md`**. |
 | Rollup CSVs from DB → **`reports/eval_analytics/<ts>/`** | `PYTHONPATH=. python -m app.eval.export_analytics` (optional: `--dataset`, `--run-ids`, `--last-n`, `--out-dir`, `--worst-k`, `--coverage-phase-sort`, `--coverage-min-cases`) |
 | Per-concept failure digest | `PYTHONPATH=. python scripts/eval_diagnose_concept.py --concept <bucket> [--run-id N] [--write report.md]` |
 | Rebuild **`evaluation_outputs/`** PNGs/CSVs from a persisted run only | `python3 scripts/regenerate_evaluation_outputs.py` or `--run-id <id>` / `--out-dir <path>` |

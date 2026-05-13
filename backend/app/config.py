@@ -91,7 +91,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     # SQLite file DB: allow the Gemini critic background thread to open connections (default driver is per-thread).
     SQLALCHEMY_ENGINE_OPTIONS = (
-        {"connect_args": {"check_same_thread": False}}
+        {"connect_args": {"check_same_thread": False, "timeout": 30}}
         if str(os.getenv("DATABASE_URL") or _DEFAULT_SQLITE).startswith("sqlite:")
         else {}
     )
@@ -188,7 +188,7 @@ class Config:
     SUMMARY_MAX_CHUNKS = int(os.getenv("SUMMARY_MAX_CHUNKS", "48"))
 
     # Chat / pipeline retrieval: chunks requested for grounding (first pass).
-    CHAT_RETRIEVAL_TOP_K = max(1, min(int(os.getenv("CHAT_RETRIEVAL_TOP_K", "5")), 100))
+    CHAT_RETRIEVAL_TOP_K = max(1, min(int(os.getenv("CHAT_RETRIEVAL_TOP_K", "8")), 100))
     # When validation hard-fails, retry retrieval with top_k + this extra budget.
     PIPELINE_RETRY_TOP_K_EXTRA = max(0, min(int(os.getenv("PIPELINE_RETRY_TOP_K_EXTRA", "6")), 50))
 
@@ -260,7 +260,7 @@ class Config:
     # Cap stored chatbot answer length in the critic prompt (full eval payloads can exceed model context).
     CRITIC_ANSWER_CHAR_CAP = int(os.getenv("CRITIC_ANSWER_CHAR_CAP", "14000"))
     # Frozen prompt / schema version string stored on critic rows for auditability.
-    CRITIC_PROMPT_VERSION = os.getenv("CRITIC_PROMPT_VERSION", "v1")
+    CRITIC_PROMPT_VERSION = os.getenv("CRITIC_PROMPT_VERSION", "v2")
     CRITIC_PASS_THRESHOLD = float(os.getenv("CRITIC_PASS_THRESHOLD", "0.7"))
     # Comma-separated effective modes scored by the Gemini critic when POST body omits ``modes``.
     CRITIC_CASE_MODES = os.getenv("CRITIC_CASE_MODES", "chat,compare,summary")

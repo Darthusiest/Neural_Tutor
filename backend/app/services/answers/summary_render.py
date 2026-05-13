@@ -227,11 +227,26 @@ def _format_lecture_summary(
         main_idea = f"Lecture {lecture_number} introduces a connected set of course topics."
 
     key_topics: list[str] = []
+    key_topic_details: list[str] = []
+    seen_heads: set[str] = set()
     for chunk in ordered:
         head = _topic_head(chunk.get("topic"))
-        if head:
-            key_topics.append(head)
-    key_topics = _dedupe_preserve_order(key_topics)[:6]
+        if not head or head.lower() in seen_heads:
+            if head:
+                seen_heads.add(head.lower())
+            continue
+        seen_heads.add(head.lower())
+        key_topics.append(head)
+        detail = _first_sentence(
+            chunk.get("clean_explanation") or chunk.get("source_excerpt") or "",
+            max_len=240,
+        )
+        if detail:
+            key_topic_details.append(f"**{head}:** {detail}")
+        else:
+            key_topic_details.append(head)
+    key_topics = key_topics[:6]
+    key_topic_details = key_topic_details[:6]
 
     connect_sentence = _connect_sentence(lecture_number, key_topics)
     study_focus = _study_focus_lines(key_topics)
@@ -255,7 +270,9 @@ def _format_lecture_summary(
         "### Key topics",
         "",
     ]
-    if key_topics:
+    if key_topic_details:
+        parts.extend(f"- {line}" for line in key_topic_details)
+    elif key_topics:
         parts.extend(f"- {topic}" for topic in key_topics)
     else:
         parts.append("- (No section headings found for this lecture.)")

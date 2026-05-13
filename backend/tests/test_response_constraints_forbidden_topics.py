@@ -34,6 +34,14 @@ def test_exclude_clause():
     assert rc.forbidden_topics
 
 
+def test_one_sentence_sets_flags():
+    rc = parse_response_constraints(
+        "Define layer normalization in one sentence for this course."
+    )
+    assert rc.one_sentence is True
+    assert rc.brief is True
+
+
 def test_do_not_mention_neural_networks():
     rc = parse_response_constraints(
         "What is dynamic programming? Do not mention neural networks."

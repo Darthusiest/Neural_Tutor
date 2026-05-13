@@ -195,7 +195,7 @@ _QUERY_STOPWORDS: frozenset[str] = frozenset(
     can could should would will may might must shall
     need just like lot really very much some any all each every
     into out up down over
-    quiz give show teach help learn
+    quiz give show teach help
     please thanks thank hey hi hello okay ok
     briefly quickly
     """.split()

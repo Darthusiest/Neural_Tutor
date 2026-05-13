@@ -354,7 +354,7 @@ def run_critic_for_eval_run(
     partial = False
     model_names: list[str] = []
 
-    prompt_ver = str(current_app.config.get("CRITIC_PROMPT_VERSION", "v1"))
+    prompt_ver = str(current_app.config.get("CRITIC_PROMPT_VERSION", "v2"))
 
     for idx, case in enumerate(target_cases):
         if cap > 0 and token_accum >= cap:

@@ -149,7 +149,7 @@
     {
       "id": "representations",
       "name": "representations",
-      "aliases": ["hidden representation", "activations", "encoding", "vector representation", "contextual representation"],
+      "aliases": ["hidden representation", "activations", "vector representation", "contextual representation"],
       "lecture_scope": [6, 13, 14, 15, 16],
       "summary": "Representations are learned vector descriptions that become more useful for prediction as they pass through layers and context integration.",
       "prerequisites": ["inference"],

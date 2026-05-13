@@ -160,11 +160,22 @@ def extract_compare_entities(query: str) -> list[str] | None:
     return None
 
 
+_TRAILING_CLAUSE_RE = re.compile(
+    r"\s+(?:in\s+(?:this|the|that|a|an|our|\w+(?:\s+\w+)*)\b|with\s+respect\s+to\b|"
+    r"for\s+(?:this|the|that|a|an|our|\w+(?:\s+\w+)*)\b|"
+    r"according\s+to\b|within\b|during\b|regarding\b|"
+    r"when\s+(?:used|applied|training|doing)\b).*$",
+    re.IGNORECASE,
+)
+
+
 def _normalize_entity_labels(parts: list[str]) -> list[str]:
     out: list[str] = []
     for p in parts[:8]:
         p = p.strip().rstrip("?.,")
         p = _strip_leading_compare_phrase(p)
+        p = p.split(":")[0].strip()
+        p = _TRAILING_CLAUSE_RE.sub("", p).strip().rstrip("?.,")
         if p:
             out.append(p.strip())
     return out
@@ -231,7 +242,7 @@ def _detect_concepts(tokens: list[str]) -> list[str]:
 
     seen: set[str] = set()
     out: list[str] = []
-    full_text = " ".join(tokens)
+    full_text = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", " ".join(tokens)).lower()).strip()
     for tok in tokens:
         c = get_canonical(tok)
         if c and c not in seen:

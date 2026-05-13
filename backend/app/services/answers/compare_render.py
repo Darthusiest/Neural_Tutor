@@ -228,6 +228,11 @@ def format_two_entity_compare_markdown(
         kb=kb,
     )
 
+    if not left_lines and not right_lines:
+        return _compare_clarification_fallback(
+            structured_query, left_bundle, right_bundle
+        )
+
     shared_lines = _shared_lines_from_bundles(left_bundle, right_bundle)
     bullet_norm_keys = {_normalize_line_for_dup(line) for line in (*left_lines, *right_lines)}
     bullet_norm_keys.discard("")
@@ -309,7 +314,7 @@ def format_two_entity_compare_markdown(
         f"**{left_heading} (from course text):**",
         "",
     ]
-    for line in left_lines[1:5]:
+    for line in left_lines[1:7]:
         markdown_parts.append(f"- {line}")
     markdown_parts.extend(
         [
@@ -318,7 +323,7 @@ def format_two_entity_compare_markdown(
             "",
         ]
     )
-    for line in right_lines[1:5]:
+    for line in right_lines[1:7]:
         markdown_parts.append(f"- {line}")
 
     markdown_parts.extend(

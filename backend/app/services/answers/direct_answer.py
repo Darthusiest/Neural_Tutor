@@ -65,7 +65,22 @@ _HEADING_PREFIX_RE = re.compile(
 )
 _BULLET_PREFIX_RE = re.compile(r"^[-•*]\s*")
 _MIN_LEN = 30
-_MAX_LEN = 280
+_MAX_LEN = 360
+
+# When multiple candidates tie on lexical score, prefer sentences whose lede
+# names the resolved concept (alias hit in the opening clause). Contrast-heavy
+# sentences that only mention the target after a scaffold ("versus ...", "hardmax ...")
+# otherwise win as the shortest tie among equal scores.
+_HEAD_ALIAS_CHARS = 44
+
+
+_MECHANISM_VERB_RE = re.compile(
+    r"\b(?:uses|processes|extracts?|computes?|maps?|captures?|converts?|works?\s+by|operates|"
+    r"applies|performs|takes|outputs|produces|transforms|combines|generates|builds|runs|implements|"
+    r"transfers?|trains?|updates?)\b",
+    re.IGNORECASE,
+)
+
 
 # Lead-noun-phrase extractor for the compare contrast: we want the head noun
 # of the bundle's first core line so we can fill ``axisA`` / ``axisB``. The
@@ -131,7 +146,9 @@ def _looks_like_skip(line: str) -> bool:
         return True
     if stripped.startswith("|") or stripped.endswith("|"):
         return True
-    if stripped.lower().startswith(("for example", "e.g.", "example:", "the key idea:")):
+    if stripped.lower().startswith(
+        ("for example", "e.g.", "example:", "the key idea:", "important clarification")
+    ):
         return True
     return False
 
@@ -174,6 +191,16 @@ def _chunk_is_target_scoped(
         if term and _term_hits(topic, term) > 0:
             return True
     return False
+
+
+def _opening_prefix_has_target_alias(sentence: str, constraints: ConceptConstraints | None) -> bool:
+    """True when a word-boundary alias hit appears in the opening prefix."""
+    if not constraints or not constraints.target_aliases:
+        return False
+    prefix = (sentence or "").strip()[:_HEAD_ALIAS_CHARS].lower()
+    if not prefix:
+        return False
+    return any(term and _term_hits(prefix, term) > 0 for term in constraints.target_aliases)
 
 
 def _candidate_sentences_for_chat(
@@ -245,12 +272,56 @@ def _rank_chat_sentence(
     sentence: str,
     chunk: dict[str, Any],
     constraints: ConceptConstraints | None,
+    *,
+    raw_query: str | None = None,
 ) -> tuple[float, int]:
     """Score a candidate sentence; higher is better, length tiebreaker."""
+    from app.services.answers import answer_generation as ag
+
+    rq = (raw_query or "").strip().lower()
     score = 0.0
+    wants_one_sentence = "in one sentence" in rq
     if has_definition_cue(sentence):
         score += 2.0
     line_lower = sentence.lower()
+    if wants_one_sentence:
+        if re.search(
+            r"\b(?:first|second|third|fourth|final|another)\s+stage\b",
+            line_lower,
+        ):
+            score -= 6.5
+        early = line_lower[:80]
+        if constraints and constraints.target_aliases:
+            if any(
+                len(term) > 2 and _term_hits(early, term) > 0
+                for term in constraints.target_aliases
+            ):
+                score += 3.0
+    if rq and re.search(r"\bhow\s+(?:does|do|is)\b", rq):
+        if _MECHANISM_VERB_RE.search(sentence):
+            score += 2.8
+    if rq:
+        sl = line_lower
+        if "query" in rq and re.search(r"\bquery\b", sl):
+            score += 4.0
+        if "key" in rq and re.search(r"\bkey\b", sl):
+            score += 4.0
+        if "value" in rq and re.search(r"\bvalue\b", sl):
+            score += 4.0
+    if constraints and constraints.target_concepts:
+        tc0 = constraints.target_concepts[0]
+        if tc0 == "loss" and _term_hits(line_lower, "loss") == 0:
+            score -= 5.5
+        if tc0 == "distillation" and _term_hits(line_lower, "distillation") == 0:
+            score -= 6.0
+        if tc0 == "learning" and "learn" not in line_lower:
+            score -= 5.5
+    if constraints and constraints.target_concepts:
+        cid = constraints.target_concepts[0].strip().lower()
+        if len(cid) >= 3:
+            probe = cid.replace("_", " ").strip().lower()
+            if _term_hits(line_lower, probe) > 0:
+                score += 1.85
     if constraints and constraints.target_aliases:
         alias_hits = sum(
             1 for term in constraints.target_aliases if _term_hits(line_lower, term) > 0
@@ -290,6 +361,11 @@ def _rank_chat_sentence(
             1 for term in constraints.forbidden_terms if _term_hits(line_lower, term) > 0
         )
         score -= 2.0 * forbidden_hits
+    if constraints and constraints.target_aliases:
+        if _opening_prefix_has_target_alias(sentence, constraints):
+            score += 2.0
+        elif ag._CONTRAST_CUE_PATTERN.search(sentence):
+            score -= 2.5
     length = len(sentence)
     if 60 <= length <= 200:
         score += 0.4
@@ -401,6 +477,8 @@ def _select_chat_direct_answer(
     chunks: list[dict[str, Any]],
     constraints: ConceptConstraints | None,
     kb: ConceptKB | None,
+    *,
+    raw_query: str | None = None,
 ) -> str | None:
     """Pick the highest-ranking definition-style sentence from ``chunks``.
 
@@ -418,6 +496,7 @@ def _select_chat_direct_answer(
     primary_id = (
         constraints.target_concepts[0] if constraints.target_concepts else None
     )
+    rq = (raw_query or "") or ""
     candidates = _candidate_sentences_for_chat(
         chunks, constraints, kb=kb, primary_concept_id=primary_id
     )
@@ -425,14 +504,11 @@ def _select_chat_direct_answer(
         sent = _synthesize_minimal_direct_answer(chunks, constraints)
         return _finalize_chat_direct_answer_sentence(sent, constraints, kb)
     scored = [
-        (_rank_chat_sentence(sent, chunk, constraints), sent, chunk)
+        (_rank_chat_sentence(sent, chunk, constraints, raw_query=rq), sent, chunk)
         for sent, chunk in candidates
     ]
     scored.sort(key=lambda x: (x[0][0], x[0][1]), reverse=True)
-    best_score, best_sentence, best_chunk = scored[0]
-    if best_score[0] < 0:
-        sent = _synthesize_minimal_direct_answer(chunks, constraints)
-        return _finalize_chat_direct_answer_sentence(sent, constraints, kb)
+    _, best_sentence, best_chunk = scored[0]
     return _finalize_chat_direct_answer_sentence(
         best_sentence,
         constraints,
@@ -584,4 +660,9 @@ def select_direct_answer(
     if mode == "compare":
         return _select_compare_direct_answer(sq, bundles, kb)
 
-    return _select_chat_direct_answer(chunks, constraints, kb)
+    return _select_chat_direct_answer(
+        chunks,
+        constraints,
+        kb,
+        raw_query=sq.intent.original_query,
+    )

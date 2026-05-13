@@ -194,8 +194,8 @@ def test_summary_render_lecture_dedupes_topic_heads(app):
     with app.app_context():
         out = format_summary_markdown(plan, chunks, sq)
 
-    assert out.count("- MFCCs") == 1
-    assert "- Formants" in out
+    assert out.count("**MFCCs:**") == 1
+    assert "**Formants:**" in out
 
 
 def test_summary_render_lecture_uses_chunk_order_metadata(app):
@@ -228,8 +228,8 @@ def test_summary_render_lecture_uses_chunk_order_metadata(app):
     with app.app_context():
         out = format_summary_markdown(plan, chunks, sq)
 
-    core_pos = out.find("- MFCCs")
-    formants_pos = out.find("- Formants")
+    core_pos = out.find("**MFCCs:**")
+    formants_pos = out.find("**Formants:**")
     assert 0 < core_pos < formants_pos, out
 
 

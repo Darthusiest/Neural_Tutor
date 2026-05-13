@@ -15,7 +15,7 @@ Eight PNGs may be produced in ``out_dir`` after a run (some are conditional on
 suite size or prior runs):
 
 1. ``pipeline_diagram.png`` — static architecture diagram of the answer
-   pipeline.
+   pipeline (live turn + admin Gemini critic on eval batches).
 2. ``question_type_breakdown.png`` — pass rate per query intent, sorted by
    sample count; bar labels include ``n``.
 3. ``retrieval_accuracy.png`` — share of cases whose top-k retrieval
@@ -513,6 +513,10 @@ _PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
     ("Retrieval", "Find relevant\nlecture chunks"),
     ("Answer Composer", "Build a rule-based\nanswer"),
     ("Optional Boost", "LLM elaboration\n(off by default)"),
+    (
+        "Gemini Critic\n(admin / eval)",
+        "LLM judge on stored\nbatch runs; not live gating",
+    ),
     ("Final Output", "Course answer\nto the user"),
 )
 
@@ -584,7 +588,8 @@ def write_pipeline_diagram(out_dir: Path) -> None:
     inner_w = box_w * 0.92
 
     with _paper_style():
-        fig, ax = plt.subplots(figsize=(min(18.5, total_w + 1.6), 4.05))
+        # Seven stages need a slightly wider canvas cap than the original six-box row.
+        fig, ax = plt.subplots(figsize=(min(20.5, total_w + 1.6), 4.15))
 
         ax.set_xlim(-0.4, total_w + 0.4)
         ax.set_ylim(0, 3.5)
@@ -673,10 +678,11 @@ def write_pipeline_diagram(out_dir: Path) -> None:
         ax.text(
             total_w / 2,
             y - 0.42,
-            "Schematic only (not eval metrics).",
+            "Schematic only (not eval metrics). Critic is optional; invoked from admin on "
+            "persisted eval runs (does not block live chat).",
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=8.5,
             color=_COLOR_TEXT_MUTED,
             style="italic",
         )

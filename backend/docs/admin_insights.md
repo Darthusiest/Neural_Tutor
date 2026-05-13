@@ -2,7 +2,7 @@
 
 Admin-only analytics over chat **`retrieval_logs`**, **`response_variants`**, **`feedback`**, **`message_outcomes`**, and **`retrieval_chunk_hits`** / **`lecture_chunks`**. Implementation: [`app/services/admin_insights.py`](../app/services/admin_insights.py); routes: [`app/routes/admin.py`](../app/routes/admin.py). Blueprint prefix: **`/api/admin`**.
 
-**Auth:** session cookie + **`users.is_admin`** (`GET /api/auth/me` exposes `is_admin`). Non-admins receive **403**. Promote a user locally (SQLite):
+**Auth:** session cookie + **`users.is_admin`** (`GET /api/auth/me` exposes `is_admin`). When **`ADMIN_EMAILS`** (comma-separated) is set in **`backend/.env`**, matching accounts receive **`is_admin=True`** on register and on each successful login. **`.env.example`** includes `ADMIN_EMAILS=pajouhes@usc.edu` as a placeholder. To promote manually locally (SQLite):
 
 ```bash
 sqlite3 backend/ling487.db "UPDATE users SET is_admin = 1 WHERE email = 'you@example.com';"
@@ -13,6 +13,8 @@ On **PostgreSQL**, use your SQL client, e.g. `psql` with the same `UPDATE` again
 **Implementation note:** Dashboard queries use dialect-aware SQL where needed (e.g. JSON extraction for validation **severity** on SQLite vs PostgreSQL) so analytics work with either database.
 
 **SPA:** [`/admin`](../../frontend/src/App.jsx) uses [`AdminRoute`](../../frontend/src/components/AdminRoute.jsx) (non-admins redirect to `/chat`).
+
+**Eval runs + Gemini critic:** `GET /api/admin/eval/runs` lists **`evaluation_runs`** only. **Primary path for the critic:** **`PYTHONPATH=. python -m app.eval.run_eval --dataset data/eval/l487_eval_suite.json …`** (chat-turn runner; sets **`assistant_message_id`**). See **`progress/entries/2026-05-10-gemini-critic.md`**. Structured shortcuts: **`flask run-eval`**, **`seed-demo-eval`** (**default `--suite mini`**) — omit **`handle_chat_turn`** payloads. Judge rubric defaults to **`CRITIC_PROMPT_VERSION=v2`** (generous calibration vs chunks + **`EXPECTED_BEHAVIOR_JSON.error_tags`** carve-out for nonsense/off-topic suite rows); version string is stored per critic row.
 
 ## Endpoints
 

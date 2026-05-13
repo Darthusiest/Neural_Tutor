@@ -41,31 +41,52 @@ _CRITIC_RUBRIC_SCHEMA = """You are an impartial judge for a LING 487 course-grou
 Score the CHATBOT_ANSWER using STUDENT_QUESTION, RETRIEVED_CHUNKS, STRUCTURED_PLAN_JSON,
 EXPECTED_BEHAVIOR_JSON (may be empty), and EFFECTIVE_MODE from CRITIQUE_INPUT_JSON.
 
-Rules (base only on chunks + answer text):
-- If chunks are empty or too thin to support the answer, lower scores and explain in rationale.
-- "accurate" = consistent with chunks, not outside knowledge.
-- "complete" = reasonably answers the question for this mode.
-- "mode_compliant" = shape matches EFFECTIVE_MODE.
-- "no_hallucination" = penalize claims unsupported by chunks.
-- error_categories: snake_case from: ungrounded_claim, thin_evidence, mode_shape_mismatch,
+Calibration — score generously unless there is a CLEAR failure:
+- Reserve LOW scores for: claims contradicting or unsupported by chunks (hallucination), severe wrong template for EFFECTIVE_MODE, or plain inaccuracy vs chunks.
+- Minor brevity or small omissions: score "complete" mid-to-high unless chunks clearly support more depth without inventing facts.
+- If RETRIEVED_CHUNKS are empty or too thin: cap penalties on grounded/complete — penalize unsupported substantive claims, not silence alone; "could say more" is not the same as "wrong".
+
+Dimensions (0–1 each; base only on chunks + answer text):
+- grounded: tied to chunk evidence where claims exist; when chunks are absent, high if the answer avoids fabricated lecture detail.
+- accurate: consistent with chunks; vacuously strong if nothing stated is false about lecture content.
+- complete: materially addresses the question for this mode; lenient when chunks cannot support depth.
+- mode_compliant: shape matches EFFECTIVE_MODE.
+- no_hallucination: penalize lecture claims not supported by chunks.
+
+Adversarial / nonsense — use EXPECTED_BEHAVIOR_JSON when present:
+- If error_tags include nonsense, off_topic, or adversarial, or category is adversarial with those tags, OR STUDENT_QUESTION is clearly gibberish / not a course question: do NOT score complete or mode_compliant near zero for brief refusal, redirect to rephrase with course terms, or minimal/empty output that avoids fabrication. Stay strict on no_hallucination and accurate (no invented course facts).
+
+error_categories: snake_case from: ungrounded_claim, thin_evidence, mode_shape_mismatch,
   incomplete_answer, inaccuracy_vs_chunks, vague_or_generic, other
-- score = arithmetic mean of the five dimension floats. pass = true iff score >= PASS_THRESHOLD.
-  Keep dimensions, score, pass, error_categories, and rationale mutually consistent.
+score = arithmetic mean of the five dimension floats. pass = true iff score >= PASS_THRESHOLD.
+Keep dimensions, score, pass, error_categories, and rationale mutually consistent.
 
 Keep rationale to one short paragraph.
 """
 
-# Fallback when structured output is off: full JSON template in prompt.
+# Fallback when structured output is off: full JSON template in prompt (same substance as schema rubric).
 _CRITIC_RUBRIC_V1 = """You are an impartial judge for a LING 487 course-grounded tutor.
 
 Task: rate the CHATBOT_ANSWER given the STUDENT_QUESTION, RETRIEVED_CHUNKS, STRUCTURED_PLAN_JSON, EXPECTED_BEHAVIOR_JSON (suite constraints; may be empty), and EFFECTIVE_MODE.
 
 Rules:
-- Base judgments ONLY on RETRIEVED_CHUNKS and what is explicit in CHATBOT_ANSWER. If chunks are empty or too thin to support the answer, lower scores and say so in rationale (do not invent lecture facts).
-- "accurate" means consistent with the chunks, not with general world knowledge beyond them.
-- "complete" means the answer reasonably addresses the question for this mode; do not require knowledge absent from chunks.
-- "mode_compliant" means the shape matches EFFECTIVE_MODE (e.g. quiz has Quiz/Answer Key; summary avoids four-block Course Answer sections; compare separates entities).
-- "no_hallucination" penalizes claims in the answer unsupported by chunks.
+- Base judgments ONLY on RETRIEVED_CHUNKS and what is explicit in CHATBOT_ANSWER (do not invent lecture facts).
+
+Calibration — score generously unless there is a CLEAR failure:
+- Reserve LOW scores for hallucinations / unsupported claims vs chunks, contradiction with chunks, severe wrong template for EFFECTIVE_MODE, or plain inaccuracy vs chunks.
+- Minor brevity or small omissions: score "complete" mid-to-high unless chunks clearly support more depth without inventing.
+- Empty or thin RETRIEVED_CHUNKS: cap penalties on grounded and complete — do not equate brevity or silence with factual wrongness; penalize substantive claims not backed by chunks.
+
+Dimensions:
+- grounded: answer aligned with chunk evidence where it makes claims; generous when chunks are missing if the answer does not fabricate lecture detail.
+- accurate: consistent with the chunks, not outside lecture evidence given; vacuously strong if nothing false about course content is asserted.
+- complete: materially addresses the question for this mode; lenient when chunks cannot support depth.
+- mode_compliant: shape matches EFFECTIVE_MODE (e.g. quiz has Quiz/Answer Key; summary avoids four-block Course Answer sections; compare separates entities).
+- no_hallucination: penalize claims unsupported by chunks.
+
+Adversarial / nonsense — EXPECTED_BEHAVIOR_JSON may list category and error_tags:
+- If error_tags include nonsense, off_topic, or adversarial, or category is adversarial with those tags, OR STUDENT_QUESTION is clearly gibberish / not a course question: brief refusal, redirect, or minimal/empty output that avoids fabrication should score high on complete and mode_compliant for chat mode, not near zero. Remain strict on no_hallucination and accurate.
+
 - allowed error_categories values (pick zero or more, use snake_case): ungrounded_claim, thin_evidence, mode_shape_mismatch, incomplete_answer, inaccuracy_vs_chunks, vague_or_generic, other
 
 Output ONLY a single JSON object (no markdown fences, no prose before or after) with this exact shape:
@@ -334,7 +355,7 @@ def run_gemini_critic(
     temp = float(current_app.config.get("CRITIC_TEMPERATURE", 0.1))
     max_out = int(current_app.config.get("CRITIC_MAX_OUTPUT_TOKENS", 4096))
     pass_threshold = float(current_app.config.get("CRITIC_PASS_THRESHOLD", 0.7))
-    prompt_version = str(current_app.config.get("CRITIC_PROMPT_VERSION", "v1"))
+    prompt_version = str(current_app.config.get("CRITIC_PROMPT_VERSION", "v2"))
     use_schema = bool(current_app.config.get("CRITIC_USE_RESPONSE_SCHEMA", True))
     answer_cap = int(current_app.config.get("CRITIC_ANSWER_CHAR_CAP", 14_000))
     http_retries = int(current_app.config.get("CRITIC_HTTP_MAX_RETRIES", 8))

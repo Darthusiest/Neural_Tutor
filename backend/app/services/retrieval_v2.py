@@ -46,7 +46,7 @@ from app.services.retrieval import (
 logger = logging.getLogger(__name__)
 
 # Cap extra alias words appended to retrieval queries (stress-test / sparse concepts).
-_KB_ALIAS_AUGMENT_MAX_WORDS = 12
+_KB_ALIAS_AUGMENT_MAX_WORDS = 18
 
 
 def _kb_alias_augment_for_retrieval(expanded_q: str) -> str:
@@ -74,7 +74,7 @@ def _kb_alias_augment_for_retrieval(expanded_q: str) -> str:
     extra_word_count = 0
 
     for c in matched:
-        for phrase in [c.name, *c.aliases]:
+        for phrase in [c.name, *c.aliases, *c.retrieval_hints]:
             p = phrase.strip()
             if len(p) < 2:
                 continue
@@ -155,7 +155,7 @@ def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
         detected = (merged[0].get("topic") or "").split("—")[0].strip() if merged else None
         cap = max(top_k * 3, 18)
         return EnhancedRetrievalResult(
-            chunks=merged[:cap],
+            chunks=_filter_glossary_chunks(merged[:cap]),
             confidence=conf,
             detected_topic=detected,
             diagnostics=diag,
@@ -184,7 +184,7 @@ def _handle_compare(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
         detected = base.detected_topic
         diag = base.diagnostics
     return EnhancedRetrievalResult(
-        chunks=merged,
+        chunks=_filter_glossary_chunks(merged),
         confidence=conf,
         detected_topic=detected,
         diagnostics=diag,
@@ -209,7 +209,7 @@ def _handle_summary(expanded_q: str, intent: QueryIntent, top_k: int) -> Enhance
                 summary_rank=True,
             )
             return EnhancedRetrievalResult(
-                chunks=base.chunks,
+                chunks=_filter_glossary_chunks(base.chunks),
                 confidence=base.confidence,
                 detected_topic=base.detected_topic,
                 diagnostics=base.diagnostics,
@@ -276,9 +276,10 @@ def _handle_quiz(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRe
 
 def _handle_general(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
     base = retrieve_chunks(expanded_q, top_k=top_k)
-    supporting = _gather_supporting(base.chunks, intent)
+    filtered = _filter_glossary_chunks(base.chunks)
+    supporting = _gather_supporting(filtered, intent)
     return EnhancedRetrievalResult(
-        chunks=base.chunks,
+        chunks=filtered,
         confidence=base.confidence,
         detected_topic=base.detected_topic,
         diagnostics=base.diagnostics,
@@ -407,9 +408,27 @@ def _fallback_to_base(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_GLOSSARY_META_PHRASES = (
+    "this note ties ling487 vocabulary to lecture chunks",
+    "repeated wording so each alias class appears",
+    "retrieval glossary",
+)
+
+
+def _is_glossary_meta_chunk(chunk: dict[str, Any]) -> bool:
+    """True for KB glossary/retrieval-audit chunks that should not appear in student answers."""
+    expl = (chunk.get("clean_explanation") or "").lower()[:200]
+    topic = (chunk.get("topic") or "").lower()
+    return any(phrase in expl or phrase in topic for phrase in _GLOSSARY_META_PHRASES)
+
+
+def _filter_glossary_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in chunks if not _is_glossary_meta_chunk(c)]
+
+
 def _wrap(base: RetrievalResult, chunks: list[dict], intent: QueryIntent) -> EnhancedRetrievalResult:
     return EnhancedRetrievalResult(
-        chunks=chunks,
+        chunks=_filter_glossary_chunks(chunks),
         confidence=base.confidence,
         detected_topic=base.detected_topic,
         diagnostics=base.diagnostics,

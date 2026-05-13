@@ -53,7 +53,6 @@ _DEFAULT_FORBIDDEN_BY_CONCEPT: dict[str, list[str]] = {
         "self-attention",
         "multi-head",
         "positional encoding",
-        "residual connection",
         "layer norm",
     ],
     "transformer": [
@@ -71,6 +70,13 @@ _DEFAULT_FORBIDDEN_BY_CONCEPT: dict[str, list[str]] = {
     "bias_variance": [
         "dropout",
         "l2 regularization",
+    ],
+    "value": [
+        "attention",
+        "transformer",
+        "self-attention",
+        "softmax",
+        "multi-head",
     ],
 }
 
@@ -157,8 +163,18 @@ def score_chunk_for_entity(
                 cross += _term_hits(blob, t)
 
     forbidden = forbidden_terms_for_concept(concept_id, peer_concept_ids, kb)
+    peer_terms_lower: set[str] = set()
+    for pid in peer_concept_ids:
+        if pid == concept_id:
+            continue
+        om = kb.get_concept_by_id(pid)
+        if om:
+            peer_terms_lower.add(om.name.lower().strip())
+            peer_terms_lower.update(a.lower().strip() for a in om.aliases[:6] if len(a) > 2)
     neg = 0.0
     for term in forbidden:
+        if term in peer_terms_lower:
+            continue
         neg += 2.0 * _term_hits(blob, term)
 
     eps = 1e-6
