@@ -194,7 +194,7 @@
       "prerequisites": ["inference"],
       "builds_on": ["learning"],
       "related": ["gradient", "backpropagation", "softmax"],
-      "compare_with": [],
+      "compare_with": ["gradient"],
       "retrieval_hints": ["half squared error", "difference between computed and desired"],
       "common_subquestions": ["What is loss?", "How does loss drive learning?"]
     },
@@ -386,7 +386,7 @@
     {
       "id": "bias_variance",
       "name": "bias and variance",
-      "aliases": ["bias vs variance", "underfitting vs overfitting"],
+      "aliases": ["bias vs variance", "underfitting vs overfitting", "variance and bias"],
       "lecture_scope": [10, 11],
       "summary": "Bias is systematic error from too much inflexibility, while variance is error from overfitting specific examples instead of learning the underlying gist.",
       "prerequisites": ["sigmoid", "learning"],
@@ -431,7 +431,7 @@
       "prerequisites": ["representations", "attention", "softmax"],
       "builds_on": ["phonotactics"],
       "related": ["transformer", "cnn", "positional_encoding"],
-      "compare_with": [],
+      "compare_with": ["autoencoder"],
       "retrieval_hints": ["predict nth from first n-1", "many many NNs", "temporal dependencies"],
       "common_subquestions": ["What is an LLM in this class?", "How do LLMs learn?"]
     },
@@ -471,7 +471,7 @@
       "prerequisites": ["attention", "inner_product"],
       "builds_on": ["representations"],
       "related": ["multi_head_attention"],
-      "compare_with": [],
+      "compare_with": ["multi_head_attention"],
       "retrieval_hints": ["query what I need", "key what I have", "value what I give", "q dot k"],
       "common_subquestions": ["What are q, k, and v?", "Why are three projections needed?"]
     },
@@ -484,7 +484,7 @@
       "prerequisites": ["attention", "qkv"],
       "builds_on": ["transformer"],
       "related": ["feedforward", "residual_stream"],
-      "compare_with": [],
+      "compare_with": ["qkv"],
       "retrieval_hints": ["different heads capture different relationships", "concatenate all heads"],
       "common_subquestions": ["Why do we need multiple heads?"]
     },
@@ -510,7 +510,7 @@
       "prerequisites": ["transformer"],
       "builds_on": ["representations"],
       "related": ["multi_head_attention"],
-      "compare_with": [],
+      "compare_with": ["attention"],
       "retrieval_hints": ["1024 to 4096 to 1024", "expands then projects back"],
       "common_subquestions": ["What do feedforward layers do after attention?"]
     },
@@ -563,7 +563,7 @@
       "prerequisites": ["transformer"],
       "builds_on": ["residual_stream"],
       "related": ["dropout"],
-      "compare_with": [],
+      "compare_with": ["dropout"],
       "retrieval_hints": ["subtract means", "divide by magnitude", "gamma and beta"],
       "common_subquestions": ["What is layer normalization?", "Why normalize each vector?"]
     },
@@ -576,7 +576,7 @@
       "prerequisites": ["bias_variance"],
       "builds_on": ["transformer"],
       "related": ["layer_norm"],
-      "compare_with": [],
+      "compare_with": ["layer_norm"],
       "retrieval_hints": ["some weights do all the learning and some never change"],
       "common_subquestions": ["What problem does dropout solve?"]
     },
@@ -589,7 +589,7 @@
       "prerequisites": ["transformer"],
       "builds_on": ["representations"],
       "related": ["attention"],
-      "compare_with": [],
+      "compare_with": ["layer_norm"],
       "retrieval_hints": ["adds order information to sequences"],
       "common_subquestions": ["Why does a transformer need positional encoding?"]
     },
@@ -761,7 +761,15 @@
     "cnn__mlp": ["connectivity pattern", "local structure vs global mixing", "parameter sharing", "typical feature extraction role", "input geometry"],
     "autoencoder__vector_quantization": ["continuous vs discrete code", "main goal", "compression method", "link through Mimi"],
     "greedy_algorithm__dynamic_programming": ["decision basis", "use of future information", "efficiency", "risk of bad local choices"],
-    "linear_nn__sigmoid": ["function flexibility", "decision boundaries", "ability to model complex categories"]
+    "linear_nn__sigmoid": ["function flexibility", "decision boundaries", "ability to model complex categories"],
+    "dropout__layer_norm": ["when applied during training vs inference", "what problem each solves", "mechanism of action", "effect on representations"],
+    "gradient__loss": ["what each measures", "role in the learning loop", "direction vs magnitude", "how each is computed"],
+    "inference__learning": ["direction of computation", "which quantities are known vs updated", "when each occurs", "role of error signal"],
+    "rvq__vector_quantization": ["number of codebooks", "what gets quantized", "reconstruction quality", "compression granularity"],
+    "qkv__multi_head_attention": ["what each computes per position", "single projection vs parallel ensemble", "role in building contextual representations"],
+    "positional_encoding__layer_norm": ["where injected in the transformer", "what information each preserves", "input augmentation vs hidden-state stabilization"],
+    "autoencoder__llm": ["training objective", "input-output relationship", "typical architecture depth", "role of compression vs prediction"],
+    "attention__feedforward": ["what mixing each performs", "position-wise vs cross-position", "where each sits in a transformer layer"]
   },
   "answer_plan_templates": {
     "direct_definition": ["Direct answer", "Mechanism", "Why it matters in this course", "Optional example"],

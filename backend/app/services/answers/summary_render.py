@@ -226,6 +226,32 @@ def _format_lecture_summary(
     if not main_idea:
         main_idea = f"Lecture {lecture_number} introduces a connected set of course topics."
 
+    idea_bits = [main_idea] if main_idea else []
+    first_head = (_topic_head(ordered[0].get("topic")) or "").strip().lower()
+    seen_heading_for_mains: set[str] = set()
+    if first_head:
+        seen_heading_for_mains.add(first_head)
+    if len(ordered) > 1:
+        for ch in ordered[1:]:
+            head = (_topic_head(ch.get("topic")) or "").strip().lower()
+            if head and head in seen_heading_for_mains:
+                continue
+            if head:
+                seen_heading_for_mains.add(head)
+            extra = _first_sentence(
+                (ch.get("clean_explanation") or ch.get("source_excerpt") or ""),
+                max_len=260,
+            )
+            if not extra:
+                continue
+            ek = extra.strip().lower()
+            if any(ek in bit.lower() or bit.lower() in ek for bit in idea_bits):
+                continue
+            idea_bits.append(extra)
+            if len(idea_bits) >= 3:
+                break
+    main_idea = " ".join(idea_bits) if idea_bits else main_idea
+
     key_topics: list[str] = []
     key_topic_details: list[str] = []
     seen_heads: set[str] = set()
@@ -245,8 +271,8 @@ def _format_lecture_summary(
             key_topic_details.append(f"**{head}:** {detail}")
         else:
             key_topic_details.append(head)
-    key_topics = key_topics[:6]
-    key_topic_details = key_topic_details[:6]
+    key_topics = key_topics[:8]
+    key_topic_details = key_topic_details[:8]
 
     connect_sentence = _connect_sentence(lecture_number, key_topics)
     study_focus = _study_focus_lines(key_topics)

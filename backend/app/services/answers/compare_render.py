@@ -15,6 +15,7 @@ section.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.answers.answer_planning import AnswerPlan
@@ -166,6 +167,54 @@ def _compare_clarification_fallback(
     )
 
 
+def _select_oneliner(
+    lines: list[str],
+    bundle: EvidenceBundleLike,
+    heading: str,
+    kb: ConceptKB,
+) -> str:
+    """Pick the best one-liner for a compare side, preferring lines that mention the entity."""
+    if not lines:
+        return f"(Limited direct material for **{heading}** in retrieved notes.)"
+
+    aliases: list[str] = list(getattr(bundle, "aliases", []) or [])
+    meta = kb.get_concept_by_id(bundle.concept_id)
+    if meta:
+        check_terms = [meta.name.lower(), *(a.lower() for a in meta.aliases[:8])]
+    elif aliases:
+        check_terms = [a.lower() for a in aliases[:8]]
+    else:
+        check_terms = [bundle.concept_id.lower().replace("_", " ")]
+
+    cid_token = getattr(bundle, "concept_id", "") or ""
+    cid_plain = cid_token.strip().lower().replace("_", " ")
+    if len(cid_plain) > 2 and cid_plain not in check_terms:
+        check_terms.insert(0, cid_plain)
+
+    from app.services.answers.entity_retrieval import _term_hits
+
+    for line in lines:
+        ll = line.lower()
+        if bundle.concept_id == "hardmax" and re.search(r"\btemperature\b", ll):
+            continue
+        if any(_term_hits(ll, t) > 0 for t in check_terms if len(t) > 1):
+            return shorten_for_compare_cell(line, max_len=380)
+
+    if meta and meta.summary:
+        summary_lc = meta.summary.lower()
+        if bundle.concept_id != "hardmax" or not re.search(r"\btemperature\b", summary_lc):
+            return shorten_for_compare_cell(meta.summary, max_len=380)
+
+    # Last resort — prefer any line without softmax-temperature bleed on hardmax.
+    for line in lines:
+        ll = line.lower()
+        if bundle.concept_id == "hardmax" and re.search(r"\btemperature\b", ll):
+            continue
+        return shorten_for_compare_cell(line, max_len=380)
+
+    return shorten_for_compare_cell(lines[0], max_len=380)
+
+
 def format_two_entity_compare_markdown(
     plan: AnswerPlan,
     all_chunks: list[dict[str, Any]],
@@ -243,15 +292,11 @@ def format_two_entity_compare_markdown(
             slim_shared.append(line)
     shared_lines = slim_shared
 
-    left_summary_line = (
-        shorten_for_compare_cell(left_lines[0], max_len=380)
-        if left_lines
-        else f"(Limited direct material for **{left_heading}** in retrieved notes.)"
+    left_summary_line = _select_oneliner(
+        left_lines, left_bundle, left_heading, kb
     )
-    right_summary_line = (
-        shorten_for_compare_cell(right_lines[0], max_len=380)
-        if right_lines
-        else f"(Limited direct material for **{right_heading}** in retrieved notes.)"
+    right_summary_line = _select_oneliner(
+        right_lines, right_bundle, right_heading, kb
     )
 
     if left_is_provisional and left_lines:
@@ -272,9 +317,27 @@ def format_two_entity_compare_markdown(
     ]
 
     contrast_bullets: list[str] = []
+    left_seen: set[str] = {_normalize_line_for_dup(left_summary_line)}
+    right_seen: set[str] = {_normalize_line_for_dup(right_summary_line)}
+    for ln in left_lines[:1]:
+        lk = _normalize_line_for_dup(ln)
+        if lk:
+            left_seen.add(lk)
+    for ln in right_lines[:1]:
+        rk = _normalize_line_for_dup(ln)
+        if rk:
+            right_seen.add(rk)
     for axis_label in axis_labels:
-        left_pick = pick_line_for_axis(left_lines, axis_label)
-        right_pick = pick_line_for_axis(right_lines, axis_label)
+        left_pick = pick_line_for_axis(left_lines, axis_label, avoid_normalized=left_seen)
+        right_pick = pick_line_for_axis(right_lines, axis_label, avoid_normalized=right_seen)
+        if left_pick:
+            k = _normalize_line_for_dup(left_pick)
+            if k:
+                left_seen.add(k)
+        if right_pick:
+            k = _normalize_line_for_dup(right_pick)
+            if k:
+                right_seen.add(k)
         left_snippet = (
             shorten_for_compare_cell(left_pick, max_len=200)
             if left_pick
@@ -397,9 +460,17 @@ def format_multi_entity_compare_markdown(
         row_lines, _ = scoped_lines_by_concept.get(bundle.concept_id, ([], False))
         row_heading = display_heading_for_compare(bundle, kb)
         row_cells = [f"**{row_heading}**"]
+        axis_used: set[str] = set()
         for axis_label in axis_labels:
-            best_line = pick_line_for_axis(row_lines, axis_label) if row_lines else None
+            best_line = (
+                pick_line_for_axis(row_lines, axis_label, avoid_normalized=axis_used)
+                if row_lines
+                else None
+            )
             if best_line:
+                k = _normalize_line_for_dup(best_line)
+                if k:
+                    axis_used.add(k)
                 row_cells.append(sanitize_table_cell(best_line, max_len=180))
             elif row_lines:
                 row_cells.append(sanitize_table_cell(row_lines[0], max_len=180))

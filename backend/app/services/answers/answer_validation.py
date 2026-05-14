@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 CRITICAL_CHECK_NAMES = frozenset(
     {
         "must_be_course_grounded",
+        "must_anchor_universal_approximation_definition",
         "must_cover_both_sides",
         "must_not_leak_forbidden_terms",
         "must_not_have_examples_when_blocked",
@@ -49,6 +50,7 @@ _REPAIR_PATHS_BY_CHECK: dict[str, str] = {
     "must_not_leak_forbidden_terms": "retry_retrieval_with_stricter_constraints",
     # Existing critical names (kept for completeness in diagnostics)
     "must_be_course_grounded": "retry_retrieval_with_stricter_constraints",
+    "must_anchor_universal_approximation_definition": "retry_retrieval_with_stricter_constraints",
     "must_cover_both_sides": "rebuild_evidence_bundles",
     "must_not_have_examples_when_blocked": "render_limitation_message",
     "must_not_have_technical_when_intuition_only": "render_limitation_message",
@@ -187,13 +189,28 @@ def _must_be_course_grounded(answer: str, sq: StructuredQuery, kb: ConceptKB) ->
     al = answer.lower()
     if "lecture" in al:
         return True
+    concept_mentioned = False
     for cid in sq.concept_ids[:6]:
         c = kb.get_concept_by_id(cid)
         if c and (c.name.lower() in al or any(a.lower() in al for a in c.aliases[:5] if len(a) > 2)):
-            return True
+            concept_mentioned = True
+            break
+    if concept_mentioned:
+        return True
     for dc in sq.intent.detected_concepts:
         if dc.lower() in al:
-            return True
+            concept_mentioned = True
+            break
+    if concept_mentioned:
+        return True
+    # For definition/explanation modes, require a concept mention — not just
+    # length — to avoid passing answers that hallucinate without grounding.
+    if sq.answer_intent in (
+        "direct_definition",
+        "multi_step_explanation",
+        "scoped_explanation",
+    ):
+        return False
     return len(answer) > 200
 
 
@@ -208,13 +225,51 @@ def _must_define_primary_concept(answer: str, sq: StructuredQuery, kb: ConceptKB
     return _mentions_term(answer, c0.name) or any(_mentions_term(answer, a) for a in c0.aliases[:6])
 
 
+def _must_anchor_universal_approximation_definition(answer: str, sq: StructuredQuery, kb: ConceptKB) -> bool:
+    """Reject textbook real-analysis prose with no tie to lecture/KB wording (critics flag as hallucinated)."""
+    if not sq.concept_ids or sq.concept_ids[0] != "universal_approximation":
+        return True
+    qlow = sq.intent.original_query.lower()
+    definition_like = (
+        sq.answer_intent == "direct_definition"
+        or "definition" in qlow
+        or "define" in qlow
+        or sq.intent.query_type.value == "definition"
+    )
+    if not definition_like:
+        return True
+    al = answer.lower()
+    if "lecture" in al:
+        return True
+    meta = kb.get_concept_by_id("universal_approximation")
+    if not meta:
+        return True
+    for h in meta.retrieval_hints:
+        hl = (h or "").strip().lower()
+        if len(hl) > 4 and hl in al:
+            return True
+    return (
+        "one hidden layer" in al
+        or "single hidden layer" in al
+        or "hidden layer" in al
+        or "enough neuron" in al
+        or ("wide" in al and "shallow" in al)
+        or "approximate functions" in al
+    )
+
+
 def _answer_covers_compare_entity(answer: str, entity_raw: str, kb: ConceptKB) -> bool:
     """True if the answer visibly references this side: literal entity phrase or KB name/alias."""
     if not entity_raw or not entity_raw.strip():
         return False
     part = _normalize_compare_entity_phrase(entity_raw)
-    if _mentions_term(answer, entity_raw) or _mentions_term(answer, part):
-        return True
+    variants = [entity_raw, part]
+    pl = part.lower()
+    if len(pl) >= 5 and pl.endswith("s") and not pl.endswith("ss"):
+        variants.append(part[:-1])
+    for v in variants:
+        if v and _mentions_term(answer, v):
+            return True
     if not part:
         return False
     c = kb.get_concept(part) or kb.get_concept(part.split()[0])
@@ -434,12 +489,15 @@ def _direct_answer_text(plan: AnswerPlan) -> str:
 def _compare_entity_labels(sq: StructuredQuery, kb: ConceptKB) -> list[str]:
     """Best-effort list of compared entity labels for compare / compare_multi.
 
-    For two-way ``compare``, KB canonical names for the first two
-    ``concept_ids`` are queued **before** raw ``compare_entities`` strings.
-    That keeps :func:`_must_match_compare_contract` aligned with the paired
-    concepts :func:`build_answer_plan` uses even when
-    :func:`extract_compare_entities` splits a trailing qualifier into a bogus
-    second entity (e.g. ``variance with respect to overfitting``).
+    - Two **distinct** KB ids: prefer canonical concept names first so contracts
+      match rendered headings (``greedy algorithm`` vs plural ``greedy algorithms``
+      in the raw query).
+    - **Duplicate** id (statistical bias/variance as ``bias_variance`` twice): use
+      ``compare_entities`` surface tokens (``bias``, ``variance``) instead of the
+      compound name twice.
+
+    Remaining ids / strings are appended for recall without reordering the first
+    two contract-critical labels when already populated.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -457,16 +515,22 @@ def _compare_entity_labels(sq: StructuredQuery, kb: ConceptKB) -> list[str]:
         out.append(clean)
 
     if sq.answer_intent == "compare" and len(sq.concept_ids) >= 2:
-        for cid in sq.concept_ids[:2]:
-            meta = kb.get_concept_by_id(cid)
-            if meta:
-                _add(meta.name)
+        if sq.concept_ids[0] != sq.concept_ids[1]:
+            for cid in sq.concept_ids[:2]:
+                meta = kb.get_concept_by_id(cid)
+                if meta:
+                    _add(meta.name)
+        else:
+            for ent in sq.intent.compare_entities or []:
+                _add(ent)
 
-    for ent in sq.intent.compare_entities or []:
-        _add(ent)
     if sq.intent.compare_concepts:
         for ent in sq.intent.compare_concepts:
             _add(ent)
+
+    for ent in sq.intent.compare_entities or []:
+        _add(ent)
+
     for cid in sq.concept_ids or []:
         meta = kb.get_concept_by_id(cid)
         if meta:
@@ -525,6 +589,11 @@ def _must_match_compare_contract(answer: str, sq: StructuredQuery, kb: ConceptKB
         return True
     al = (answer or "").lower()
     if sq.answer_intent == "compare":
+        if sq.intent.compare_entities and len(sq.intent.compare_entities) >= 2:
+            a_ent, b_ent = sq.intent.compare_entities[0], sq.intent.compare_entities[1]
+            return _answer_covers_compare_entity(answer, a_ent, kb) and _answer_covers_compare_entity(
+                answer, b_ent, kb
+            )
         return _mentions_term(al, labels[0]) and _mentions_term(al, labels[1])
     hits = sum(1 for label in labels if _mentions_term(al, label))
     return hits >= 2
@@ -683,7 +752,7 @@ def _must_direct_answer_mention_target_concept(
             b = mb.name if mb else sq.concept_ids[1]
         else:
             return True
-        return _mentions_term(al, a) and _mentions_term(al, b)
+        return _answer_covers_compare_entity(text, a, kb) and _answer_covers_compare_entity(text, b, kb)
     if not sq.concept_ids:
         return True
     primary_meta = kb.get_concept_by_id(sq.concept_ids[0])
@@ -718,6 +787,10 @@ def validate_answer(
     run("must_be_course_grounded", _must_be_course_grounded(answer, sq, kb))
 
     ai = sq.answer_intent
+    run(
+        "must_anchor_universal_approximation_definition",
+        _must_anchor_universal_approximation_definition(answer, sq, kb),
+    )
     if ai == "direct_definition":
         run("must_define_primary_concept", _must_define_primary_concept(answer, sq, kb))
     if ai == "compare":

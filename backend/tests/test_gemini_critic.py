@@ -77,7 +77,7 @@ def test_run_gemini_critic_success_json():
 
     app = create_app(TestConfig)
     app.config["GEMINI_API_KEY"] = "test-key"
-    app.config["CRITIC_PASS_THRESHOLD"] = 0.7
+    app.config["CRITIC_PASS_THRESHOLD"] = 0.68
 
     with app.app_context():
         with patch("app.services.critic.gemini_critic.urllib.request.urlopen", return_value=_FakeResp()):

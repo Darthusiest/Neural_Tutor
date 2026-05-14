@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +32,7 @@ from app.services.retrieval import invalidate_lecture_cache, load_lecture_cache
 from app.services.answers.answer_planning import AnswerPlan
 from app.services.answers.compare_evidence import scoped_lines_from_chunks
 from app.services.answers.compare_render import (
+    _select_oneliner,
     format_multi_entity_compare_markdown,
     format_two_entity_compare_markdown,
 )
@@ -39,6 +41,8 @@ from app.services.answers.entity_retrieval import (
     ConceptEvidenceBundleV2,
     build_bundles_for_compare_v2,
     classify_line_for_compare,
+    forbidden_terms_for_concept,
+    _entity_terms_for_aliases,
 )
 from app.services.knowledge.concept_kb import get_kb
 from app.services.knowledge.structured_query import StructuredQuery, build_structured_query
@@ -356,6 +360,57 @@ def test_compare_softmax_and_hardmax_separate_bundles(app):
         soft_lines = {line.strip().lower() for line in bundle_sm.core_lines}
         hard_lines = {line.strip().lower() for line in bundle_hm.core_lines}
         assert soft_lines.isdisjoint(hard_lines)
+
+
+def test_select_oneliner_hardmax_skips_temperature_bleed(app):
+    """Regression: softmax/temperature bleed must not become the hardmax one-liner."""
+    with app.app_context():
+        kb = get_kb()
+        bundle = SimpleNamespace(concept_id="hardmax", aliases=["argmax"])
+        lines = [
+            "Scaling logits with temperature sharpens softmax before taking argmax.",
+            "Hardmax picks the argmax index and emits a one-hot vector.",
+        ]
+        picked = _select_oneliner(lines, bundle, "Hardmax", kb)
+        lc = picked.lower()
+        assert "temperature" not in lc
+        assert ("one-hot" in lc) or ("argmax" in lc)
+        assert "temperature" not in lc
+
+
+def test_gradient_peer_loss_marks_pure_rvq_line_as_forbidden_on_gradient_side(app):
+    """RVQ/leak jargon must not classify as gradient core when contrasting with loss."""
+    with app.app_context():
+        kb = get_kb()
+        g_meta = kb.get_concept_by_id("gradient")
+        l_meta = kb.get_concept_by_id("loss")
+        assert g_meta and l_meta
+        a_terms = _entity_terms_for_aliases(
+            g_meta.name,
+            list(g_meta.aliases),
+            concept_id="gradient",
+            split_alias_fragments=True,
+        )
+        b_terms = _entity_terms_for_aliases(
+            l_meta.name,
+            list(l_meta.aliases),
+            concept_id="loss",
+            split_alias_fragments=True,
+        )
+        fa = forbidden_terms_for_concept("gradient", ["loss"], kb)
+        fb = forbidden_terms_for_concept("loss", ["gradient"], kb)
+        rvq_line = (
+            "The gradient step can interact with residual vector quantization "
+            "when a second codebook encodes leftover residuals."
+        )
+        label, _dbg = classify_line_for_compare(
+            rvq_line,
+            entity_a_terms=a_terms,
+            entity_b_terms=b_terms,
+            forbidden_a=fa,
+            forbidden_b=fb,
+        )
+        assert label == "forbidden_a"
 
 
 # ---------------------------------------------------------------------------

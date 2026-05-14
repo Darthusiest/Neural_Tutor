@@ -76,9 +76,19 @@ def test_run_critic_for_eval_run_writes_rows_and_charts(app, tmp_path, monkeypat
         rows = EvaluationCriticResult.query.filter_by(critic_batch_id=batch).all()
         assert len(rows) == 1
         assert rows[0].critic_pass is True
+        from app.services.eval_critic import critic_summary_for_run
+
+        summary = critic_summary_for_run(rid)
+        assert summary.get("critic_batch_complete") is True
 
     out_dir = tmp_path / "evaluation_outputs" / "critic" / batch
     assert (out_dir / "pipeline_diagram.png").is_file()
+    assert (out_dir / "critic_metrics.json").is_file()
+    metrics = json.loads((out_dir / "critic_metrics.json").read_text(encoding="utf-8"))
+    assert metrics["critic_batch_id"] == batch
+    assert metrics["evaluation_run_id"] == rid
+    assert metrics["critic_pass_threshold"] == 0.68
+    assert "failure_primary_counts" in metrics
 
 
 def test_run_critic_cached_without_force(app, tmp_path, monkeypatch):
@@ -340,3 +350,79 @@ def test_run_critic_no_cases_in_scope(app, tmp_path, monkeypatch):
             out = run_critic_for_eval_run(rid, force=True)
         m.assert_not_called()
     assert out.get("error") == "no_cases_in_scope"
+
+
+def test_run_critic_for_eval_run_survives_case_exception(app, tmp_path, monkeypatch):
+    """One crashing case must not abort the whole batch (threads used to die silently in Admin)."""
+    monkeypatch.setattr("app.services.eval_critic._repo_root", lambda: tmp_path)
+
+    ok = CriticVerdict(
+        score=1.0,
+        passed=True,
+        dimensions={
+            "grounded": 1.0,
+            "accurate": 1.0,
+            "complete": 1.0,
+            "mode_compliant": 1.0,
+            "no_hallucination": 1.0,
+        },
+        error_categories=[],
+        rationale="ok",
+    )
+
+    with app.app_context():
+        run = EvaluationRun(
+            run_name="ex",
+            dataset_name="ds",
+            total_cases=2,
+            passed_cases=2,
+            failed_cases=0,
+        )
+        db.session.add(run)
+        db.session.flush()
+        for tid in ("first", "second"):
+            db.session.add(
+                EvaluationCaseResult(
+                    evaluation_run_id=run.id,
+                    test_id=tid,
+                    query_text="q",
+                    expected_mode="chat",
+                    effective_mode="chat",
+                    expected_behavior_json="{}",
+                    pass_bool=True,
+                    score=1.0,
+                    error_categories_json="[]",
+                    retrieval_chunk_ids_json="[]",
+                    assistant_message_id=None,
+                )
+            )
+        db.session.commit()
+        rid = run.id
+
+        with patch(
+            "app.services.eval_critic.run_gemini_critic",
+            side_effect=[
+                (ok, {"model": "gemini-test"}),
+                RuntimeError("simulated critic blow-up"),
+            ],
+        ):
+            from app.services.eval_critic import run_critic_for_eval_run
+
+            out = run_critic_for_eval_run(rid, force=True)
+
+    assert out.get("status") == "ok"
+    batch = out["critic_batch_id"]
+    with app.app_context():
+        rows = (
+            EvaluationCriticResult.query.filter_by(critic_batch_id=batch)
+            .order_by(EvaluationCriticResult.case_result_id)
+            .all()
+        )
+        assert len(rows) == 2
+        assert rows[0].critic_pass is True
+        assert rows[1].critic_score is None
+        assert "critic_case_exception" in (rows[1].error_categories_json or "")
+        from app.services.eval_critic import critic_summary_for_run
+
+        summary = critic_summary_for_run(rid)
+        assert summary.get("critic_batch_complete") is True

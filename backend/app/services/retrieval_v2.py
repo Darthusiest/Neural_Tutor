@@ -122,7 +122,8 @@ class EnhancedRetrievalResult(RetrievalResult):
 
 def _handle_definition(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
     """Focused retrieval — top chunks, prefer definition/process chunk_types."""
-    base = retrieve_chunks(expanded_q, top_k=top_k)
+    effective_k = min(top_k, 5)
+    base = retrieve_chunks(expanded_q, top_k=effective_k)
     chunks = _boost_chunk_type(base.chunks, preferred=("definition", "process"))
     return _wrap(base, chunks, intent)
 
@@ -275,7 +276,8 @@ def _handle_quiz(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRe
 
 
 def _handle_general(expanded_q: str, intent: QueryIntent, top_k: int) -> EnhancedRetrievalResult:
-    base = retrieve_chunks(expanded_q, top_k=top_k)
+    effective_k = min(top_k, 5)
+    base = retrieve_chunks(expanded_q, top_k=effective_k)
     filtered = _filter_glossary_chunks(base.chunks)
     supporting = _gather_supporting(filtered, intent)
     return EnhancedRetrievalResult(

@@ -78,6 +78,30 @@ _DEFAULT_FORBIDDEN_BY_CONCEPT: dict[str, list[str]] = {
         "softmax",
         "multi-head",
     ],
+    # Compare vs softmax — temperature sits with softmax/chunk bleed, not winner-take-all.
+    "hardmax": [
+        "temperature",
+        "softmax temperature",
+    ],
+    # Compare gradient vs loss — RVQ/error chunks mention "residual"/codebooks unrelated to Δw vs L.
+    "gradient": [
+        "residual vector quantization",
+        "rvq",
+        "vector quantization",
+        "quantize the leftover",
+        "second codebook",
+        "encode the leftover",
+        "codebook entry",
+        "mimi",
+    ],
+    "loss": [
+        "residual vector quantization",
+        "rvq",
+        "quantize the leftover",
+        "second codebook",
+        "codebook entry",
+        "mimi",
+    ],
 }
 
 # Generic NN boilerplate that often leaks into unrelated answers
@@ -574,9 +598,135 @@ def generic_nn_filler_score(text: str) -> float:
 # just one with the other glanced incidentally.
 _V2_SHARED_MIN_RATIO = 0.6
 
+# Phrases for splitting lecture lines when both compare slots map to the single
+# KB concept ``bias_variance`` (*bias vs variance* tradeoff).
+_BIAS_VAR_SIDE_PHRASES_BIAS = (
+    "systematic error",
+    "high bias",
+    "underfitting",
+    "underfit",
+    "too simple",
+    "inflexible",
+)
+_BIAS_VAR_SIDE_PHRASES_VAR = (
+    "high variance",
+    "overfitting",
+    "overfit",
+    "generalization error",
+    "not generalize",
+    "sensitivity to noise",
+    "memorize",
+)
+
+
+def _bias_variance_monolithic_split_line(line: str) -> str | None:
+    """Bucket one line for duplicate-id bias/variance compare, or ``None`` if off-topic."""
+    ll = (line or "").lower().strip()
+    if not ll:
+        return None
+    # Neural-network "bias" (weights/biases) is a different sense.
+    if re.search(r"\bweights?\b.*\bbias\b|\bbias\b.*\bweights?\b", ll):
+        return None
+    compact = ll.replace(" ", "")
+    if "wx+b" in compact or "wx+bias" in compact:
+        return None
+
+    b = float(sum(_term_hits(ll, t) for t in _BIAS_VAR_SIDE_PHRASES_BIAS))
+    v = float(sum(_term_hits(ll, t) for t in _BIAS_VAR_SIDE_PHRASES_VAR))
+    b += 0.55 * float(len(re.findall(r"\bbias\b", ll)))
+    v += 0.55 * float(len(re.findall(r"\bvariance\b", ll)))
+
+    if b < 0.55 and v < 0.55:
+        return None
+    if b >= 1.0 and v >= 1.0:
+        small, large = sorted([b, v])
+        if large > 0 and (small / large) >= _V2_SHARED_MIN_RATIO:
+            return "shared"
+    if b > v:
+        return "bias_side"
+    if v > b:
+        return "variance_side"
+    return None
+
+
+def _build_bias_variance_compare_bundles(
+    chunks: list[dict[str, Any]],
+    kb: ConceptKB,
+    *,
+    top_per_side: int,
+    min_support: float,
+    max_core_lines: int,
+) -> tuple[ConceptEvidenceBundleV2, ConceptEvidenceBundleV2]:
+    """Compare *bias vs variance* when both structured-query slots use ``bias_variance``.
+
+    Regular two-way compare assumes distinct concept ids; this path keeps one
+    retrieval concept but splits lines onto **Bias** vs **Variance** headings.
+    """
+    from app.services.answers.compare_evidence import chunks_to_raw_units
+
+    cid = "bias_variance"
+    meta = kb.get_concept_by_id(cid)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for c in chunks:
+        s, _ = score_chunk_for_entity(c, cid, kb, peer_concept_ids=[])
+        scored.append((s, c))
+    scored.sort(key=lambda x: -x[0])
+    pool, support_score = _take_top_chunks(scored, max(top_per_side * 3, 8))
+
+    core_bias: list[str] = []
+    core_var: list[str] = []
+    shared: list[str] = []
+    for unit in chunks_to_raw_units(pool):
+        role = _bias_variance_monolithic_split_line(unit)
+        if role == "bias_side":
+            core_bias.append(unit)
+        elif role == "variance_side":
+            core_var.append(unit)
+        elif role == "shared":
+            shared.append(unit)
+
+    core_bias = _dedupe_strings(core_bias)[:max_core_lines]
+    core_var = _dedupe_strings(core_var)[:max_core_lines]
+    shared_combined = _dedupe_strings(shared)
+
+    gap = ["low_support"] if support_score < min_support else None
+    aliases = list(meta.aliases) if meta else []
+
+    bundle_bias = ConceptEvidenceBundleV2(
+        concept=cid,
+        aliases=aliases,
+        evidence_chunks=pool[:top_per_side],
+        core_lines=core_bias,
+        support_score=support_score,
+        forbidden_hits=[],
+        shared_lines=list(shared_combined),
+        source_metadata=_source_metadata_for_chunks(pool),
+        confidence=_bundle_confidence(support_score),
+        label_override="Bias",
+        gap_flags_override=list(gap) if gap else None,
+    )
+    bundle_var = ConceptEvidenceBundleV2(
+        concept=cid,
+        aliases=aliases,
+        evidence_chunks=pool[:top_per_side],
+        core_lines=core_var,
+        support_score=support_score,
+        forbidden_hits=[],
+        shared_lines=list(shared_combined),
+        source_metadata=_source_metadata_for_chunks(pool),
+        confidence=_bundle_confidence(support_score),
+        label_override="Variance",
+        gap_flags_override=list(gap) if gap else None,
+    )
+    return bundle_bias, bundle_var
+
 
 def _entity_terms_for_aliases(
-    label: str, aliases: list[str], *, concept_id: str | None = None
+    label: str,
+    aliases: list[str],
+    *,
+    concept_id: str | None = None,
+    split_alias_fragments: bool = True,
 ) -> list[str]:
     """Lowercased term set for cross-entity matching.
 
@@ -588,9 +738,13 @@ def _entity_terms_for_aliases(
     - the canonical ``label``
     - each alias
 
-    Multi-word phrases are also split into their content words so a line
-    talking about ``probability distribution`` still matches the alias
-    ``probability distribution from logits``.
+    When ``split_alias_fragments`` is True (default), multi-word phrases are
+    split into content words so a line about ``probability distribution``
+    still matches the alias ``probability distribution from logits``.
+
+    Compare-mode line classification sets this to **False** so generic
+    fragments like ``algorithm`` (from *greedy algorithm*) or ``spectrum``
+    (from MFCC aliases) cannot dominate scoring and pull unrelated sentences.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -609,19 +763,20 @@ def _entity_terms_for_aliases(
     for alias in aliases:
         _add(alias)
 
+    if not split_alias_fragments:
+        return out
+
     # Split punctuation-heavy aliases (e.g. "hardmax / winner-take-all") so
     # individual content words still match. Tokens shorter than 3 chars are
     # dropped to avoid spurious matches like "of" / "to".
-    extra_tokens: list[str] = []
     for raw in [label, *aliases]:
         if not raw:
             continue
         for tok in re.split(r"[^a-z0-9-]+", str(raw).lower()):
             tok = tok.strip("-_/.")
             if len(tok) >= 3 and tok not in seen:
-                extra_tokens.append(tok)
                 seen.add(tok)
-    out.extend(extra_tokens)
+                out.append(tok)
     return out
 
 
@@ -792,8 +947,25 @@ def _build_v2_lines(
                 if term and _term_hits(unit_lower, term) > 0:
                     forbidden_hits.append(term)
                     break
+    deduped_core = _dedupe_strings(core)[:max_lines]
+
+    # Promote a line mentioning the entity to the front so the compare
+    # renderer's one-liner is not an unrelated sentence (e.g. an RVQ line
+    # appearing as gradient's one-liner).
+    side_terms = entity_a_terms if side == "a" else entity_b_terms
+    if deduped_core and side_terms:
+        first_lower = deduped_core[0].lower()
+        first_mentions_entity = any(
+            _term_hits(first_lower, t) > 0 for t in side_terms[:6]
+        )
+        if not first_mentions_entity:
+            for idx, line in enumerate(deduped_core[1:], start=1):
+                if any(_term_hits(line.lower(), t) > 0 for t in side_terms[:6]):
+                    deduped_core.insert(0, deduped_core.pop(idx))
+                    break
+
     return (
-        _dedupe_strings(core)[:max_lines],
+        deduped_core,
         _dedupe_strings(shared),
         _dedupe_strings(forbidden_hits),
     )
@@ -830,6 +1002,15 @@ def build_bundles_for_compare_v2(
     as separate entities) without polluting the production KB.
     """
     kb = kb or get_kb()
+    if ca_id == cb_id == "bias_variance":
+        return _build_bias_variance_compare_bundles(
+            chunks,
+            kb,
+            top_per_side=top_per_side,
+            min_support=min_support,
+            max_core_lines=max_core_lines,
+        )
+
     aliases_override = aliases_override or {}
     label_override = label_override or {}
 
@@ -842,8 +1023,12 @@ def build_bundles_for_compare_v2(
     a_aliases = aliases_override.get(ca_id, list(a_meta.aliases) if a_meta else [])
     b_aliases = aliases_override.get(cb_id, list(b_meta.aliases) if b_meta else [])
 
-    entity_a_terms = _entity_terms_for_aliases(a_label, a_aliases, concept_id=ca_id)
-    entity_b_terms = _entity_terms_for_aliases(b_label, b_aliases, concept_id=cb_id)
+    entity_a_terms = _entity_terms_for_aliases(
+        a_label, a_aliases, concept_id=ca_id, split_alias_fragments=False
+    )
+    entity_b_terms = _entity_terms_for_aliases(
+        b_label, b_aliases, concept_id=cb_id, split_alias_fragments=False
+    )
 
     # Forbidden terms come from the KB-aware list when available; for
     # off-KB entities, fall back to "the other side's terms" so a line
@@ -982,14 +1167,21 @@ def build_bundles_multi_v2(
         meta = kb.get_concept_by_id(eid)
         label = meta.name if meta else eid
         aliases = list(meta.aliases) if meta else []
-        entity_terms = _entity_terms_for_aliases(label, aliases, concept_id=eid)
+        entity_terms = _entity_terms_for_aliases(
+            label, aliases, concept_id=eid, split_alias_fragments=False
+        )
         forbidden = forbidden_terms_for_concept(eid, peers, kb)
         peer_terms: list[str] = []
         for pid in peers:
             peer_meta = kb.get_concept_by_id(pid)
             if peer_meta:
                 peer_terms.extend(
-                    _entity_terms_for_aliases(peer_meta.name, peer_meta.aliases, concept_id=pid)
+                    _entity_terms_for_aliases(
+                        peer_meta.name,
+                        peer_meta.aliases,
+                        concept_id=pid,
+                        split_alias_fragments=False,
+                    )
                 )
 
         from app.services.answers.compare_evidence import chunks_to_raw_units

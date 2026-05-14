@@ -189,18 +189,46 @@ def axis_token_overlap(axis: str, line: str) -> float:
     return hits / len(axis_words)
 
 
-def pick_line_for_axis(lines: list[str], axis: str) -> str | None:
+def pick_line_for_axis(
+    lines: list[str],
+    axis: str,
+    *,
+    avoid_normalized: set[str] | None = None,
+) -> str | None:
     if not lines:
         return None
-    best: str | None = None
-    best_s = -1.0
+    avoid = avoid_normalized or set()
+    from app.services.answers.answer_validation import _normalize_line_for_dup
+
+    ranked: list[tuple[float, str, str]] = []
     for ln in lines:
         s = axis_token_overlap(axis, ln)
-        if s > best_s:
-            best_s = s
-            best = ln
-    if best is not None and best_s > 0:
-        return best
+        key = _normalize_line_for_dup(ln)
+        ranked.append((s, ln, key))
+    ranked.sort(key=lambda t: (-t[0], -len(t[1])))
+    best_zero: str | None = None
+
+    for s, ln, key in ranked:
+        if key and key in avoid:
+            continue
+        if s > 0:
+            return ln
+        if best_zero is None:
+            best_zero = ln
+    if best_zero is not None:
+        return best_zero
+
+    # Every line normalized-key collides — fall back ignoring avoid keys.
+    for ln in lines:
+        s = axis_token_overlap(axis, ln)
+        if s > 0:
+            return ln
+
+    # Last resort — still prefer a visually distinct trailing line vs repeating bullets[0]
+    first_key = _normalize_line_for_dup(lines[0])
+    for ln in lines[1:]:
+        if _normalize_line_for_dup(ln) != first_key:
+            return ln
     return lines[0]
 
 

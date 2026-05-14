@@ -172,7 +172,12 @@ def _build_underspecified_retrieval_result(
     if not is_underspecified_for_mode(text, sq, effective):
         return None, None
     clarification = clarification_for_mode(text, sq, effective)
-    return _empty_retrieval_result(intent, mode_routing), clarification
+    wrapped = (
+        clarification.strip()
+        if clarification.lstrip().lower().startswith("course answer:")
+        else f"Course Answer:\n\n{clarification.strip()}"
+    )
+    return _empty_retrieval_result(intent, mode_routing), wrapped
 
 
 def _empty_retrieval_result(

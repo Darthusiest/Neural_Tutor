@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from app.extensions import db
 from app.models import LectureChunk, Message, RetrievalChunkHit, RetrievalLog
 from app.models.evaluation import EvaluationCaseResult, EvaluationCriticResult, EvaluationRun
 from app.services.critic.gemini_critic import run_gemini_critic
+
+logger = logging.getLogger(__name__)
 
 
 def _repo_root() -> Path:
@@ -361,70 +364,114 @@ def run_critic_for_eval_run(
             partial = True
             break
 
-        payload = _load_payload(case.assistant_message_id)
-        pl = payload.get("pipeline_diagnostics")
-        if isinstance(pl, str):
-            try:
-                pl = json.loads(pl)
-            except json.JSONDecodeError:
-                pl = None
-        if not isinstance(pl, dict):
-            pl = {}
-        rlog = None
-        if case.assistant_message_id:
-            rlog = RetrievalLog.query.filter_by(message_id=case.assistant_message_id).first()
-
-        retrieved = _chunks_for_message(
-            case.assistant_message_id,
-            _parse_chunk_ids(case.retrieval_chunk_ids_json),
+        logger.info(
+            "Critic batch %s progress %s/%s case_result_id=%s test_id=%s",
+            batch_id,
+            idx + 1,
+            len(target_cases),
+            case.id,
+            case.test_id,
         )
-        plan = pl.get("answer_plan") if isinstance(pl.get("answer_plan"), dict) else None
-        effective = _effective_mode_for_critic(case, payload)
 
-        expected_behavior = parse_expected_behavior(case.expected_behavior_json)
-        t0 = time.perf_counter()
-        verdict, meta = run_gemini_critic(
-            user_question=case.query_text or "",
-            course_answer=payload.get("course_answer") or case.actual_response or "",
-            boosted_explanation=payload.get("boosted_explanation"),
-            retrieved_chunks=retrieved,
-            structured_plan=plan,
-            expected_behavior=expected_behavior,
-            mode=effective,
-        )
-        elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        if meta.get("model"):
-            model_names.append(str(meta["model"]))
-        token_accum += _usage_total_tokens(meta)
-
-        err_cats = verdict.error_categories if verdict else _error_categories_for_no_verdict(meta)
-        cr_row = EvaluationCriticResult(
-            evaluation_run_id=run_id,
-            case_result_id=case.id,
-            critic_batch_id=batch_id,
-            critic_score=verdict.score if verdict else None,
-            critic_pass=bool(verdict.passed) if verdict else False,
-            dimension_scores_json=json.dumps(verdict.dimensions) if verdict else None,
-            error_categories_json=json.dumps(err_cats),
-            rationale_text=(
-                verdict.rationale
-                if verdict
-                else str(meta.get("error") or meta.get("raw_preview") or meta.get("body_preview") or "no_verdict")
-            )[:16_000],
-            category=suite_category(case),
-            query_type_v2=rlog.query_type_v2 if rlog else None,
-            answer_mode=rlog.answer_mode if rlog else None,
-            model_name=str(meta.get("model")) if meta.get("model") else None,
-            latency_ms=elapsed_ms,
-            tokens_estimated=_usage_total_tokens(meta) or None,
-            critic_prompt_version=prompt_ver,
-        )
-        db.session.add(cr_row)
         try:
-            db.session.commit()
+            payload = _load_payload(case.assistant_message_id)
+            pl = payload.get("pipeline_diagnostics")
+            if isinstance(pl, str):
+                try:
+                    pl = json.loads(pl)
+                except json.JSONDecodeError:
+                    pl = None
+            if not isinstance(pl, dict):
+                pl = {}
+            rlog = None
+            if case.assistant_message_id:
+                rlog = RetrievalLog.query.filter_by(message_id=case.assistant_message_id).first()
+
+            retrieved = _chunks_for_message(
+                case.assistant_message_id,
+                _parse_chunk_ids(case.retrieval_chunk_ids_json),
+            )
+            plan = pl.get("answer_plan") if isinstance(pl.get("answer_plan"), dict) else None
+            effective = _effective_mode_for_critic(case, payload)
+
+            expected_behavior = parse_expected_behavior(case.expected_behavior_json)
+            t0 = time.perf_counter()
+            verdict, meta = run_gemini_critic(
+                user_question=case.query_text or "",
+                course_answer=payload.get("course_answer") or case.actual_response or "",
+                boosted_explanation=payload.get("boosted_explanation"),
+                retrieved_chunks=retrieved,
+                structured_plan=plan,
+                expected_behavior=expected_behavior,
+                mode=effective,
+            )
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            if meta.get("model"):
+                model_names.append(str(meta["model"]))
+            token_accum += _usage_total_tokens(meta)
+
+            err_cats = verdict.error_categories if verdict else _error_categories_for_no_verdict(meta)
+            cr_row = EvaluationCriticResult(
+                evaluation_run_id=run_id,
+                case_result_id=case.id,
+                critic_batch_id=batch_id,
+                critic_score=verdict.score if verdict else None,
+                critic_pass=bool(verdict.passed) if verdict else False,
+                dimension_scores_json=json.dumps(verdict.dimensions) if verdict else None,
+                error_categories_json=json.dumps(err_cats),
+                rationale_text=(
+                    verdict.rationale
+                    if verdict
+                    else str(meta.get("error") or meta.get("raw_preview") or meta.get("body_preview") or "no_verdict")
+                )[:16_000],
+                category=suite_category(case),
+                query_type_v2=rlog.query_type_v2 if rlog else None,
+                answer_mode=rlog.answer_mode if rlog else None,
+                model_name=str(meta.get("model")) if meta.get("model") else None,
+                latency_ms=elapsed_ms,
+                tokens_estimated=_usage_total_tokens(meta) or None,
+                critic_prompt_version=prompt_ver,
+            )
+            db.session.add(cr_row)
+            try:
+                db.session.commit()
+            except SQLAlchemyError:
+                db.session.rollback()
+                raise
         except SQLAlchemyError:
-            db.session.rollback()
             raise
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception(
+                "Critic case failed run_id=%s batch=%s case_result_id=%s test_id=%s",
+                run_id,
+                batch_id,
+                case.id,
+                case.test_id,
+            )
+            fail_row = EvaluationCriticResult(
+                evaluation_run_id=run_id,
+                case_result_id=case.id,
+                critic_batch_id=batch_id,
+                critic_score=None,
+                critic_pass=False,
+                dimension_scores_json=None,
+                error_categories_json=json.dumps(["critic_case_exception"]),
+                rationale_text=f"{type(exc).__name__}: {exc}"[:16_000],
+                category=suite_category(case),
+                query_type_v2=None,
+                answer_mode=None,
+                model_name=None,
+                latency_ms=None,
+                tokens_estimated=None,
+                critic_prompt_version=prompt_ver,
+            )
+            db.session.add(fail_row)
+            try:
+                db.session.commit()
+            except SQLAlchemyError:
+                db.session.rollback()
+                raise
 
         delay_cases = float(current_app.config.get("CRITIC_INTER_CASE_DELAY_SEC", 0) or 0)
         if delay_cases > 0 and idx < len(target_cases) - 1:
@@ -463,6 +510,38 @@ def run_critic_for_eval_run(
         include_regression=False,
         summary_run=summary_ns,
     )
+
+    pass_threshold = float(current_app.config.get("CRITIC_PASS_THRESHOLD", 0.68))
+    failure_primary_counts: dict[str, int] = {}
+    for cr in crit_rows:
+        if cr.critic_pass:
+            continue
+        pk = _map_critic_primary(cr) or "unknown"
+        failure_primary_counts[pk] = failure_primary_counts.get(pk, 0) + 1
+
+    metrics_payload: dict[str, Any] = {
+        "evaluation_run_id": run_id,
+        "critic_batch_id": batch_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "critic_pass_threshold": pass_threshold,
+        "critic_prompt_version": prompt_ver,
+        "modes_filter": allow_list,
+        "critic_target_cases": len(target_cases),
+        "cases_critiqued": len(proxies),
+        "critic_pass_rate": round(passed_n / max(1, len(proxies)), 4),
+        "critic_mean_score": mean_score,
+        "critic_passed_cases": passed_n,
+        "critic_batch_complete": critic_batch_complete(run_id, batch_id),
+        "partial_due_to_token_cap": partial,
+        "failure_primary_counts": dict(sorted(failure_primary_counts.items())),
+    }
+    try:
+        (out_dir / "critic_metrics.json").write_text(
+            json.dumps(metrics_payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.warning("Could not write critic_metrics.json: %s", e)
 
     run_total = int(run.total_cases or len(cases))
     return {
@@ -503,6 +582,7 @@ def critic_summary_for_run(run_id: int) -> dict[str, Any] | None:
             "critic_target_cases": None,
             "modes_filter": modes_filter,
             "critic_batch_id": None,
+            "critic_batch_complete": None,
             "critic_pass_rate": None,
             "critic_mean_score": None,
             "critic_mean_score_parsed_only": None,
@@ -523,6 +603,7 @@ def critic_summary_for_run(run_id: int) -> dict[str, Any] | None:
             "critic_target_cases": critic_target,
             "modes_filter": modes_filter,
             "critic_batch_id": batch_id,
+            "critic_batch_complete": False,
             "critic_pass_rate": None,
             "critic_mean_score": None,
             "critic_mean_score_parsed_only": None,
@@ -542,12 +623,14 @@ def critic_summary_for_run(run_id: int) -> dict[str, Any] | None:
         round(sum(scores_parsed) / max(1, len(scores_parsed)), 4) if scores_parsed else None
     )
     parse_rate = round(verdicts_ok / max(1, n), 4)
+    batch_done = critic_batch_complete(run_id, batch_id)
     return {
         "evaluation_run_id": run_id,
         "run_total_cases": total,
         "critic_target_cases": critic_target,
         "modes_filter": modes_filter,
         "critic_batch_id": batch_id,
+        "critic_batch_complete": batch_done,
         "critic_pass_rate": round(passed / max(1, n), 4),
         "critic_mean_score": mean_all,
         "critic_mean_score_parsed_only": mean_parsed,

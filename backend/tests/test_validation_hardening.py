@@ -368,6 +368,41 @@ def test_section_duplication_rejects_repeated_bullet():
     assert "must_not_have_section_duplication" in vr.checks_failed
 
 
+def test_universal_approximation_requires_course_signals_not_pure_textbook_generalities():
+    """Regression (def_universal_approximation_001): generic-analysis prose triggers retry."""
+    intent = analyze_query("Give me a concise definition of universal approximation theorem.")
+    sq = _sq(intent)
+    assert "universal_approximation" in sq.concept_ids
+    plan = _empty_plan(
+        answer_mode="multi_step_explanation",
+        direct_answer="Wide networks approximate continuous maps on bounded domains.",
+    )
+    bad = (
+        "Course Answer:\n\n### Direct Answer\n"
+        "The classical universal approximation theorem guarantees that arbitrarily wide "
+        "feedforward networks can approximate arbitrary continuous functions on bounded domains."
+    )
+    vr = validate_answer(bad, sq, plan, primary_chunk_lecture_numbers=[10], kb=get_kb())
+    assert "must_anchor_universal_approximation_definition" in vr.checks_failed
+    assert vr.repair_path == "retry_retrieval_with_stricter_constraints"
+
+
+def test_universal_approximation_passes_with_kb_retrieval_hint_phrases():
+    intent = analyze_query("Give me a concise definition of universal approximation theorem.")
+    sq = _sq(intent)
+    plan = _empty_plan(
+        answer_mode="multi_step_explanation",
+        direct_answer="Enough width in one hidden layer supports flexible function approximation.",
+    )
+    good = (
+        "Course Answer:\n\n### Direct Answer\n"
+        "**Universal approximation** in these notes says nonlinear nets can "
+        "**approximate any function** given **enough neurons in one hidden layer**."
+    )
+    vr = validate_answer(good, sq, plan, primary_chunk_lecture_numbers=[10], kb=get_kb())
+    assert "must_anchor_universal_approximation_definition" not in vr.checks_failed
+
+
 def test_generic_filler_warns_without_failing():
     intent = analyze_query("What is softmax?")
     sq = _sq(intent)

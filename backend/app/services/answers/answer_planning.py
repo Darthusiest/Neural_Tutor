@@ -21,6 +21,18 @@ from app.services.knowledge.concept_kb import ConceptKB, get_kb
 from app.services.knowledge.structured_query import StructuredQuery
 
 
+def compare_evidence_bundle_storage_keys(ca_id: str, cb_id: str) -> tuple[str, str]:
+    """Dict keys for :attr:`AnswerPlan.evidence_bundles` in two-way compare.
+
+    Duplicate structured-query slots can reference the same KB id twice (for
+    example statistical *bias vs variance* as ``bias_variance``). Using raw
+    ``concept_id`` keys would collapse to one bundle and skip compare rendering.
+    """
+    if ca_id == cb_id:
+        return f"{ca_id}__compare_a", f"{cb_id}__compare_b"
+    return ca_id, cb_id
+
+
 @dataclass
 class SectionSpec:
     """Narrow contract for one rendered section (generation / validation)."""
@@ -424,8 +436,9 @@ def build_answer_plan(
     if mode == "compare" and len(sq.concept_ids) >= 2:
         ca_id, cb_id = sq.concept_ids[0], sq.concept_ids[1]
         bundle_a, bundle_b = build_bundles_for_compare_v2(chunks, ca_id, cb_id, kb)
-        evidence_bundles[ca_id] = bundle_a
-        evidence_bundles[cb_id] = bundle_b
+        ev_key_a, ev_key_b = compare_evidence_bundle_storage_keys(ca_id, cb_id)
+        evidence_bundles[ev_key_a] = bundle_a
+        evidence_bundles[ev_key_b] = bundle_b
         compare_pipeline_tags: list[str] = []
         if _should_use_compare_v1_fallback(bundle_a, bundle_b):
             leg_a, leg_b = build_bundles_for_compare(chunks, ca_id, cb_id, kb)
@@ -440,8 +453,8 @@ def build_answer_plan(
                 kb=kb,
                 evidence_chunks=[by_id[i] for i in leg_b.chunk_ids if i in by_id],
             )
-            evidence_bundles[ca_id] = bundle_a
-            evidence_bundles[cb_id] = bundle_b
+            evidence_bundles[ev_key_a] = bundle_a
+            evidence_bundles[ev_key_b] = bundle_b
             compare_pipeline_tags.append("compare_v1_fallback")
 
         def _safe(ids: list[int]) -> list[int]:

@@ -39,7 +39,7 @@ def test_v3_suite_metadata_and_count():
     assert data.get("name") == "l487_eval_suite"
     assert data.get("version") == "3"
     cases = data["cases"]
-    assert len(cases) == 300
+    assert len(cases) >= 300
 
 
 def test_v3_no_duplicate_ids():
@@ -57,7 +57,7 @@ def test_v3_expected_modes():
 def test_v3_loads_via_dataset_loader():
     meta, cases = load_eval_dataset(_V3_PATH)
     assert meta.get("version") == "3"
-    assert len(cases) == 300
+    assert len(cases) >= 300
 
 
 def test_v3_every_kb_concept_referenced():

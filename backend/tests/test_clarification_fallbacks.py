@@ -167,9 +167,9 @@ def test_compare_these_asks_for_concepts(client, app):
     answer = body["answer"]
     # Must include the templated copy from clarification_for_mode("compare").
     assert "two concepts" in answer
-    # Must NOT slip into Course Answer scaffolding.
+    assert answer.strip().startswith("Course Answer:")
+    # Compare clarifications deliberately avoid scaffolded headings.
     assert "### Direct Answer" not in answer
-    assert "Course Answer:" not in answer
 
 
 def test_quiz_me_asks_for_topic_or_lecture(client, app):
@@ -182,9 +182,8 @@ def test_quiz_me_asks_for_topic_or_lecture(client, app):
     answer = body["answer"]
     assert "topic" in answer.lower()
     assert "lecture" in answer.lower()
-    # Must NOT contain Course Answer scaffolding.
+    assert answer.strip().startswith("Course Answer:")
     assert "### Direct Answer" not in answer
-    assert "Course Answer:" not in answer
 
 
 def test_summarize_this_asks_for_lecture_or_topic(client, app):
@@ -197,8 +196,8 @@ def test_summarize_this_asks_for_lecture_or_topic(client, app):
     answer = body["answer"]
     assert "lecture" in answer.lower()
     assert "topic" in answer.lower()
+    assert answer.strip().startswith("Course Answer:")
     assert "### Direct Answer" not in answer
-    assert "Course Answer:" not in answer
 
 
 def test_asf_returns_helpful_no_match_response(client, app):

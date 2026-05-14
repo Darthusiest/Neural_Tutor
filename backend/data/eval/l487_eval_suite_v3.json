@@ -28,7 +28,7 @@
       "intent": "definition",
       "must_include": [],
       "must_not_include": [],
-      "query": " \u200b "
+      "query": " ​ "
     },
     {
       "category": "adversarial",
@@ -219,7 +219,7 @@
       "intent": "definition",
       "must_include": [],
       "must_not_include": [],
-      "query": "\u8bf4\u660e\u4e00\u4e0b\u795e\u7ecf\u7f51\u7edc \ud83d\ude00\ud83c\udfa7"
+      "query": "说明一下神经网络 😀🎧"
     },
     {
       "category": "adversarial",
@@ -545,7 +545,7 @@
         "cnn"
       ],
       "must_not_include": [],
-      "query": "attention vs convolutional neural network \u2014 contrast them for LING 487."
+      "query": "attention vs convolutional neural network — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -583,7 +583,7 @@
         "cnn"
       ],
       "must_not_include": [],
-      "query": "attention vs convolutional neural network \u2014 contrast them for LING 487."
+      "query": "attention vs convolutional neural network — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -659,7 +659,7 @@
         "vector"
       ],
       "must_not_include": [],
-      "query": "autoencoder vs vector quantization \u2014 contrast them for LING 487."
+      "query": "autoencoder vs vector quantization — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -735,7 +735,7 @@
         "convolutional"
       ],
       "must_not_include": [],
-      "query": "convolutional neural network vs multilayer perceptron \u2014 contrast them for LING 487."
+      "query": "convolutional neural network vs multilayer perceptron — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -811,7 +811,7 @@
         "dynamic programming"
       ],
       "must_not_include": [],
-      "query": "greedy algorithm vs dynamic programming \u2014 contrast them for LING 487."
+      "query": "greedy algorithm vs dynamic programming — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -887,7 +887,7 @@
         "linear nn"
       ],
       "must_not_include": [],
-      "query": "linear neural network vs sigmoid / nonlinearity \u2014 contrast them for LING 487."
+      "query": "linear neural network vs sigmoid / nonlinearity — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -963,7 +963,7 @@
         "formants"
       ],
       "must_not_include": [],
-      "query": "MFCCs vs formants \u2014 contrast them for LING 487."
+      "query": "MFCCs vs formants — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -1039,7 +1039,7 @@
         "softmax"
       ],
       "must_not_include": [],
-      "query": "softmax vs hardmax / winner-take-all \u2014 contrast them for LING 487."
+      "query": "softmax vs hardmax / winner-take-all — contrast them for LING 487."
     },
     {
       "category": "compare",
@@ -6227,6 +6227,310 @@
       ],
       "must_not_include": [],
       "query": "How do exhaustive search, greedy choices, and DP contrast in this course?"
+    },
+    {
+      "id": "cmp_v3_dropout__layer_norm_t0",
+      "query": "Compare dropout and layer normalization in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "dropout",
+        "layer norm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_dropout__layer_norm_t1",
+      "query": "dropout vs layer normalization — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "dropout",
+        "layer norm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_gradient__loss_t0",
+      "query": "Compare gradient and loss in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "gradient",
+        "loss"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_gradient__loss_t1",
+      "query": "gradient vs loss — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "gradient",
+        "loss"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_inference__learning_t0",
+      "query": "Compare inference and learning in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "inference",
+        "learning"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_inference__learning_t1",
+      "query": "inference vs learning — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "inference",
+        "learning"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_rvq__vector_quantization_t0",
+      "query": "Compare residual vector quantization and vector quantization in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "rvq",
+        "vector quantization"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_rvq__vector_quantization_t1",
+      "query": "residual vector quantization vs vector quantization — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "rvq",
+        "vector quantization"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_qkv__multi_head_attention_t0",
+      "query": "Compare query key value and multi-head attention in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "qkv",
+        "multi-head attention"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_qkv__multi_head_attention_t1",
+      "query": "query key value vs multi-head attention — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "qkv",
+        "multi-head attention"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_positional_encoding__layer_norm_t0",
+      "query": "Compare positional encoding and layer normalization in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "positional encoding",
+        "layer norm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_positional_encoding__layer_norm_t1",
+      "query": "positional encoding vs layer normalization — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "positional encoding",
+        "layer norm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_autoencoder__llm_t0",
+      "query": "Compare autoencoder and large language model in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "autoencoder",
+        "llm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_autoencoder__llm_t1",
+      "query": "autoencoder vs large language model — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "autoencoder",
+        "llm"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_attention__feedforward_t0",
+      "query": "Compare attention and feedforward layers in this class.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "attention",
+        "feedforward"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
+    },
+    {
+      "id": "cmp_v3_attention__feedforward_t1",
+      "query": "attention vs feedforward layers — contrast them for LING 487.",
+      "intent": "compare",
+      "expected_mode": "compare",
+      "category": "compare",
+      "must_include": [
+        "attention",
+        "feedforward"
+      ],
+      "must_not_include": [],
+      "expected_sections": [],
+      "forbidden_sections": [],
+      "error_tags": [
+        "compare",
+        "both_entities"
+      ],
+      "critical": false
     }
   ],
   "description": "LING 487 static stress-test eval v3 (300 cases): definitions, compare, synthesis, summary/quiz, retrieval purity, direct-answer, mode detection, clarification, adversarial.",

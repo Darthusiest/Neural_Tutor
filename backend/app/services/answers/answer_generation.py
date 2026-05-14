@@ -25,7 +25,11 @@ from collections import Counter
 from typing import Any
 
 from app.services.answers.concept_constraints import ConceptConstraints, build_concept_constraints
-from app.services.answers.answer_planning import AnswerPlan, chunks_by_ids
+from app.services.answers.answer_planning import (
+    AnswerPlan,
+    chunks_by_ids,
+    compare_evidence_bundle_storage_keys,
+)
 from app.services.answers.compare_render import (
     format_multi_entity_compare_markdown,
     format_two_entity_compare_markdown,
@@ -342,6 +346,11 @@ def strict_clarification_answer(
         body = (
             "I don't have enough clean lecture evidence to compare those concepts without mixing them. "
             "Try naming two explicit concepts from class so I can contrast them directly."
+        )
+    elif (reason or "") == "off_topic_physics_blocked":
+        body = (
+            "That looks like physics or cosmology—not part of what this tutor indexes for **LING 487**. "
+            "Ask with a vocabulary term from class (softmax, attention, MFCCs, transformers, dropout, RVQ)."
         )
     else:
         body = (
@@ -1035,9 +1044,10 @@ def generate_structured_answer(
         return audited or strict_clarification_answer(query_type)
 
     if plan.answer_mode == "compare" and len(plan.evidence_bundles) >= 2:
-        bundle_concept_ids = list(plan.evidence_bundles.keys())
-        left_bundle = plan.evidence_bundles[bundle_concept_ids[0]]
-        right_bundle = plan.evidence_bundles[bundle_concept_ids[1]]
+        ca, cb = structured_query.concept_ids[0], structured_query.concept_ids[1]
+        k_a, k_b = compare_evidence_bundle_storage_keys(ca, cb)
+        left_bundle = plan.evidence_bundles[k_a]
+        right_bundle = plan.evidence_bundles[k_b]
         rendered_compare = format_two_entity_compare_markdown(
             plan, all_chunks, structured_query, left_bundle, right_bundle
         )

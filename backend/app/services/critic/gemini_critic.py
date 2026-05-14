@@ -256,13 +256,31 @@ def _post_generate_resilient(
     base_sec: float,
     max_delay_sec: float,
 ) -> tuple[int, str, dict[str, str]]:
-    """Retry on transient HTTP statuses (429 / 503 / 500) with exponential backoff."""
+    """Retry on transient HTTP statuses (429 / 503 / 500) and transient socket timeouts."""
     last: tuple[int, str, dict[str, str]] | None = None
+    transient_os_max = max(0, max_retries)
+
+    def _recoverable_http(status: int) -> bool:
+        return status != 200 and status in _TRANS_HTTP
+
     for retry_i in range(max(0, max_retries) + 1):
         _sleep_until_min_interval_between_requests()
-        status, raw, hdrs = _post_generate(url, body_obj, timeout)
-        last = (status, raw, hdrs)
-        if status == 200 or status not in _TRANS_HTTP or retry_i >= max_retries:
+        try:
+            status, raw, hdrs = _post_generate(url, body_obj, timeout)
+            last = (status, raw, hdrs)
+        except OSError as exc:
+            # urllib.urlopen timeouts / connection resets — backoff + retry once more.
+            if retry_i >= transient_os_max:
+                raise
+            delay = min(
+                max_delay_sec,
+                max(base_sec * (2**retry_i), 1.5 + float(retry_i)),
+            )
+            logger.warning("Critic Gemini transport error (%s); retry %s/%s after %.1fs", exc, retry_i + 1, transient_os_max, delay)
+            time.sleep(delay)
+            continue
+
+        if status == 200 or not _recoverable_http(status) or retry_i >= max_retries:
             return status, raw, hdrs
         delay = _retry_sleep_sec(
             status=status,
@@ -354,7 +372,7 @@ def run_gemini_critic(
     timeout = int(current_app.config.get("CRITIC_TIMEOUT_SEC") or 60)
     temp = float(current_app.config.get("CRITIC_TEMPERATURE", 0.1))
     max_out = int(current_app.config.get("CRITIC_MAX_OUTPUT_TOKENS", 4096))
-    pass_threshold = float(current_app.config.get("CRITIC_PASS_THRESHOLD", 0.7))
+    pass_threshold = float(current_app.config.get("CRITIC_PASS_THRESHOLD", 0.68))
     prompt_version = str(current_app.config.get("CRITIC_PROMPT_VERSION", "v2"))
     use_schema = bool(current_app.config.get("CRITIC_USE_RESPONSE_SCHEMA", True))
     answer_cap = int(current_app.config.get("CRITIC_ANSWER_CHAR_CAP", 14_000))

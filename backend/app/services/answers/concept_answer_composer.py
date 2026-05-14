@@ -861,10 +861,18 @@ def _compose_numbered_steps(
     return steps[:5]
 
 
-def _strong_why_it_matters(buckets: dict[str, list[str]], _concept_label: str) -> str | None:
-    pool: list[str] = []
-    pool.extend(buckets.get(RELEVANCE) or [])
-    pool.extend(buckets.get(KEY_IDEA) or [])
+def _strong_why_it_matters(
+    buckets: dict[str, list[str]],
+    _concept_label: str,
+    *,
+    constraints: ConceptConstraints | None = None,
+) -> str | None:
+    raw_pool: list[str] = list(buckets.get(RELEVANCE) or []) + list(buckets.get(KEY_IDEA) or [])
+    if constraints is not None and not constraints.is_relational and constraints.target_aliases:
+        filtered = [line for line in raw_pool if line_has_target(line, constraints)]
+        pool = filtered if filtered else raw_pool
+    else:
+        pool = raw_pool
     blob = " ".join(pool).strip()
     if not blob:
         return None
@@ -1104,10 +1112,14 @@ def compose_concept_answer(
             else:
                 example_text = numeric_pick or leg_stripped
         elif leg_stripped == placeholder:
-            # Task 6 — no sample/excerpt example available; do not substitute role-bucket lines.
             example_text = ""
         else:
-            example_text = (bucket_lines[0] if bucket_lines else "").strip()
+            filtered_bucket = bucket_lines
+            if constraints is not None and not constraints.is_relational and constraints.target_aliases:
+                filtered_bucket = [
+                    bl for bl in bucket_lines if line_has_target(bl, constraints)
+                ]
+            example_text = (filtered_bucket[0] if filtered_bucket else "").strip()
         if uf and example_text and ag._line_contains_user_forbidden(example_text, uf):
             example_text = ""
         if example_text:
@@ -1202,7 +1214,7 @@ def compose_concept_answer(
     rendered_lines.extend(["The key idea:", key_idea, ""])
 
     max_why = 2
-    why_it_matters = _strong_why_it_matters(buckets, lab) or ""
+    why_it_matters = _strong_why_it_matters(buckets, lab, constraints=constraints) or ""
     if not why_it_matters:
         why_it_matters = ag._truncate_to_first_sentences(
             ag._grounded_why_it_matters(plan, primary, concept_label, user_forbidden=uf),

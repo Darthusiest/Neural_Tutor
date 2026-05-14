@@ -89,9 +89,9 @@ def test_build_constraints_for_what_is_cnn(app):
         assert "cnn" in c.target_aliases
         # Convolution is *part* of CNN — it shows up as alias / related, not forbidden.
         assert "convolution" not in c.forbidden_terms
-        # Transformer machinery should be flagged as off-limits for a single-CNN query.
+        # Transformer-stack machinery should be flagged as off-limits for a single-CNN query.
         assert "transformer" in c.forbidden_terms or "self-attention" in c.forbidden_terms
-        assert "residual connection" in c.forbidden_terms
+        assert "layer norm" in c.forbidden_terms
         assert c.is_relational is False
 
 

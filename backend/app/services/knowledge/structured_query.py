@@ -344,9 +344,9 @@ def build_structured_query(
     concepts = _resolve_kb_concepts(intent, kb)
     if intent.query_type == QueryType.COMPARE and (intent.compare_entities or intent.compare_concepts):
         entity_labels = intent.compare_entities or list(intent.compare_concepts or ())
-        compare_concepts: list[ConceptMeta] = []
 
         compound_id: str | None = None
+        compound_join_key: str | None = None
         if len(entity_labels) >= 2:
             for joined in (
                 f"{entity_labels[0]} and {entity_labels[1]}",
@@ -354,21 +354,37 @@ def build_structured_query(
                 f"{entity_labels[1]} and {entity_labels[0]}",
                 f"{entity_labels[1]}_{entity_labels[0]}",
             ):
-                cid = kb.concepts_by_alias.get(joined.strip().lower())
+                key = joined.strip().lower()
+                cid = kb.concepts_by_alias.get(key)
                 if cid and kb.get_concept_by_id(cid):
                     compound_id = cid
+                    compound_join_key = key
                     break
 
-        for part in entity_labels:
-            c = kb.get_concept(part.strip()) or kb.get_concept(part.split()[0])
-            if c and all(c.id != x.id for x in compare_concepts):
-                compare_concepts.append(c)
+        compare_concepts: list[ConceptMeta] = []
+        compound_meta = kb.get_concept_by_id(compound_id) if compound_id else None
 
-        if compound_id and len(compare_concepts) < 2:
-            compare_concepts = [
-                ConceptMeta(id=el.strip().lower().replace(" ", "_"), name=el.strip(), aliases=[], lecture_scope=[], summary="")
-                for el in entity_labels[:2]
-            ]
+        # Statistical bias vs variance shares one KB row (`bias_variance`). Per-token
+        # linking steals "bias" toward unrelated concepts (e.g. weights_biases).
+        if compound_meta and compound_id == "bias_variance" and compound_join_key is not None:
+            compare_concepts = [compound_meta, compound_meta]
+        else:
+            for part in entity_labels:
+                c = kb.get_concept(part.strip()) or kb.get_concept(part.split()[0])
+                if c and all(c.id != x.id for x in compare_concepts):
+                    compare_concepts.append(c)
+
+            if compound_id and len(compare_concepts) < 2:
+                compare_concepts = [
+                    ConceptMeta(
+                        id=el.strip().lower().replace(" ", "_"),
+                        name=el.strip(),
+                        aliases=[],
+                        lecture_scope=[],
+                        summary="",
+                    )
+                    for el in entity_labels[:2]
+                ]
 
         if len(compare_concepts) >= 2:
             concepts = compare_concepts

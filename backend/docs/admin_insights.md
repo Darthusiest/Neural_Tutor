@@ -14,7 +14,7 @@ On **PostgreSQL**, use your SQL client, e.g. `psql` with the same `UPDATE` again
 
 **SPA:** [`/admin`](../../frontend/src/App.jsx) uses [`AdminRoute`](../../frontend/src/components/AdminRoute.jsx) (non-admins redirect to `/chat`).
 
-**Eval runs + Gemini critic:** `GET /api/admin/eval/runs` lists **`evaluation_runs`** only. **Primary path for the critic:** **`PYTHONPATH=. python -m app.eval.run_eval --dataset data/eval/l487_eval_suite.json …`** (chat-turn runner; sets **`assistant_message_id`**). See **`progress/entries/2026-05-10-gemini-critic.md`**. Structured shortcuts: **`flask run-eval`**, **`seed-demo-eval`** (**default `--suite mini`**) — omit **`handle_chat_turn`** payloads. Judge rubric defaults to **`CRITIC_PROMPT_VERSION=v2`** (generous calibration vs chunks + **`EXPECTED_BEHAVIOR_JSON.error_tags`** carve-out for nonsense/off-topic suite rows); version string is stored per critic row.
+**Eval runs + Gemini critic:** `GET /api/admin/eval/runs` lists **`evaluation_runs`** only. **Primary path for the critic:** **`PYTHONPATH=. python -m app.eval.run_eval --dataset data/eval/l487_eval_suite.json …`** (chat-turn runner; sets **`assistant_message_id`**). See **`progress/entries/2026-05-10-gemini-critic.md`**. Structured shortcuts: **`flask run-eval`**, **`seed-demo-eval`** (**default `--suite mini`**) — omit **`handle_chat_turn`** payloads. Judge rubric defaults to **`CRITIC_PROMPT_VERSION=v2`** (generous calibration vs chunks + **`EXPECTED_BEHAVIOR_JSON.error_tags`** carve-out for nonsense/off-topic suite rows); version string is stored per critic row. Large batches: Admin **`POST …/critic`** uses a **daemon thread** — **`flask --debug`** reloads kill mid-batch jobs; prefer **`flask run --no-reload`** or **`PYTHONPATH=. python scripts/run_gemini_critic_batch.py --run-id … --force`** from **`backend/`**.
 
 ## Endpoints
 
@@ -28,7 +28,7 @@ On **PostgreSQL**, use your SQL client, e.g. `psql` with the same `UPDATE` again
 | GET | `/api/admin/insights/cost-summary` | `days` | Token totals vs optional **`LLM_MONTHLY_TOKEN_CAP`** / warn threshold; optional USD via **`LLM_COST_USD_PER_MTOKENS`**; spike note. 60/min. |
 | GET | `/api/admin/insights/content-quality` | `days` | Heuristic **weak chunks** (low-confidence hit counts) + thumbs-down count. 60/min. |
 | POST | `/api/admin/eval/runs/<id>/critic` | JSON `{ "force"?: bool, "modes"?: ["chat","compare","summary"] }` — **`modes`** optional (default from **`CRITIC_CASE_MODES`**). Subset batches write **`manifest.json`** next to charts; **`422`** if no cases match. | Run **Gemini critic** on in-scope cases; writes **`evaluation_critic_results`** and **`evaluation_outputs/critic/<batch>/`**. **6/min** (slow). |
-| GET | `/api/admin/eval/runs/<id>/critic` | — | Latest critic batch summary (`critic_pass_rate`, `critic_mean_score`, `artifact_urls`, …). **60/min**. |
+| GET | `/api/admin/eval/runs/<id>/critic` | — | Latest critic batch summary (`critic_pass_rate`, `critic_mean_score`, **`critic_batch_complete`**, **`critic_job_in_progress`**, `artifact_urls`, …). On disk, each batch folder may include **`critic_metrics.json`**. **60/min**. |
 | GET | `/api/admin/eval/runs/<id>/critic/cases` | `group_by` (`query_type_v2` \| `category` \| `answer_mode`), optional `category` | Grouped + flat case list (chatbot vs critic, disagreement flag). **60/min**. |
 | GET | `/api/admin/eval/critic-image/<run_id>/<filename>` | `batch` (optional; defaults to latest critic batch) | Whitelisted PNG/CSV artifacts only. **120/min**. |
 

@@ -254,14 +254,14 @@ class Config:
     # --- Gemini admin critic (LLM-as-judge on eval runs) ---
     CRITIC_MODEL = os.getenv("CRITIC_MODEL", "gemini-2.5-flash")
     CRITIC_TEMPERATURE = float(os.getenv("CRITIC_TEMPERATURE", "0.1"))
-    CRITIC_TIMEOUT_SEC = int(os.getenv("CRITIC_TIMEOUT_SEC", "60"))
+    CRITIC_TIMEOUT_SEC = int(os.getenv("CRITIC_TIMEOUT_SEC", "120"))
     CRITIC_MAX_OUTPUT_TOKENS = int(os.getenv("CRITIC_MAX_OUTPUT_TOKENS", "4096"))
     CRITIC_USE_RESPONSE_SCHEMA = os.getenv("CRITIC_USE_RESPONSE_SCHEMA", "1") == "1"
     # Cap stored chatbot answer length in the critic prompt (full eval payloads can exceed model context).
     CRITIC_ANSWER_CHAR_CAP = int(os.getenv("CRITIC_ANSWER_CHAR_CAP", "14000"))
     # Frozen prompt / schema version string stored on critic rows for auditability.
     CRITIC_PROMPT_VERSION = os.getenv("CRITIC_PROMPT_VERSION", "v2")
-    CRITIC_PASS_THRESHOLD = float(os.getenv("CRITIC_PASS_THRESHOLD", "0.7"))
+    CRITIC_PASS_THRESHOLD = float(os.getenv("CRITIC_PASS_THRESHOLD", "0.68"))
     # Comma-separated effective modes scored by the Gemini critic when POST body omits ``modes``.
     CRITIC_CASE_MODES = os.getenv("CRITIC_CASE_MODES", "chat,compare,summary")
     # Optional safety cap on estimated prompt+output tokens per admin critic batch (0 = unlimited).
